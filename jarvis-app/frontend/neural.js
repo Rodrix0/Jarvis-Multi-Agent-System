@@ -1,45 +1,56 @@
-class NeuralNetwork {
+class JarvisHologram {
     constructor(canvasId) {
         this.canvas = document.getElementById(canvasId);
         this.ctx = this.canvas.getContext('2d');
-        this.particles = [];
-        this.numParticles = 120; // Increased for full screen
         this.state = 'idle'; // idle, listening, speaking
+        this.time = 0;
         
-        // Colors from CSS variables
+        // Colores base (Azul JARVIS)
         this.colors = {
-            idle: { node: 'rgba(0, 229, 255, 0.3)', line: 'rgba(0, 229, 255, 0.1)' },
-            listening: { node: 'rgba(0, 229, 255, 0.8)', line: 'rgba(0, 229, 255, 0.4)' },
-            speaking: { node: 'rgba(124, 58, 237, 0.8)', line: 'rgba(124, 58, 237, 0.4)' }
+            idle: { core: 'rgba(0, 229, 255, 0.1)', ring: 'rgba(0, 180, 255, 0.5)', glow: '#00E5FF' },
+            listening: { core: 'rgba(0, 255, 255, 0.2)', ring: 'rgba(0, 255, 255, 0.8)', glow: '#00FFFF' },
+            speaking: { core: 'rgba(124, 58, 237, 0.2)', ring: 'rgba(140, 80, 255, 0.8)', glow: '#A855F7' }
         };
 
+        // Generar una estructura muy densa de arcos concéntricos
+        this.arcs = [];
+        const numArcs = 80;
+        for (let i = 0; i < numArcs; i++) {
+            this.arcs.push({
+                radius: 40 + Math.random() * 100, // Radio contenido (max 140)
+                startAngle: Math.random() * Math.PI * 2,
+                endAngle: Math.random() * Math.PI * 2,
+                width: Math.random() * 3 + 0.5,
+                speed: (Math.random() - 0.5) * 0.005, // MUY lento
+                opacity: Math.random() * 0.5 + 0.1,
+                dash: Math.random() > 0.5 ? [Math.random() * 20 + 5, Math.random() * 10 + 5] : []
+            });
+        }
+
+        // Rayos interiores (Spokes)
+        this.spokes = [];
+        for (let i = 0; i < 30; i++) {
+            this.spokes.push({
+                angle: Math.random() * Math.PI * 2,
+                length: 20 + Math.random() * 100,
+                speed: (Math.random() - 0.5) * 0.002,
+                opacity: Math.random() * 0.3
+            });
+        }
+
         this.resize();
-        this.initParticles();
-        
         window.addEventListener('resize', () => this.resize());
         this.animate();
     }
 
     resize() {
-        this.width = window.innerWidth;
-        this.height = window.innerHeight;
+        const parent = this.canvas.parentElement;
+        this.width = parent.clientWidth || 400;
+        this.height = parent.clientHeight || 400;
+        
         this.canvas.width = this.width * window.devicePixelRatio;
         this.canvas.height = this.height * window.devicePixelRatio;
         this.ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-    }
-
-    initParticles() {
-        this.particles = [];
-        for (let i = 0; i < this.numParticles; i++) {
-            this.particles.push({
-                x: Math.random() * this.width,
-                y: Math.random() * this.height,
-                vx: (Math.random() - 0.5) * 0.5,
-                vy: (Math.random() - 0.5) * 0.5,
-                radius: Math.random() * 2 + 1,
-                baseRadius: Math.random() * 2 + 1
-            });
-        }
     }
 
     setState(newState) {
@@ -49,80 +60,83 @@ class NeuralNetwork {
     animate() {
         this.ctx.clearRect(0, 0, this.width, this.height);
         
-        let speedMultiplier = 1;
-        let connectionDistance = 100;
+        const cx = this.width / 2;
+        const cy = this.height / 2 - 20; // Un poco más arriba para no pisar el texto
+        this.time += 1;
+
+        let speedMult = 1;
+        let pulse = 0;
         
         if (this.state === 'listening') {
-            speedMultiplier = 3.5;
-            connectionDistance = 140;
+            speedMult = 2.0;
+            pulse = Math.sin(this.time * 0.05) * 5;
         } else if (this.state === 'speaking') {
-            speedMultiplier = 2.0;
-            connectionDistance = 120;
+            speedMult = 1.5;
+            // Palpita fuertemente al hablar
+            pulse = Math.sin(this.time * 0.15) * 15;
         }
 
-        const currentColor = this.colors[this.state];
+        const color = this.colors[this.state];
 
-        // Update and draw particles
-        for (let i = 0; i < this.particles.length; i++) {
-            let p = this.particles[i];
+        this.ctx.save();
+        this.ctx.translate(cx, cy);
+        
+        // Efecto de fusión de luz para que parezca un holograma denso
+        this.ctx.globalCompositeOperation = 'lighter';
+
+        // 1. NÚCLEO CENTRAL (GLOW INTENSO)
+        const coreGradient = this.ctx.createRadialGradient(0, 0, 0, 0, 0, 60 + pulse);
+        coreGradient.addColorStop(0, color.glow);
+        coreGradient.addColorStop(0.2, color.core);
+        coreGradient.addColorStop(1, 'transparent');
+        
+        this.ctx.fillStyle = coreGradient;
+        this.ctx.beginPath();
+        this.ctx.arc(0, 0, 100 + pulse, 0, Math.PI * 2);
+        this.ctx.fill();
+
+        // 2. DIBUJAR RAYOS (SPOKES)
+        this.ctx.lineWidth = 1;
+        this.spokes.forEach(spoke => {
+            spoke.angle += spoke.speed * speedMult;
+            this.ctx.strokeStyle = color.glow;
+            this.ctx.globalAlpha = spoke.opacity;
+            this.ctx.beginPath();
+            this.ctx.moveTo(Math.cos(spoke.angle) * 20, Math.sin(spoke.angle) * 20);
+            this.ctx.lineTo(Math.cos(spoke.angle) * (spoke.length + pulse), Math.sin(spoke.angle) * (spoke.length + pulse));
+            this.ctx.stroke();
+        });
+
+        // 3. DIBUJAR ARCOS DENSOS (ESTRUCTURA PRINCIPAL)
+        // Aplicamos una ligera compresión en Y para dar falso 3D
+        this.ctx.scale(1, 0.85);
+
+        this.arcs.forEach(arc => {
+            arc.startAngle += arc.speed * speedMult;
+            arc.endAngle += arc.speed * speedMult;
             
-            p.x += p.vx * speedMultiplier;
-            p.y += p.vy * speedMultiplier;
-
-            // Pulse effect when speaking
-            if (this.state === 'speaking') {
-                p.radius = p.baseRadius + Math.sin(Date.now() / 200 + i) * 1.5;
+            this.ctx.globalAlpha = arc.opacity;
+            this.ctx.lineWidth = arc.width;
+            this.ctx.strokeStyle = color.ring;
+            
+            if (arc.dash.length > 0) {
+                this.ctx.setLineDash(arc.dash);
             } else {
-                p.radius = p.baseRadius;
+                this.ctx.setLineDash([]);
             }
-
-            // Bounce off edges
-            if (p.x < 0 || p.x > this.width) p.vx *= -1;
-            if (p.y < 0 || p.y > this.height) p.vy *= -1;
 
             this.ctx.beginPath();
-            this.ctx.arc(p.x, p.y, Math.max(0.1, p.radius), 0, Math.PI * 2);
-            this.ctx.fillStyle = currentColor.node;
-            this.ctx.fill();
-        }
+            this.ctx.arc(0, 0, arc.radius + (pulse * (arc.radius/100)), arc.startAngle, arc.endAngle);
+            this.ctx.stroke();
+        });
 
-        // Draw connections
-        for (let i = 0; i < this.particles.length; i++) {
-            for (let j = i + 1; j < this.particles.length; j++) {
-                let p1 = this.particles[i];
-                let p2 = this.particles[j];
-                let dx = p1.x - p2.x;
-                let dy = p1.y - p2.y;
-                let dist = Math.sqrt(dx * dx + dy * dy);
-
-                if (dist < connectionDistance) {
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(p1.x, p1.y);
-                    this.ctx.lineTo(p2.x, p2.y);
-                    
-                    let opacity = 1 - (dist / connectionDistance);
-                    // Parse rgba string to inject opacity dynamically
-                    let baseRgba = currentColor.line.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([0-9.]+)\)/);
-                    if (baseRgba) {
-                        let maxOpacity = parseFloat(baseRgba[4]);
-                        this.ctx.strokeStyle = `rgba(${baseRgba[1]}, ${baseRgba[2]}, ${baseRgba[3]}, ${opacity * maxOpacity})`;
-                    } else {
-                        this.ctx.strokeStyle = currentColor.line;
-                    }
-                    
-                    this.ctx.lineWidth = 1;
-                    this.ctx.stroke();
-                }
-            }
-        }
+        this.ctx.restore();
 
         requestAnimationFrame(() => this.animate());
     }
 }
 
-// Global instance
 let neuralVisualizer;
-
 window.addEventListener('load', () => {
-    neuralVisualizer = new NeuralNetwork('neural-canvas');
+    neuralVisualizer = new JarvisHologram('neural-canvas');
 });

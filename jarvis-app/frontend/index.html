@@ -22,7 +22,6 @@
 </head>
 <body>
     <div id="particles-js"></div> 
-
     <div class="hud-container">
         <!-- HEADER -->
         <header class="hud-header">
@@ -56,13 +55,8 @@
             <!-- CENTER PANEL: AI INTERFACE -->
             <section class="center-panel">
                 
-                <div class="visualizer-container">
-                    <div id="listening-ring" class="ring idle">
-                        <canvas id="neural-canvas"></canvas>
-                        <div class="core">
-                            <i id="mic-icon" class="fa-solid fa-microphone-lines"></i>
-                        </div>
-                    </div>
+                <div class="visualizer-container" id="visualizer-container" style="position: relative; height: 350px;">
+                    <!-- El canvas 3D se inyectará aquí -->
                 </div>
 
                 <div class="transcript-box" >
@@ -123,9 +117,12 @@
         </div>
     </div>
 
+    <!-- Three.js para el núcleo 3D Real -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
     <!-- Socket.io -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="neural.js"></script>
+    <script src="jarvis3d.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

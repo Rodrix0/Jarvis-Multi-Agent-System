@@ -1,5 +1,4 @@
 // --- DOM Elements ---
-const ring = document.getElementById('listening-ring');
 const userBox = document.getElementById('user-transcript');
 const jarvisBox = document.getElementById('jarvis-response');
 const btnToggleMic = document.getElementById('btn-toggle-mic');
@@ -319,7 +318,6 @@ function renderModes(modes, activeId) {
 }
 
 function setRingState(state) {
-    ring.className = `ring ${state}`;
     if (typeof neuralVisualizer !== 'undefined') {
         neuralVisualizer.setState(state);
     }
