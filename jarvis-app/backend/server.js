@@ -94,6 +94,40 @@ app.post('/api/speak', (req, res) => {
     }
 });
 
+// Endpoint principal para el cliente de Audio Python (Fondo)
+app.post('/api/process_speech_local', async (req, res) => {
+    const text = req.body.text;
+    if (!text) return res.status(400).json({ error: "Text missing" });
+    
+    const lowerText = text.toLowerCase();
+    console.log(`[Jarvis Audio Python]: ${text}`);
+
+    let responseText = "";
+    try {
+        const sysCommand = systemService.handleSystemCommand(text);
+        
+        if (sysCommand.isSystemCommand) {
+            responseText = sysCommand.isLearned
+                ? `Comando aprendido detectado. Ejecutando ${sysCommand.appName}, señor.`
+                : `Abriendo ${sysCommand.appName}.`;
+            const activeMode = modeService.getActiveMode();
+            await systemService.openApp(sysCommand.appName, activeMode.id);
+        } else {
+            const activeMode = modeService.getActiveMode();
+            const screenContext = observerService.getScreenContext();
+            responseText = await aiService.getAIResponse(text, activeMode, screenContext);
+        }
+    } catch (error) {
+        console.error(error);
+        responseText = "Lo siento, mi núcleo central interceptó una excepción no controlada.";
+    }
+    
+    // Sincronizar la respuesta con cualquier UI web abierta
+    io.emit('response', { text: responseText, action: null, actionPayload: null });
+    
+    // Responder a Python para que lo hable por TTS
+    res.json({ response: responseText });
+});
 
 // Real-time voice processing y Eventos del Socket
 io.on('connection', (socket) => {
@@ -276,8 +310,6 @@ server.listen(PORT, () => {
     backgroundTuner.startBackgroundStudying();
     // Iniciar el indexador de accesos directos
     appDiscoveryService.triggerBackgroundScan();
-    // Conectar el gancho USB/Teclado físico
-    hotkeyService.initHotkeyService(io);
     // Iniciar modulo Cronos para tareas y recordatorios
     reminderService.startScheduler(io);
     // Iniciar escucha de eventos de energia OS (Para Lockscreen)

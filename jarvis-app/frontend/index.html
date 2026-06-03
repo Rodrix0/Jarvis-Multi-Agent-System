@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
@@ -58,6 +58,7 @@
                 
                 <div class="visualizer-container">
                     <div id="listening-ring" class="ring idle">
+                        <canvas id="neural-canvas"></canvas>
                         <div class="core">
                             <i id="mic-icon" class="fa-solid fa-microphone-lines"></i>
                         </div>
@@ -124,6 +125,7 @@
 
     <!-- Socket.io -->
     <script src="/socket.io/socket.io.js"></script>
+    <script src="neural.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

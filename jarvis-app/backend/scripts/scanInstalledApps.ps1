@@ -42,5 +42,26 @@ foreach ($path in $pathsToScan) {
     }
 }
 
+# Parsear todo lo demás en el Escritorio (carpetas, PDFs, TXT, etc.)
+$desktopPaths = @(
+    "$env:USERPROFILE\Desktop",
+    "C:\Users\Public\Desktop"
+)
+
+foreach ($path in $desktopPaths) {
+    if (Test-Path $path) {
+        # Excluimos .lnk y .url porque ya los procesamos de forma especial arriba
+        Get-ChildItem -Path $path -Exclude *.lnk,*.url | ForEach-Object {
+            $name = $_.BaseName.ToLowerInvariant().Trim()
+            $target = $_.FullName
+            
+            # Si es un nombre válido y no lo pisamos con un acceso directo
+            if (-Not [string]::IsNullOrWhiteSpace($name) -and -not $apps.ContainsKey($name)) {
+                $apps[$name] = $target
+            }
+        }
+    }
+}
+
 # Retornar como JSON
 $apps | ConvertTo-Json -Compress

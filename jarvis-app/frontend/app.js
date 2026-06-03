@@ -14,70 +14,119 @@ const modeForm = document.getElementById('mode-form');
 // --- Socket.io Setup ---
 const socket = io(); 
 
-// --- Speech Recognition Setup ---
+// =================================================================
+// SISTEMA DE VOZ MANOS LIBRES (Web Speech API - Chrome)
+// =================================================================
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition;
-let isSystemActive = false;
+let isSystemActive = false;  // true = escucha activa, false = dormido
 let isJarvisSpeaking = false;
+let isAwaitingFollowUp = false; // true = Jarvis hizo una pregunta y espera respuesta libre (sin filtro)
+let followUpTimer = null;
+
+// Activa el modo "esperando respuesta" por N segundos
+function setAwaitingFollowUp(seconds = 30) {
+    isAwaitingFollowUp = true;
+    console.log(`[Jarvis] 🟡 Modo espera de respuesta activo por ${seconds}s`);
+    clearTimeout(followUpTimer);
+    followUpTimer = setTimeout(() => {
+        isAwaitingFollowUp = false;
+        console.log("[Jarvis] 🟢 Tiempo de espera agotado, volviendo a filtro normal");
+    }, seconds * 1000);
+}
+
+function clearAwaitingFollowUp() {
+    isAwaitingFollowUp = false;
+    clearTimeout(followUpTimer);
+}
+
+
+// Frases que Jarvis mismo dice y que el micrófono puede captar por error (anti-eco)
+const ECHO_FILTER_PHRASES = [
+    "iniciando", "procesando", "analizando",
+    "abriendo", "ejecutando", "buscando en",
+    "entendido", "de acuerdo", "por supuesto",
+    "a sus órdenes", "jarvis responde"
+];
+
+function isEcho(text) {
+    const lower = text.toLowerCase();
+    return ECHO_FILTER_PHRASES.some(phrase => lower.startsWith(phrase));
+}
+
+function sendCommandToJarvis(transcript) {
+    console.log("[Jarvis] → Enviando:", transcript);
+    userBox.textContent = `"${transcript}"`;
+    jarvisBox.textContent = "Analizando...";
+    hideUXButtons();
+    setRingState('idle');
+
+    const urlContext = document.getElementById('context-url').value.trim();
+    const fileContext = document.getElementById('context-file-path').value.trim();
+    let queryToSend = transcript;
+    if (urlContext) queryToSend += " " + urlContext;
+    if (fileContext) queryToSend += " " + fileContext;
+
+    socket.emit('process_speech', { text: queryToSend });
+
+    document.getElementById('context-url').value = "";
+    document.getElementById('context-file-path').value = "";
+    document.getElementById('dropzone-text').textContent = "Arrastra múltiples archivos aquí (.pdf) o haz clic";
+}
 
 if (SpeechRecognition) {
     recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = false;
-    recognition.lang = 'es-ES'; // Idioma Español
+    recognition.lang = 'es-AR';
 
     recognition.onresult = (event) => {
-        if (isJarvisSpeaking) return; // Super seguro: ignorar absolutamente todo si está hablando
+        if (isJarvisSpeaking) return;
 
-        const current = event.resultIndex;
-        const transcript = event.results[current][0].transcript.trim();
-        const lowerTranscript = transcript.toLowerCase();
-        
-        if (transcript.length < 2) return; // Ignorar ruidos estáticos o suspiros cortos
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (!event.results[i].isFinal) continue;
 
-        // Filtro anti-eco estricto: Si la frase contiene algo que Jarvis típicamente dice, ignorar
-        if (lowerTranscript.includes("iniciando proceso") || 
-            lowerTranscript.includes("abriendo") || 
-            lowerTranscript.includes("creando") ||
-            lowerTranscript.includes("jarvis responde")) {
-            return;
+            const transcript = event.results[i][0].transcript.trim();
+            if (!transcript || transcript.length < 2) continue;
+
+            // Único filtro: anti-eco. Ignorar si suena como lo que Jarvis diría
+            if (isEcho(transcript)) {
+                console.log("[Jarvis] Eco detectado, ignorado:", transcript);
+                continue;
+            }
+
+            // Todo lo demás va directo a Jarvis — sin filtros de palabras clave
+            sendCommandToJarvis(transcript);
         }
-
-        console.log("Reconocido:", transcript);
-
-        userBox.textContent = `"${transcript}"`;
-        jarvisBox.textContent = "Analizando memoria y directivas...";
-        hideUXButtons();
-        setRingState('idle');
-        
-        const urlContext = document.getElementById('context-url').value.trim();
-        const fileContext = document.getElementById('context-file-path').value.trim();
-        let queryToSend = transcript;
-        
-        if (urlContext) queryToSend += " " + urlContext;
-        if (fileContext) queryToSend += " " + fileContext;
-        
-        socket.emit('process_speech', { text: queryToSend });
-        
-        document.getElementById('context-url').value = "";
-        document.getElementById('context-file-path').value = "";
-        document.getElementById('dropzone-text').textContent = "Arrastra múltiples archivos aquí (.pdf) o haz clic";
     };
 
     recognition.onend = () => {
-        // En modo Walkie-Talkie (PTT), el micrófono ya no se queda escuchando el vacío.
-        // Solo graba mientras tengas presionado el botón.
+        // Chrome corta el reconocimiento después de un silencio. Lo reiniciamos automáticamente.
+        if (isSystemActive && !isJarvisSpeaking) {
+            setTimeout(() => {
+                try { recognition.start(); } catch(e) {}
+            }, 300);
+        }
     };
 
     recognition.onerror = (event) => {
-        console.error("Speech Recognition Error:", event.error);
+        if (event.error === 'no-speech') return; // Normal, ignorar
         if (event.error === 'not-allowed') {
-            jarvisBox.textContent = 'Error: Permisos de micrófono denegados.';
-            stopSystem();
+            jarvisBox.textContent = '⚠️ Error: Permisos de micrófono denegados. Permite el micrófono en Chrome.';
+            isSystemActive = false;
+            updateMicButtonUI();
+            return;
+        }
+        // Para otros errores, reintentar si el sistema sigue activo
+        if (isSystemActive) {
+            setTimeout(() => {
+                try { recognition.start(); } catch(e) {}
+            }, 1000);
         }
     };
+
 } else {
-    jarvisBox.textContent = "Error: Tu navegador no soporta reconocimiento de voz (Usa Chrome/Edge).";
+    jarvisBox.textContent = "Error: Tu navegador no soporta reconocimiento de voz. Usa Google Chrome.";
 }
 
 // --- Text to Speech Setup ---
@@ -199,21 +248,47 @@ socket.on('response', (data) => {
         if (data.action === "OPEN_MODE_MENU") {
             modeModal.classList.remove('hidden');
         } else if (data.action === "MODE_CHANGED") {
-            // update UI visually
             document.querySelectorAll('.mode-list li').forEach(li => li.classList.remove('active'));
             const targetLi = document.querySelector(`.mode-list li[data-id="${data.actionPayload}"]`);
             if (targetLi) targetLi.classList.add('active');
         }
+        
+        // Detectar si Jarvis hizo una pregunta de seguimiento
+        // Esto permite capturar la respuesta libre del usuario sin filtro de palabras clave
+        const responseText = (data.text || "").toLowerCase();
+        const isAskingFollowUp = (
+            responseText.includes("qué querés") ||
+            responseText.includes("que queres") ||
+            responseText.includes("qué quieres") ||
+            responseText.includes("que quieres") ||
+            responseText.includes("qué mensaje") ||
+            responseText.includes("que mensaje") ||
+            responseText.includes("qué le digo") ||
+            responseText.includes("que le digo") ||
+            responseText.includes("cuál es el mensaje") ||
+            responseText.includes("cual es el mensaje") ||
+            responseText.includes("qué le decimos") ||
+            responseText.includes("dime el mensaje") ||
+            responseText.includes("decime el mensaje") ||
+            responseText.includes("qué contenido") ||
+            responseText.includes("que contenido") ||
+            responseText.includes("cuéntame más") ||
+            responseText.includes("¿qué") ||
+            responseText.includes("¿cómo") ||
+            responseText.includes("¿cuál") ||
+            responseText.endsWith("?") ||
+            responseText.includes("esperando tu respuesta") ||
+            responseText.includes("dime cuál") ||
+            responseText.includes("decime cual")
+        );
+        
+        if (isAskingFollowUp) {
+            setAwaitingFollowUp(30); // 30 segundos para responder
+        }
     });
 });
 
-socket.on('global_hotkey_down', () => {
-    startSystem();
-});
-
-socket.on('global_hotkey_up', () => {
-    stopSystem();
-});
+// Hotkey global ya no se usa (sistema manos libres activo)
 
 // --- UI Logic ---
 function renderModes(modes, activeId) {
@@ -244,53 +319,56 @@ function renderModes(modes, activeId) {
 }
 
 function setRingState(state) {
-    ring.className = 'ring'; // reset
-    ring.classList.add(state);
+    ring.className = `ring ${state}`;
+    if (typeof neuralVisualizer !== 'undefined') {
+        neuralVisualizer.setState(state);
+    }
 }
 
-function startSystem(e) {
-    if (e) e.preventDefault(); // Prevenir fallos en móviles
-    
-    // Forzamos a Jarvis a que se calle si estaba hablando de antes
-    window.speechSynthesis.cancel();
-    isJarvisSpeaking = false;
+function updateMicButtonUI() {
+    if (isSystemActive) {
+        btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone"></i> ESCUCHA ACTIVA — Di tu orden directamente';
+        btnToggleMic.classList.add('active');
+        setRingState('listening');
+    } else {
+        btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone-slash"></i> MICRÓFONO PAUSADO — Click para activar';
+        btnToggleMic.classList.remove('active');
+        setRingState('idle');
+    }
+}
 
+function startHandsFreeMode() {
     if (!recognition) return;
-    
-    btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone"></i> ESCUCHANDO...';
-    btnToggleMic.classList.add('active');
-    jarvisBox.textContent = "Te escucho, dime...";
-    hideUXButtons();
-    setRingState('listening');
-    
-    try {
-        recognition.start();
-    } catch(e) {}
+    isSystemActive = true;
+    updateMicButtonUI();
+    jarvisBox.textContent = "Sistema activo. Di 'Jarvis' o un comando directo (abre, busca, crea...).";
+    try { recognition.start(); } catch(e) {}
 }
 
-function stopSystem(e) {
-    if (e) e.preventDefault();
+function stopHandsFreeMode() {
     if (!recognition) return;
-    
-    btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone"></i> MANTÉN PRESIONADO PARA HABLAR';
-    btnToggleMic.classList.remove('active');
-    jarvisBox.textContent = "Procesando orden...";
-    hideUXButtons();
-    setRingState('idle');
-    
-    try {
-        recognition.stop(); // Corta el micrófono y obliga a disparar "onresult" al instante!
-    } catch(e) {}
+    isSystemActive = false;
+    updateMicButtonUI();
+    jarvisBox.textContent = "Sistema dormido. Haz click en el micrófono para activar.";
+    try { recognition.stop(); } catch(e) {}
 }
 
-// Eventos estilo Walkie-Talkie (MANTENER PRESIONADO)
-btnToggleMic.addEventListener('mousedown', startSystem);
-btnToggleMic.addEventListener('mouseup', stopSystem);
-btnToggleMic.addEventListener('mouseleave', stopSystem); // Por si arrastran el mouse fuera del botón
+// Click en el botón: toggle encender/apagar
+btnToggleMic.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (isSystemActive) {
+        stopHandsFreeMode();
+    } else {
+        startHandsFreeMode();
+    }
+});
 
-// Touch para tablets / celulares
-btnToggleMic.addEventListener('touchstart', startSystem, {passive: false});
-btnToggleMic.addEventListener('touchend', stopSystem, {passive: false});
+// AUTO-ARRANQUE: Iniciar el sistema automáticamente al cargar la página
+window.addEventListener('load', () => {
+    setTimeout(() => {
+        startHandsFreeMode();
+    }, 1500); // Pequeño delay para que el navegador termine de inicializar
+});
 
 
 // Modal UI Handlers

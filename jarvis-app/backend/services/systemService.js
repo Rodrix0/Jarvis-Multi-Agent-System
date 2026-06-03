@@ -212,23 +212,40 @@ async function openApp(appName, modeId = 'productividad') {
         }
     }
 
-    // B.5 Búsqueda de Disco Duro (Mapeo Inteligente)
     if (!command) {
         const discovered = appDiscoveryService.getAppDictionary();
-        // Intentar limpiar símbolos extraños (ej: R.E.P.O. -> repo)
-        const cleanUserQuery = lowerApp.replace(/['".,?!\-]/g, '').replace(/\s+/g, '').trim();
+        // Palabras a ignorar al buscar
+        const ignoreWords = ["el", "la", "los", "las", "un", "una", "del", "de", "pdf", "carpeta", "archivo", "documento", "foto", "imagen"];
+        
+        function normalizeText(text) {
+            return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/['".,?!\-]/g, ' ');
+        }
+
+        const userKeywords = normalizeText(lowerApp).split(/\s+/).filter(w => w.length > 1 && !ignoreWords.includes(w));
 
         for (const [key, appPath] of Object.entries(discovered)) {
+            const normalizedKey = normalizeText(key);
+            
+            // Chequeo 1: Substring directo
             const cleanKey = key.replace(/['".,?!\-]/g, '').replace(/\s+/g, '').trim();
+            const cleanUserQuery = lowerApp.replace(/['".,?!\-]/g, '').replace(/\s+/g, '').trim();
+            let isMatch = false;
 
-            // Fuzzy match: si el usuario dice "repo" y el juego es "R.E.P.O." (repo)
             if (cleanKey.includes(cleanUserQuery) || cleanUserQuery.includes(cleanKey) || cleanKey === cleanUserQuery) {
+                isMatch = true;
+            } else if (userKeywords.length > 0) {
+                // Chequeo 2: ¿Todas las palabras clave del usuario están en el nombre del archivo?
+                const allWordsMatch = userKeywords.every(kw => normalizedKey.includes(kw));
+                if (allWordsMatch) isMatch = true;
+            }
+
+            if (isMatch) {
                 if (appPath.startsWith("http")) {
                     command = platform === 'win32' ? `start "" "${appPath}"` : `open "${appPath}"`;
                 } else {
                     command = platform === 'win32' ? `start "" "${appPath}"` : `open "${appPath}"`;
                 }
-                console.log(`\n[Jarvis HDD] 🎯 Encontré un programa en tu disco duro que coincide: ${key}\nLanzando: ${appPath}`);
+                console.log(`\n[Jarvis HDD] 🎯 Encontré un programa/archivo en tu disco duro que coincide: ${key}\nLanzando: ${appPath}`);
                 break;
             }
         }
@@ -280,7 +297,8 @@ function handleSystemCommand(text) {
     }
 
     // 3. Extracción estándar de comandos del sistema
-    const match = lowerText.match(/(?:abre|abrir|abri|abrí|abrime|abríme|abrirme|inicia|iniciar|inici[aá]|arranca|arrancar|lanza|ejecuta|ejecutar|ir a|ve a|pon|ponme|reproduce)\s+(.+)/i);
+    const match = lowerText.match(/(?:abre|abrir|abri|abrí|abrime|abríme|abrirme|inicia|iniciar|inici[aá]|arranca|arrancar|lanza|ejecuta|ejecutar|ir a|ve a|pon|ponme|reproduce|busca|buscar|mostrame|muestrame|quiero ver)\s+(.+)/i);
+
 
     if (match) {
         let appToOpen = match[1].trim();
