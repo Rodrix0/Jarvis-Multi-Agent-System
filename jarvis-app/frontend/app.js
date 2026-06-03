@@ -18,9 +18,10 @@ const socket = io();
 // =================================================================
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition;
-let isSystemActive = false;  // true = escucha activa, false = dormido
+let isSystemActive = false;  // true = motor de reconocimiento encendido
+let isDormant = false;       // true = mic abierto pero solo escucha "activate"
 let isJarvisSpeaking = false;
-let isAwaitingFollowUp = false; // true = Jarvis hizo una pregunta y espera respuesta libre (sin filtro)
+let isAwaitingFollowUp = false;
 let followUpTimer = null;
 
 // Activa el modo "esperando respuesta" por N segundos
@@ -47,6 +48,13 @@ const ECHO_FILTER_PHRASES = [
     "entendido", "de acuerdo", "por supuesto",
     "a sus órdenes", "jarvis responde"
 ];
+
+// Normalizar texto: quitar acentos y pasar a minúsculas para comparaciones robustas
+function normalizeText(text) {
+    return text.toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, ''); // Elimina diacríticos (á→a, é→e, etc.)
+}
 
 function isEcho(text) {
     const lower = text.toLowerCase();
@@ -88,13 +96,46 @@ if (SpeechRecognition) {
             const transcript = event.results[i][0].transcript.trim();
             if (!transcript || transcript.length < 2) continue;
 
-            // Único filtro: anti-eco. Ignorar si suena como lo que Jarvis diría
+            const lower = transcript.toLowerCase();
+            const normalized = normalizeText(transcript); // sin acentos, todo minúscula
+
+            // --- APAGADO: interceptar ANTES de cualquier otra cosa ---
+            if (normalized.includes('apagate') || normalized.includes('apagarte')) {
+                isDormant = true;
+                setRingState('idle');
+                updateMicButtonUI();
+                jarvisBox.textContent = "Sistema en pausa. Decí 'Préndete' para reactivar.";
+                console.log('[Jarvis] 🔴 Modo dormido activado');
+                speak('Entendido, entrando en modo espera.');
+                continue;
+            }
+
+            // --- ENCENDIDO ---
+            if (normalized.includes('prendete') || normalized.includes('prenderte')) {
+                if (isDormant) {
+                    isDormant = false;
+                    setRingState('listening');
+                    updateMicButtonUI();
+                    jarvisBox.textContent = "Sistema activo. Esperando tus órdenes.";
+                    console.log('[Jarvis] 🟢 Modo dormido desactivado');
+                    speak('Estoy en línea. ¿Qué necesitás?');
+                }
+                continue;
+            }
+
+            // --- Si está dormido, bloquear TODO lo demás ---
+            if (isDormant) {
+                console.log('[Jarvis] 💤 Dormido, ignorando:', transcript);
+                continue;
+            }
+
+            // Único filtro: anti-eco
             if (isEcho(transcript)) {
                 console.log("[Jarvis] Eco detectado, ignorado:", transcript);
                 continue;
             }
 
-            // Todo lo demás va directo a Jarvis — sin filtros de palabras clave
+            // Todo lo demás va directo a Jarvis
             sendCommandToJarvis(transcript);
         }
     };
@@ -324,12 +365,16 @@ function setRingState(state) {
 }
 
 function updateMicButtonUI() {
-    if (isSystemActive) {
+    if (isSystemActive && !isDormant) {
         btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone"></i> ESCUCHA ACTIVA — Di tu orden directamente';
         btnToggleMic.classList.add('active');
         setRingState('listening');
+    } else if (isSystemActive && isDormant) {
+        btnToggleMic.innerHTML = '<i class="fa-solid fa-moon"></i> EN PAUSA — Decí "Préndete" para despertar';
+        btnToggleMic.classList.remove('active');
+        setRingState('idle');
     } else {
-        btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone-slash"></i> MICRÓFONO PAUSADO — Click para activar';
+        btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone-slash"></i> MICRÓFONO APAGADO — Click para activar';
         btnToggleMic.classList.remove('active');
         setRingState('idle');
     }
