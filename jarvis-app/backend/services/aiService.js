@@ -113,6 +113,15 @@ function inferDeterministicIntent(userText) {
         };
     }
 
+    // Generación de Imágenes Directa
+    if (/(crea|crear|generar|genera|haz|hazme|dibuja|dibujame|diseña).*(imagen|foto|fotografia|fotografía|dibujo|render|pintura|arte)/i.test(lower)) {
+        return {
+            action: 'generate_image',
+            target: text,
+            reply: 'Iniciando el motor de renderizado de imágenes. Espere un momento...'
+        };
+    }
+
     // Limpiar recordatorios.
     if (/(borra|borrar|limpia|elimina|eliminar).*(recordatorios|tareas)/i.test(text)) {
         return {
@@ -219,7 +228,8 @@ function recoverToolIntentFromModelContent(rawContent, userText = '') {
     const knownActions = [
         'send_whatsapp', 'send_email', 'search_web', 'open_app', 'schedule_task',
         'check_reminders', 'clear_reminders', 'create_document', 'generate_prompt',
-        'chat_casual', 'search_internet', 'develop_new_skill', 'build_software'
+        'chat_casual', 'search_internet', 'develop_new_skill', 'build_software',
+        'generate_image'
     ];
 
     let detectedAction = '';
@@ -529,7 +539,8 @@ async function getAIResponse(userText, activeMode, screenContext = null) {
             { type: "function", function: { name: "develop_new_skill", description: "CREA SCRIPTS DE PYTHON INTERNOS. ÚSALA SÓLO si el usuario usa las palabras mágicas 'aprende al...', 'quiero que aprendas a...', o 'escribe un script para mi sistema que...'. Te sirve para aprender a hacer tareas de PC que no sabes (ej: 'Aprende a apagar la pc', 'Aprende a sumar dados').", parameters: { type: "object", properties: { target: { type: "string", description: "El objetivo detallado del script que vas a programar en Python para cumplir la habilidad" }, reply: { type: "string", description: "Lo que le dirás repitiendo su orden (ej: 'Comenzando a desarrollar habilidad para bla bla')" } }, required: ["target", "reply"] } } },
             { type: "function", function: { name: "chat_casual", description: "Obligatorio: USAR ESTA HERRAMIENTA SIEMPRE QUE EL USUARIO HAGA CHARLA CASUAL, PREGUNTE LA HORA, EL DÍA, O PIDA TUS CAPACIDADES. Evita errores usando esto.", parameters: { type: "object", properties: { reply: { type: "string", description: "Respuesta conversacional natural al usuario calculada usando tu propio cerebro" } }, required: ["reply"] } } },
             { type: "function", function: { name: "search_internet", description: "USA ESTA CADA VEZ QUE PIDAN: Clima, Dolar, Cripto, Deportes, Noticias o la Hora en otros países.", parameters: { type: "object", properties: { target: { type: "string", enum: ["clima", "dolar", "cripto", "hora", "general"], description: "El sub-tipo. Si es futbol o definicion, usa 'general'." }, message: { type: "string", description: "La consulta (ciudad o tema)" } }, required: ["target", "message"] } } },
-            { type: "function", function: { name: "build_software", description: "OBLIGATORIA SI PIDEN HACER, CREAR O PROGRAMAR UNA PÁGINA WEB, APLICACIÓN O PROYECTO. Funciona como un Senior Software Engineer.", parameters: { type: "object", properties: { target: { type: "string", description: "Especificaciones de la web o el programa a realizar" }, reply: { type: "string", description: "Confirmación en voz alta (ej: 'Comenzando a desarrollar tu aplicación señor.')" } }, required: ["target", "reply"] } } }
+            { type: "function", function: { name: "build_software", description: "OBLIGATORIA SI PIDEN HACER, CREAR O PROGRAMAR UNA PÁGINA WEB, APLICACIÓN O PROYECTO. Funciona como un Senior Software Engineer.", parameters: { type: "object", properties: { target: { type: "string", description: "Especificaciones de la web o el programa a realizar" }, reply: { type: "string", description: "Confirmación en voz alta (ej: 'Comenzando a desarrollar tu aplicación señor.')" } }, required: ["target", "reply"] } } },
+            { type: "function", function: { name: "generate_image", description: "OBLIGATORIA SI EL USUARIO PIDE DIBUJAR, CREAR UNA IMAGEN, RENDER, FOTO O ARTE VISUAL.", parameters: { type: "object", properties: { target: { type: "string", description: "La descripción exacta de lo que quieres que aparezca en la imagen, en ingles o español." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } }
         ];
 
         try {
@@ -1225,28 +1236,158 @@ Por favor, redacta el informe académico EXTREMADAMENTE EXTENSO basándote ÚNIC
     Use ONLY backend data for products and cart. If product count is small, add rich sections to avoid empty layouts.`
                     : "";
 
-                const devPrompt = `You are an ELITE Senior Full-Stack Developer and UI/UX Expert.
-TASK: Build a complete, production-ready software solution based on this request: "${userText}".
+                // === DYNAMIC DESIGN THEME — Random per project ===
+                const designThemes = [
+                    {
+                        name: "Cyber Dark",
+                        bg: "#0a0f1e", surface: "#161b2e", elevated: "#1e2540",
+                        accent1: "#00e5ff", accent2: "#3b82f6", accent3: "#7c3aed",
+                        font: "Inter",
+                        style: "glassmorphism cards with cyan glow, neon borders, tech/futuristic feel"
+                    },
+                    {
+                        name: "Midnight Purple",
+                        bg: "#0d0a1a", surface: "#1a1229", elevated: "#231830",
+                        accent1: "#a855f7", accent2: "#ec4899", accent3: "#f59e0b",
+                        font: "Outfit",
+                        style: "rich purple/pink gradients, gold accents, luxury dark aesthetic"
+                    },
+                    {
+                        name: "Forest Terminal",
+                        bg: "#0a130a", surface: "#111f11", elevated: "#162216",
+                        accent1: "#4ade80", accent2: "#22c55e", accent3: "#84cc16",
+                        font: "JetBrains Mono",
+                        style: "matrix/terminal green on dark, monospace feel, hacker aesthetic"
+                    },
+                    {
+                        name: "Sunset Warm",
+                        bg: "#1a0f0a", surface: "#2a1810", elevated: "#331e12",
+                        accent1: "#f97316", accent2: "#ef4444", accent3: "#fbbf24",
+                        font: "Poppins",
+                        style: "warm orange/red gradients, ember glows, energetic feel"
+                    },
+                    {
+                        name: "Arctic Clean",
+                        bg: "#0f172a", surface: "#1e293b", elevated: "#334155",
+                        accent1: "#38bdf8", accent2: "#818cf8", accent3: "#34d399",
+                        font: "Inter",
+                        style: "clean slate blues, soft indigo accents, minimalist professional feel"
+                    },
+                    {
+                        name: "Rose Gold",
+                        bg: "#1a0e14", surface: "#2d1521", elevated: "#3d1c2d",
+                        accent1: "#f43f5e", accent2: "#fb7185", accent3: "#c084fc",
+                        font: "Outfit",
+                        style: "rose/pink/mauve palette, elegant feminine aesthetic, soft glows"
+                    },
+                    {
+                        name: "Ocean Depth",
+                        bg: "#020d18", surface: "#071e33", elevated: "#0c2d4a",
+                        accent1: "#06b6d4", accent2: "#0891b2", accent3: "#67e8f9",
+                        font: "Poppins",
+                        style: "deep ocean blues and teals, aqua highlights, clean and modern"
+                    },
+                    {
+                        name: "Volcanic",
+                        bg: "#120a02", surface: "#1f1108", elevated: "#2d190d",
+                        accent1: "#ff6b35", accent2: "#ff3d00", accent3: "#ffd600",
+                        font: "Outfit",
+                        style: "lava/volcanic orange-red, high contrast dark, bold dramatic aesthetic"
+                    }
+                ];
 
-${existingCodeCtx ? 'Current code context (IMPROVE AND EXPAND IT SIGNIFICANTLY. FIX ALL VISUAL BUGS):\n' + existingCodeCtx : ''}
+                // Smart theme picker: explicit request > random
+                const lowerUserText = userText.toLowerCase();
+                let theme = null;
 
-STRICT RULES:
-1. YOU MUST NOT REFUSE TO WRITE CODE. You are explicitly authorized and required to write full applications.
-2. NO apologies, NO "I cannot assist with that". ONLY raw code.
-3. OUTPUT PRODUCTION-LEVEL, EXHAUSTIVE CODE for the required stack.
-     - If the request is a web UI, include index.html, style.css, and script.js.
-     - If the request needs a backend, include server files and package config (package.json, requirements.txt, etc.).
-     - If the request is a CLI or script, include a README.md with usage and examples.
-     - Implement robust logic: input validation, error handling, empty states, and safe defaults.
-     - Use concise comments only for non-obvious logic.
-     - Design & UI/UX (when applicable): Use modern CSS (variables, grid, glassmorphism, gradients, soft shadows). If the user mentions a palette, you MUST use it.
-    - You are ENCOURAGED to use Tailwind CSS via CDN (<script src="https://cdn.tailwindcss.com"></script>) or FontAwesome for icons (<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">) to guarantee a beautiful result.
-${apiSpec ? apiSpec + "\n" : ''}4. Each file MUST be encapsulated using XML tags EXACTLY like this:
-<file name="relative/path/filename.ext">
-...file content...
-</file>
+                const themeKeywords = {
+                    "Cyber Dark":      ['cyber', 'cyberpunk', 'neon', 'futurista', 'tech'],
+                    "Midnight Purple": ['purple', 'purpura', 'lujoso', 'lujo', 'elegante', 'morado'],
+                    "Forest Terminal": ['terminal', 'hacker', 'matrix', 'consola'],
+                    "Sunset Warm":     ['sunset', 'naranja', 'calido', 'fuego', 'warm'],
+                    "Arctic Clean":    ['minimalista', 'limpio', 'profesional', 'arctic', 'clean'],
+                    "Rose Gold":       ['rosa', 'rosado', 'pink', 'suave', 'femenino'],
+                    "Ocean Depth":     ['oceano', 'marino', 'agua', 'ocean', 'teal'],
+                    "Volcanic":        ['volcanico', 'rojo', 'lava', 'volcanic', 'dramatico']
+                };
 
-5. DO NOT wrap the XML in markdown \`\`\` blocks. DO NOT output conversational text. ONLY the <file> blocks. Write ALL the actual code, DO NOT use placeholders like "// logic goes here". I want the FULL file.`;
+                for (const [themeName, keywords] of Object.entries(themeKeywords)) {
+                    if (keywords.some(kw => lowerUserText.includes(kw))) {
+                        theme = designThemes.find(t => t.name === themeName);
+                        console.log(`[Software Engineer] 🎨 Tema solicitado: ${themeName}`);
+                        break;
+                    }
+                }
+
+                if (!theme) {
+                    theme = designThemes[Math.floor(Math.random() * designThemes.length)];
+                    console.log(`[Software Engineer] 🎲 Tema aleatorio: ${theme.name}`);
+                }
+
+                const devPrompt = `You are a WORLD-CLASS Senior Full-Stack Engineer and UI/UX Designer. Your code is always deployed to production immediately.
+
+USER REQUEST: "${userText}"
+
+${existingCodeCtx ? '=== EXISTING CODE TO IMPROVE ===\n' + existingCodeCtx + '\n=== END EXISTING CODE ===\nIMPROVE AND SIGNIFICANTLY EXPAND THE ABOVE. Fix all visual and functional bugs.\n' : ''}
+=== DESIGN THEME FOR THIS PROJECT: "${theme.name}" ===
+Every project must feel UNIQUE. Follow this specific theme exactly:
+
+COLORS (use these exact values as CSS variables in :root):
+  --bg-main: ${theme.bg}
+  --bg-surface: ${theme.surface}
+  --bg-elevated: ${theme.elevated}
+  --accent-1: ${theme.accent1}  (primary CTA, main highlights)
+  --accent-2: ${theme.accent2}  (secondary elements, links)
+  --accent-3: ${theme.accent3}  (badges, tags, tertiary)
+  --text-primary: #ffffff
+  --text-secondary: rgba(255,255,255,0.6)
+  --border: rgba(255,255,255,0.08)
+
+TYPOGRAPHY: Import "${theme.font}" from Google Fonts. Use it for ALL text.
+  - Example: <link href="https://fonts.googleapis.com/css2?family=${theme.font.replace(' ', '+')}:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+VISUAL STYLE: ${theme.style}
+
+Import FontAwesome 6: <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+=== MANDATORY QUALITY RULES ===
+
+CSS REQUIREMENTS:
+- Glassmorphism cards: background: rgba(255,255,255,0.04); backdrop-filter: blur(20px); border: 1px solid var(--border); border-radius: 16px;
+- Gradient buttons: background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+- Gradient headings: background: linear-gradient(135deg, var(--accent-1), var(--accent-3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+- Sticky header: background: rgba(${parseInt(theme.bg.slice(1,3),16)},${parseInt(theme.bg.slice(3,5),16)},${parseInt(theme.bg.slice(5,7),16)},0.85); backdrop-filter: blur(20px);
+- ALL elements: transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1)
+
+ANIMATIONS — ALL MANDATORY:
+- @keyframes fadeInUp { from { opacity:0; transform:translateY(24px); } to { opacity:1; transform:translateY(0); } }
+- @keyframes glowPulse { 0%,100% { box-shadow: 0 0 20px ${theme.accent1}33; } 50% { box-shadow: 0 0 40px ${theme.accent1}66; } }
+- @keyframes slideInLeft { from { opacity:0; transform:translateX(-30px); } to { opacity:1; transform:translateX(0); } }
+- Staggered card entrance: animation: fadeInUp 0.5s ease both; animation-delay: calc(var(--i, 0) * 0.1s)
+- Hover cards: transform: translateY(-6px); box-shadow: 0 20px 40px ${theme.accent1}22
+- Hover buttons: transform: translateY(-2px); filter: brightness(1.2)
+- Click buttons: transform: scale(0.96)
+
+JAVASCRIPT FUNCTIONALITY — MUST ALL WORK:
+- Render ALL content dynamically from JS data arrays (minimum 6 realistic items)
+- Working search/filter that updates the DOM in real time
+- Working forms with validation (shake animation on error, glow on success)
+- localStorage for persistence (save user state between page reloads)
+- Toast notifications for feedback: success (green), error (red), info (theme accent color)
+- Loading state: show animated skeleton/spinner for 600-800ms before rendering
+
+LAYOUT:
+- CSS Grid for page layout, Flexbox for internal components
+- Fully responsive: 320px → 1920px
+- Semantic HTML5: <header>, <main>, <section>, <footer>, <nav>
+
+=== OUTPUT RULES ===
+1. Write COMPLETE files — no "// TODO", no placeholders, no shortcuts
+2. Minimum 3 files: index.html, style.css, script.js (add more if needed)
+3. Wrap each in XML: <file name="filename.ext">...full content...</file>
+4. NO markdown backtick fences. NO explanations. ONLY the XML file blocks.
+
+${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It MUST be visually stunning, unique to this theme, and 100% functional.`;
 
                 try {
                     // Forzamos uso de modelo óptimo para código si lo tenemos
@@ -1327,6 +1468,25 @@ ${apiSpec ? apiSpec + "\n" : ''}4. Each file MUST be encapsulated using XML tags
                 } catch (e) {
                     console.error("Error en build_software:", e);
                     return "Ocurrió un fallo en mi módulo de Software Engineering. Por favor, revise los logs.";
+                }
+            }
+
+            if (intent.action === "generate_image") {
+                try {
+                    const imageService = require('./imageService');
+                    console.log(`[Jarvis Artista] Recibida orden de imagen: ${intent.target}`);
+                    const finalPath = await imageService.generateImage(intent.target);
+                    
+                    // Abrir la imagen generada
+                    const { exec } = require('child_process');
+                    exec(`start "" "${finalPath}"`);
+                    
+                    conversationHistory.push({ role: "user", content: userText });
+                    conversationHistory.push({ role: "assistant", content: intent });
+                    return intent.reply || "He generado la imagen exitosamente y la he abierto en su pantalla.";
+                } catch (e) {
+                    console.error("Error en generate_image:", e);
+                    return "El motor de imágenes no pudo iniciarse o procesar su solicitud. " + e.message;
                 }
             }
 

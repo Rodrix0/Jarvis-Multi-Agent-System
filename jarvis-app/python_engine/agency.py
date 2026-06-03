@@ -208,11 +208,15 @@ async def generar_imagen_fisica(prompt: str, filename: str, project_path: str) -
     assets_dir = os.path.join(project_path, "assets")
     os.makedirs(assets_dir, exist_ok=True)
     out_path = os.path.join(assets_dir, filename)
+    
+    realistic_suffix = ", photorealistic, 8k resolution, highly detailed photograph, cinematic lighting, ultra-realistic, RAW photo, masterpiece, best quality"
+    negative_prompt = "cartoon, illustration, 3d render, low quality, bad anatomy, deformed, blurred, worst quality, text, watermark"
+    final_prompt = prompt + realistic_suffix
 
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             res = await client.post(FORGE_URL, json={
-                "prompt": prompt, "steps": 20, "width": 1024, "height": 1024,
+                "prompt": final_prompt, "negative_prompt": negative_prompt, "steps": 20, "width": 1024, "height": 1024,
             })
             if res.status_code == 200:
                 img_data = res.json().get("images", [None])[0]
@@ -232,7 +236,8 @@ async def _liberar_vram_forge() -> None:
     try:
         base = FORGE_URL.rsplit("/", 1)[0]
         async with httpx.AsyncClient(timeout=30) as client:
-            await client.post(f"{base}/interrupt")
+            await client.post(f"{base}/unload-checkpoint")
+            print("[Agency] Forge VRAM checkpoint unloaded.")
     except Exception:
         pass
 
