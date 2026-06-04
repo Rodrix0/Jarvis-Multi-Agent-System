@@ -172,8 +172,35 @@ async function openApp(appName, modeId = 'productividad') {
 
     // A. ¿Es un juego/programa nativo exacto?
     for (const [key, cmd] of Object.entries(pcGamesMap)) {
-        if (lowerApp === key || lowerApp === `el ${key}` || lowerApp.includes(key)) {
+        if (lowerApp === key || lowerApp === `el ${key}`) {
             command = platform === 'win32' ? cmd : `open "${key}"`;
+            break;
+        } else if (lowerApp.includes(key)) {
+            if (key === 'spotify') {
+                let query = lowerApp.replace(key, '').replace(/reproduce|pon|busca|buscar|en|cancion|canciones|playlist|de|la|el|los|las/gi, '').trim();
+                if (query.length > 0) {
+                    // Usar Spotify Web API si está autenticado
+                    const spotifyService = require('./spotifyService');
+                    if (spotifyService.isAuthenticated()) {
+                        try {
+                            const result = await spotifyService.searchAndPlay(query);
+                            console.log(`[Spotify API] ${result}`);
+                            return true;
+                        } catch (e) {
+                            console.error('[Spotify API] Error:', e.message);
+                            // Fallback: abrir Spotify normalmente
+                            command = platform === 'win32' ? cmd : `open "${key}"`;
+                        }
+                    } else {
+                        console.log('[Spotify] No autenticado. Abriendo app normalmente. Usa http://localhost:3000/api/spotify/login para conectar.');
+                        command = platform === 'win32' ? cmd : `open "${key}"`;
+                    }
+                } else {
+                    command = platform === 'win32' ? cmd : `open "${key}"`;
+                }
+            } else {
+                command = platform === 'win32' ? cmd : `open "${key}"`;
+            }
             break;
         }
     }

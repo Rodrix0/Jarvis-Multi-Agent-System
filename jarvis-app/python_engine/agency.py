@@ -426,14 +426,15 @@ IMAGE PATHS (use in <img src="...">):
 RULES:
 1. Output ONLY raw HTML starting with <!DOCTYPE html>.
 2. Include <script src="https://cdn.tailwindcss.com"></script> in head.
-3. Include <link rel="stylesheet" href="style.css"> in head.
-4. Build: Navbar with cart icon (id from contract), Hero section, Product Grid, Cart Sidebar, Footer.
-5. The Cart Sidebar must be hidden by default (translate-x-full) with the contract ID.
-6. Each product card must have an 'Add to Cart' button with the contract class AND data-id, data-name, data-price attributes.
-7. Use glassmorphism, rounded corners, smooth design. Map CSS vars: bg-[var(--color-bg)] etc.
-8. DO NOT use via.placeholder.com. Use the IMAGE PATHS above.
-9. DO NOT write ANY <script> tags or JavaScript. Add <script src="script.js" defer></script> before </body>.
-10. The product grid container must have id="{grid_id}".
+3. Build: Navbar with cart icon (id from contract), Hero section, Product Grid, Cart Sidebar, Footer.
+4. The Cart Sidebar must be hidden by default (translate-x-full) with the contract ID.
+5. Each product card must have an 'Add to Cart' button with the contract class AND data-id, data-name, data-price attributes.
+6. STYLING: You MUST use TailwindCSS classes exclusively. DO NOT write raw CSS.
+   - Example glassmorphism: `bg-white/10 backdrop-blur-md rounded-2xl`
+   - Use CSS variables in Tailwind style: `style="background-color: var(--color-bg); color: var(--color-text);"` for the body.
+7. DO NOT use via.placeholder.com. Use the IMAGE PATHS above.
+8. DO NOT write ANY <script> tags or JavaScript. Add <script src="script.js" defer></script> before </body>.
+9. The product grid container must have id="{grid_id}".
 
 OUTPUT: ONLY the HTML. No markdown fences. No JS logic."""
 

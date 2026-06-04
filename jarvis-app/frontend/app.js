@@ -23,6 +23,8 @@ let isDormant = false;       // true = mic abierto pero solo escucha "activate"
 let isJarvisSpeaking = false;
 let isAwaitingFollowUp = false;
 let followUpTimer = null;
+let lastSpokenWords = [];  // Palabras que Jarvis dijo recientemente (anti-eco inteligente)
+let lastSpokenTimestamp = 0;
 
 // Activa el modo "esperando respuesta" por N segundos
 function setAwaitingFollowUp(seconds = 30) {
@@ -58,7 +60,26 @@ function normalizeText(text) {
 
 function isEcho(text) {
     const lower = text.toLowerCase();
-    return ECHO_FILTER_PHRASES.some(phrase => lower.startsWith(phrase));
+    
+    // 1. Filtro clásico: frases que Jarvis suele decir
+    if (ECHO_FILTER_PHRASES.some(phrase => lower.startsWith(phrase))) return true;
+    
+    // 2. Filtro inteligente: comparar con lo que Jarvis acaba de decir
+    //    Si hace menos de 4 segundos que habló, cualquier fragmento reconocido
+    //    que se parezca a lo que dijo es eco.
+    if (lastSpokenWords.length > 0 && (Date.now() - lastSpokenTimestamp) < 4000) {
+        const inputWords = normalizeText(text).split(/\s+/).filter(w => w.length > 2);
+        if (inputWords.length === 0) return true;
+        
+        const spokenNorm = lastSpokenWords.map(w => normalizeText(w));
+        const matchCount = inputWords.filter(w => spokenNorm.some(sw => sw.includes(w) || w.includes(sw))).length;
+        const matchRatio = matchCount / inputWords.length;
+        
+        // Si más del 50% de las palabras reconocidas coinciden con lo que Jarvis dijo, es eco
+        if (matchRatio >= 0.5) return true;
+    }
+    
+    return false;
 }
 
 function sendCommandToJarvis(transcript) {
@@ -245,13 +266,12 @@ function speak(text, callback) {
     }
 
     utterance.onend = () => {
-        // Agregar un retraso para evitar que el micrófono capte el "eco" final de la sala
+        // Retraso generoso para que el eco de la sala se disipe por completo
         setTimeout(() => {
             isJarvisSpeaking = false;
             setRingState('idle');
             if (callback) callback();
-        }, 800); // 800 milisegundos de silencio
-
+        }, 1500); // 1.5 segundos de silencio post-habla
     };
 
     utterance.onerror = (e) => {
@@ -261,6 +281,10 @@ function speak(text, callback) {
             if(isSystemActive) setRingState('idle');
         }, 800);
     };
+
+    // Guardar las palabras que Jarvis va a decir para el filtro anti-eco
+    lastSpokenWords = text.split(/\s+/).filter(w => w.length > 2);
+    lastSpokenTimestamp = Date.now();
 
     window.speechSynthesis.speak(utterance);
 }

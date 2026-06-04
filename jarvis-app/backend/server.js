@@ -66,6 +66,42 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 });
 // ----------------------------------------------
 
+// --- SPOTIFY WEB API ROUTES ---
+const spotifyService = require('./services/spotifyService');
+
+// Ruta para iniciar la autenticación con Spotify (abrir en navegador)
+app.get('/api/spotify/login', (req, res) => {
+    const authUrl = spotifyService.getAuthURL();
+    res.redirect(authUrl);
+});
+
+// Callback de Spotify después de que el usuario autoriza
+app.get('/api/spotify/callback', async (req, res) => {
+    const { code, error } = req.query;
+    if (error) {
+        return res.send(`<h1>Error de Spotify</h1><p>${error}</p>`);
+    }
+    try {
+        await spotifyService.exchangeCodeForTokens(code);
+        res.send(`
+            <html>
+            <body style="background:#121212;color:#1DB954;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;flex-direction:column;">
+                <h1 style="font-size:3rem;">✅ Spotify Conectado</h1>
+                <p style="color:#fff;font-size:1.2rem;">Jarvis ahora puede controlar tu música. Puedes cerrar esta ventana.</p>
+            </body>
+            </html>
+        `);
+    } catch (e) {
+        res.status(500).send(`<h1>Error</h1><p>${e.message}</p>`);
+    }
+});
+
+// Verificar si Spotify está conectado
+app.get('/api/spotify/status', (req, res) => {
+    res.json({ connected: spotifyService.isAuthenticated() });
+});
+// ----------------------------------------------
+
 // API Rest para Modos (usado por el cliente cuando quiere crear nuevos modos usando la interfaz)
 app.get('/api/modes', (req, res) => {
     res.json(modeService.getAllModes());
@@ -129,6 +165,21 @@ app.post('/api/process_speech_local', async (req, res) => {
     res.json({ response: responseText });
 });
 
+// --- Memoria de contexto para follow-ups ---
+let lastUserCommand = '';
+let lastUserCommandTime = 0;
+
+// Excepciones: frases cortas que SON comandos válidos solos y no deben combinarse
+function isFollowUpException(lower) {
+    const exceptions = [
+        'si', 'sí', 'no', 'vale', 'ok', 'dale', 'listo', 'gracias',
+        'para', 'pausa', 'stop', 'basta', 'callate', 'cállate',
+        'apágate', 'apagate', 'préndete', 'prendete',
+        'qué hora es', 'que hora es', 'hola', 'jarvis',
+    ];
+    return exceptions.some(e => lower === e || lower === e + '.');
+}
+
 // Real-time voice processing y Eventos del Socket
 io.on('connection', (socket) => {
     console.log('[+] Interfaz conectada a Jarvis (Socket ID: ' + socket.id + ')');
@@ -141,9 +192,49 @@ io.on('connection', (socket) => {
 
     // Evento de procesamiento de voz (cuando Jarvis escucha al usuario)
     socket.on('process_speech', async (data) => {
-        const text = data.text;
-        const lowerText = text.toLowerCase();
+        let text = data.text;
         console.log(`[Usuario dice]: ${text}`);
+
+        // ─── MEMORIA DE CONTEXTO CONVERSACIONAL ────────────────────────
+        // Sistema inteligente que detecta cuando el usuario hace un
+        // follow-up a su comando anterior y los combina automáticamente.
+        const CONTEXT_WINDOW_MS = 20000; // 20 segundos de ventana
+        const now = Date.now();
+        const trimmed = text.trim();
+        const lower = trimmed.toLowerCase();
+        
+        // Detectar si es un follow-up (frase corta que no tiene sentido sola)
+        let isFollowUp = false;
+        
+        if (trimmed.length < 40 && lastUserCommand && (now - lastUserCommandTime) < CONTEXT_WINDOW_MS) {
+            // Patrón 1: Empieza con preposición/conector ("en Spotify", "de React", "con Python")
+            const startsWithConnector = /^(en|por|con|de|del|para|sobre|como|que|y|también|tambien|pero|o sea|eso|esto|lo mismo|ahí|ahi)\s/i.test(lower);
+            
+            // Patrón 2: Frase ultra-corta sin verbo (probablemente fragmento)
+            const isFragment = trimmed.length < 20 && !/^(abre|abrir|reproduce|busca|crea|genera|programa|activa|desactiva|apaga|enciende|muestra)/i.test(lower);
+            
+            // Patrón 3: Referencias explícitas al contexto anterior
+            const refersToContext = /(dame más|más detalles|lo mismo|otra vez|de nuevo|repite|repetilo|cambialo|modificalo|ahora|y eso|qué más|que más|cuánto|cuanto|dónde|donde|cuándo|cuando)/i.test(lower);
+            
+            if (startsWithConnector || (isFragment && !isFollowUpException(lower)) || refersToContext) {
+                isFollowUp = true;
+            }
+        }
+        
+        if (isFollowUp) {
+            const combined = `${lastUserCommand} ${text}`;
+            console.log(`[Contexto] 🧠 Combinando: "${lastUserCommand}" + "${text}" → "${combined}"`);
+            text = combined;
+        }
+        
+        // Guardar este comando como contexto (solo los sustanciales)
+        if (!isFollowUp && trimmed.length > 5) {
+            lastUserCommand = text;
+            lastUserCommandTime = now;
+        }
+        // ────────────────────────────────────────────────────────────────
+
+        const lowerText = text.toLowerCase();
 
         let responseText = "";
         let action = null;

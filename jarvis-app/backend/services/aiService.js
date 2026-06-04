@@ -1352,38 +1352,42 @@ Import FontAwesome 6: <link rel="stylesheet" href="https://cdnjs.cloudflare.com/
 
 === MANDATORY QUALITY RULES ===
 
-CSS REQUIREMENTS:
-- Glassmorphism cards: background: rgba(255,255,255,0.04); backdrop-filter: blur(20px); border: 1px solid var(--border); border-radius: 16px;
-- Gradient buttons: background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
-- Gradient headings: background: linear-gradient(135deg, var(--accent-1), var(--accent-3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-- Sticky header: background: rgba(${parseInt(theme.bg.slice(1,3),16)},${parseInt(theme.bg.slice(3,5),16)},${parseInt(theme.bg.slice(5,7),16)},0.85); backdrop-filter: blur(20px);
-- ALL elements: transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1)
+1. FRAMEWORK: You MUST use TailwindCSS via CDN in your HTML <head>:
+   <script src="https://cdn.tailwindcss.com"></script>
+   You MUST configure Tailwind in the <head> to use the CSS variables:
+   <script>
+     tailwind.config = {
+       theme: {
+         extend: {
+           colors: {
+             main: 'var(--bg-main)',
+             surface: 'var(--bg-surface)',
+             elevated: 'var(--bg-elevated)',
+             accent1: 'var(--accent-1)',
+             accent2: 'var(--accent-2)',
+             accent3: 'var(--accent-3)'
+           },
+           fontFamily: { sans: ['${theme.font}', 'sans-serif'] }
+         }
+       }
+     }
+   </script>
 
-ANIMATIONS — ALL MANDATORY:
-- @keyframes fadeInUp { from { opacity:0; transform:translateY(24px); } to { opacity:1; transform:translateY(0); } }
-- @keyframes glowPulse { 0%,100% { box-shadow: 0 0 20px ${theme.accent1}33; } 50% { box-shadow: 0 0 40px ${theme.accent1}66; } }
-- @keyframes slideInLeft { from { opacity:0; transform:translateX(-30px); } to { opacity:1; transform:translateX(0); } }
-- Staggered card entrance: animation: fadeInUp 0.5s ease both; animation-delay: calc(var(--i, 0) * 0.1s)
-- Hover cards: transform: translateY(-6px); box-shadow: 0 20px 40px ${theme.accent1}22
-- Hover buttons: transform: translateY(-2px); filter: brightness(1.2)
-- Click buttons: transform: scale(0.96)
+2. STYLING RULES (NO RAW CSS! USE TAILWIND CLASSES):
+- DO NOT write custom CSS for layout or colors. Use Tailwind.
+- For Glassmorphism use: \`bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl\`
+- For Buttons use: \`bg-gradient-to-r from-accent1 to-accent2 text-white font-bold py-3 px-6 rounded-xl hover:scale-105 transition-all shadow-lg hover:shadow-accent1/50\`
+- For Text Gradients use: \`bg-clip-text text-transparent bg-gradient-to-r from-accent1 to-accent3\`
+- For dark mode consistency, use \`bg-main text-white\` on the body.
 
-JAVASCRIPT FUNCTIONALITY — MUST ALL WORK:
-- Render ALL content dynamically from JS data arrays (minimum 6 realistic items)
-- Working search/filter that updates the DOM in real time
-- Working forms with validation (shake animation on error, glow on success)
-- localStorage for persistence (save user state between page reloads)
-- Toast notifications for feedback: success (green), error (red), info (theme accent color)
-- Loading state: show animated skeleton/spinner for 600-800ms before rendering
-
-LAYOUT:
-- CSS Grid for page layout, Flexbox for internal components
-- Fully responsive: 320px → 1920px
-- Semantic HTML5: <header>, <main>, <section>, <footer>, <nav>
+3. JAVASCRIPT FUNCTIONALITY:
+- Render content dynamically from JS arrays.
+- Interactive hover states and functional buttons.
+- Simple, working logic in script.js
 
 === OUTPUT RULES ===
-1. Write COMPLETE files — no "// TODO", no placeholders, no shortcuts
-2. Minimum 3 files: index.html, style.css, script.js (add more if needed)
+1. Write COMPLETE files. No "// TODO".
+2. You only need 2 files: index.html and script.js (Do NOT output style.css, Tailwind handles it).
 3. Wrap each in XML: <file name="filename.ext">...full content...</file>
 4. NO markdown backtick fences. NO explanations. ONLY the XML file blocks.
 
@@ -1637,8 +1641,8 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
         conversationHistory.push({ role: "user", content: userText });
         conversationHistory.push({ role: "assistant", content: intent });
 
-        if (conversationHistory.length > 10) {
-            conversationHistory = conversationHistory.slice(-10);
+        if (conversationHistory.length > 20) {
+            conversationHistory = conversationHistory.slice(-20);
         }
 
         return intent.reply || "He procesado la acción pero no generé respuesta hablada.";
