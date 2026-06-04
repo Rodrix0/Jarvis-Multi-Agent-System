@@ -55,7 +55,8 @@ const ECHO_FILTER_PHRASES = [
 function normalizeText(text) {
     return text.toLowerCase()
         .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, ''); // Elimina diacríticos (á→a, é→e, etc.)
+        .replace(/[\u0300-\u036f]/g, '') // Elimina diacríticos (á→a, é→e, etc.)
+        .replace(/[.,!?;:¡¿]/g, '');     // Elimina puntuación
 }
 
 function isEcho(text) {
@@ -266,6 +267,9 @@ function speak(text, callback) {
     }
 
     utterance.onend = () => {
+        // Reiniciar el contador anti-eco JUSTO cuando termina de hablar
+        lastSpokenTimestamp = Date.now();
+        
         // Retraso generoso para que el eco de la sala se disipe por completo
         setTimeout(() => {
             isJarvisSpeaking = false;
@@ -284,7 +288,6 @@ function speak(text, callback) {
 
     // Guardar las palabras que Jarvis va a decir para el filtro anti-eco
     lastSpokenWords = text.split(/\s+/).filter(w => w.length > 2);
-    lastSpokenTimestamp = Date.now();
 
     window.speechSynthesis.speak(utterance);
 }

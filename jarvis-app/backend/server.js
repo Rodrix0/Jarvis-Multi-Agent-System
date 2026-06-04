@@ -241,6 +241,44 @@ io.on('connection', (socket) => {
         let actionPayload = null;
 
         try {
+            // --- CATCH DESCARGAS MULTIMEDIA (yt-dlp) ---
+            const downloadKeywords = ['descarga', 'descargar', 'baja', 'bajar', 'guarda', 'guardar'];
+            const urlMatch = text.match(/(https?:\/\/[^\s]+)/);
+            
+            const isJustUrl = urlMatch && text.trim() === urlMatch[1];
+            
+            if (urlMatch && (downloadKeywords.some(w => lowerText.includes(w)) || isJustUrl)) {
+                const url = urlMatch[1];
+                const isAudio = /(musica|música|audio|cancion|canción|mp3)/i.test(lowerText);
+                
+                // Avisamos rápido que empezó
+                socket.emit('response', { 
+                    text: `Iniciando la descarga del ${isAudio ? 'audio' : 'video'}. Te avisaré en cuanto termine.`, 
+                    action: null 
+                });
+
+                // Lo mandamos al background
+                const downloadService = require('./services/downloadService');
+                downloadService.downloadMedia(url, isAudio)
+                    .then((dir) => {
+                        socket.emit('response', { 
+                            text: `He terminado de descargar el archivo. Lo guardé en tu carpeta de Descargas de Jarvis.`, 
+                            action: 'DOWNLOAD_COMPLETE'
+                        });
+                        // Abrir la carpeta
+                        require('child_process').exec(`explorer "${dir}"`);
+                    })
+                    .catch((err) => {
+                        socket.emit('response', { 
+                            text: `Hubo un error al intentar descargar el enlace. Asegurate de que sea un link válido.`, 
+                            action: null 
+                        });
+                    });
+                
+                return; // Cortar acá para no seguir procesando como IA
+            }
+            // -------------------------------------------
+
             // 0. Toggle de Observador/Estudio Activo
             const turnOnWords = ['activar observador', 'activa observador', 'activa el observador', 'modo observador', 'modo observación', 'modo observacion', 'estudio activo', 'inicia observador', 'enciende el observador'];
             const turnOffWords = ['desactivar observador', 'desactiva observador', 'apaga observador', 'apaga el observador', 'apaga observacion', 'apaga observación', 'desactiva estudio activo'];
