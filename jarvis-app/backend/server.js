@@ -244,6 +244,82 @@ io.on('connection', (socket) => {
         let actionPayload = null;
 
         try {
+            // --- CATCH DESCARGAS STREMIO (links locales 127.0.0.1:11470) ---
+            const stremioMatch = text.match(/(http:\/\/127\.0\.0\.1:11470\/[^\s]+)/i);
+            if (stremioMatch) {
+                const stremioUrl = stremioMatch[1];
+                console.log(`[Jarvis Streaming] Descargando desde Stremio: ${stremioUrl}`);
+                
+                socket.emit('response', { 
+                    text: `Iniciando descarga desde Stremio. Esto puede tardar dependiendo del tamaño. Te aviso cuando termine.`, 
+                    action: null 
+                });
+
+                const http = require('http');
+                const fs = require('fs');
+                const path = require('path');
+                const downloadDir = path.join(require('os').homedir(), 'Downloads', 'Jarvis_Pelis');
+                if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
+
+                const filename = `stremio_${Date.now()}.mp4`;
+                const filepath = path.join(downloadDir, filename);
+                const file = fs.createWriteStream(filepath);
+
+                http.get(stremioUrl, (res) => {
+                    const totalBytes = parseInt(res.headers['content-length'] || '0');
+                    let downloadedBytes = 0;
+                    let lastReportMB = 0;
+
+                    console.log(`[Jarvis Streaming] Conexion OK. Content-Length: ${totalBytes || 'desconocido'}. Descargando...`);
+
+                    res.on('data', (chunk) => {
+                        downloadedBytes += chunk.length;
+                        const mbDown = Math.floor(downloadedBytes / 1048576);
+                        
+                        // Reportar cada 50MB descargados
+                        if (mbDown >= lastReportMB + 50) {
+                            lastReportMB = mbDown;
+                            if (totalBytes > 0) {
+                                const mbTotal = (totalBytes / 1048576).toFixed(0);
+                                const percent = Math.floor((downloadedBytes / totalBytes) * 100);
+                                console.log(`[Jarvis Streaming] Progreso: ${percent}% (${mbDown}MB / ${mbTotal}MB)`);
+                                socket.emit('response', { 
+                                    text: `Descargando... ${percent}% (${mbDown}MB / ${mbTotal}MB)`, 
+                                    action: null 
+                                });
+                            } else {
+                                console.log(`[Jarvis Streaming] Progreso: ${mbDown}MB descargados...`);
+                                socket.emit('response', { 
+                                    text: `Descargando... ${mbDown}MB descargados`, 
+                                    action: null 
+                                });
+                            }
+                        }
+                    });
+
+                    res.pipe(file);
+                    file.on('finish', () => {
+                        file.close();
+                        const sizeMB = (downloadedBytes / 1048576).toFixed(1);
+                        console.log(`[Jarvis Streaming] Descarga completa: ${filepath} (${sizeMB}MB)`);
+                        socket.emit('response', { 
+                            text: `Descarga completa! ${sizeMB}MB guardados en Jarvis_Pelis.`, 
+                            action: 'DOWNLOAD_COMPLETE' 
+                        });
+                        require('child_process').exec(`explorer "${downloadDir}"`);
+                    });
+                }).on('error', (err) => {
+                    fs.unlink(filepath, () => {});
+                    console.error('[Jarvis Streaming] Error descargando:', err.message);
+                    socket.emit('response', { 
+                        text: `Error al descargar: ${err.message}. Asegurate de que Stremio este abierto.`, 
+                        action: null 
+                    });
+                });
+
+                return;
+            }
+
             // --- CATCH DESCARGAS MULTIMEDIA (yt-dlp) ---
             const downloadKeywords = ['descarga', 'descargar', 'baja', 'bajar', 'guarda', 'guardar'];
             const urlMatch = text.match(/(https?:\/\/[^\s]+)/);
@@ -288,7 +364,7 @@ io.on('connection', (socket) => {
                 const title = streamingMatch[1].trim();
                 console.log(`[Jarvis Streaming] Buscando: "${title}"`);
                 
-                const searchUrl = `https://web.stremio.com/#/search?search=${encodeURIComponent(title)}`;
+                const searchUrl = `stremio:///search?search=${encodeURIComponent(title)}`;
                 require('child_process').exec(`start "" "${searchUrl}"`);
                 
                 socket.emit('response', { 
