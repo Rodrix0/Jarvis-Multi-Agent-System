@@ -45,7 +45,7 @@
             <aside class="side-panel modes-panel">
                 <h3><i class="fa-solid fa-layer-group"></i> Modos de Operación</h3>
                 <ul id="modes-list" class="mode-list">
-                    <!-- DinÃ¡mico -->
+                    <!-- Dinámico -->
                 </ul>
                 <button id="btn-open-mode-modal" class="action-btn mt-10">
                     <i class="fa-solid fa-plus"></i> Crear Nuevo Modo
@@ -75,10 +75,10 @@
                             <i class="fa-solid fa-link"></i>
                             <input type="url" id="context-url" placeholder="Pegar URL web aquí para extraer texto...">
                         </div>
-                        <div class="context-group file-dropzone" id="dropzone" title="Arrastra tu(s) PDF(s) aquí o haz clic para subir">
+                        <div class="context-group file-dropzone" id="dropzone" title="Arrastra tu(s) PDF(s) o Imágenes aquí o haz clic para subir">
                             <i class="fa-solid fa-cloud-arrow-up"></i>
-                            <span id="dropzone-text">Arrastra múltiples archivos aquí (.pdf) o haz clic</span>
-                            <input type="file" id="context-file" accept=".pdf,.txt,.docx" style="display:none" multiple>
+                            <span id="dropzone-text">Arrastra archivos aquí (.pdf, .jpg, .png) o haz clic</span>
+                            <input type="file" id="context-file" accept=".pdf,.txt,.docx,.jpg,.jpeg,.png" style="display:none" multiple>
                             <input type="hidden" id="context-file-path">
                         </div>
                         <div class="context-group input-text">
@@ -114,6 +114,24 @@
                 </div>
                 <button type="submit" class="action-btn w-100">Guardar en Base de Datos</button>
             </form>
+        </div>
+    </div>
+
+    <!-- MODAL: INPAINTING CANVAS -->
+    <div id="inpainting-modal" class="modal hidden">
+        <div class="modal-content glass-panel" style="max-width: 800px; text-align: center;">
+            <span id="close-inpainting-modal" class="close">&times;</span>
+            <h2>Pincel Mágico (Edición con Máscara)</h2>
+            <p style="margin-bottom: 15px; font-size: 0.9em; opacity: 0.8;">Pinta la zona EXACTA que quieres modificar. Todo lo negro se mantendrá idéntico.</p>
+            <div style="display: flex; gap: 10px; justify-content: center; margin-bottom: 15px; align-items: center;">
+                <label>Pincel: <input type="range" id="brush-size" min="5" max="100" value="30" style="vertical-align: middle;"></label>
+                <button id="btn-clear-mask" class="hud-btn" style="display: inline-block;">Limpiar</button>
+                <button id="btn-save-mask" class="action-btn">Guardar Máscara</button>
+            </div>
+            <div style="position: relative; display: inline-block; box-shadow: 0 0 15px rgba(0,255,255,0.2);">
+                <img id="inpainting-bg" src="" style="max-width: 100%; max-height: 50vh; display: block; border-radius: 8px;">
+                <canvas id="inpainting-canvas" style="position: absolute; top: 0; left: 0; cursor: crosshair; opacity: 0.65; border-radius: 8px;"></canvas>
+            </div>
         </div>
     </div>
 

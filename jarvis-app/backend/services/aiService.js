@@ -472,7 +472,7 @@ async function fetchOllamaResponse(prompt) {
     }
 }
 
-async function getAIResponse(userText, activeMode, screenContext = null) {
+async function getAIResponse(userText, activeMode, screenContext = null, inpaintingMask = null) {
     try {
         // ── EARLY PATH DETECTION: si el usuario pasa una ruta, es EDICION directa ──
         const fs = require('fs');
@@ -480,7 +480,10 @@ async function getAIResponse(userText, activeMode, screenContext = null) {
         if (earlyPathMatch) {
             const detectedPath = earlyPathMatch[1].replace(/[.,;:]+$/, '');
             if (fs.existsSync(detectedPath)) {
-                console.log(`[Jarvis] 📂 Path detectado: ${detectedPath} → Python Editor`);
+                // Si es una imagen, no la mandamos al Python Editor (RAG), dejamos que la IA la vea para edit_image
+                const isImage = /\.(jpg|jpeg|png|webp|gif)$/i.test(detectedPath);
+                if (!isImage) {
+                    console.log(`[Jarvis] 📂 Path detectado: ${detectedPath} → Python Editor`);
                 try {
                     const pyRes = await fetch('http://127.0.0.1:8000/api/v1/query', {
                         method: 'POST',
@@ -498,6 +501,7 @@ async function getAIResponse(userText, activeMode, screenContext = null) {
                     }
                 } catch (e) {
                     console.warn("[Jarvis] Python Editor inalcanzable:", e.message);
+                }
                 }
             }
         }
@@ -540,7 +544,8 @@ async function getAIResponse(userText, activeMode, screenContext = null) {
             { type: "function", function: { name: "chat_casual", description: "Obligatorio: USAR ESTA HERRAMIENTA SIEMPRE QUE EL USUARIO HAGA CHARLA CASUAL, PREGUNTE LA HORA, EL DÍA, O PIDA TUS CAPACIDADES. Evita errores usando esto.", parameters: { type: "object", properties: { reply: { type: "string", description: "Respuesta conversacional natural al usuario calculada usando tu propio cerebro" } }, required: ["reply"] } } },
             { type: "function", function: { name: "search_internet", description: "USA ESTA CADA VEZ QUE PIDAN: Clima, Dolar, Cripto, Deportes, Noticias o la Hora en otros países.", parameters: { type: "object", properties: { target: { type: "string", enum: ["clima", "dolar", "cripto", "hora", "general"], description: "El sub-tipo. Si es futbol o definicion, usa 'general'." }, message: { type: "string", description: "La consulta (ciudad o tema)" } }, required: ["target", "message"] } } },
             { type: "function", function: { name: "build_software", description: "OBLIGATORIA SI PIDEN HACER, CREAR O PROGRAMAR UNA PÁGINA WEB, APLICACIÓN O PROYECTO. Funciona como un Senior Software Engineer.", parameters: { type: "object", properties: { target: { type: "string", description: "Especificaciones de la web o el programa a realizar" }, reply: { type: "string", description: "Confirmación en voz alta (ej: 'Comenzando a desarrollar tu aplicación señor.')" } }, required: ["target", "reply"] } } },
-            { type: "function", function: { name: "generate_image", description: "OBLIGATORIA SI EL USUARIO PIDE DIBUJAR, CREAR UNA IMAGEN, RENDER, FOTO O ARTE VISUAL.", parameters: { type: "object", properties: { target: { type: "string", description: "La descripción exacta de lo que quieres que aparezca en la imagen, en ingles o español." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } }
+            { type: "function", function: { name: "generate_image", description: "OBLIGATORIA SI EL USUARIO PIDE DIBUJAR, CREAR UNA IMAGEN, RENDER, FOTO O ARTE VISUAL DE CERO.", parameters: { type: "object", properties: { target: { type: "string", description: "OBLIGATORIO EN INGLÉS. Escribe un prompt DETALLADO describiendo exactamente la escena que el usuario pidió. Incluye: sujeto principal, composición, iluminación, estilo visual, colores. Ej: si pide 'un gato en la luna', escribe 'a fluffy orange cat sitting on the surface of the moon, Earth visible in the background, dramatic cinematic lighting, space photography'. NUNCA traduzcas literalmente, EXPANDE la descripción." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } },
+            { type: "function", function: { name: "edit_image", description: "OBLIGATORIA SI EL USUARIO PIDE EDITAR O MODIFICAR UNA IMAGEN QUE ACABA DE SUBIR O PROPORCIONAR.", parameters: { type: "object", properties: { target: { type: "string", description: "OBLIGATORIO EN INGLÉS. Describe SOLAMENTE lo que debe aparecer en la zona editada de la foto. NO describas la foto entera. Ej: si pide 'ponerle lentes', escribe 'stylish dark sunglasses on the face, realistic reflections'. Si pide 'pelo rubio', escribe 'bright blonde hair, natural highlights, silky texture'. Sé específico y visual." }, filepath: { type: "string", description: "La ruta del archivo." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } }
         ];
 
         try {
@@ -1491,6 +1496,32 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
                 } catch (e) {
                     console.error("Error en generate_image:", e);
                     return "El motor de imágenes no pudo iniciarse o procesar su solicitud. " + e.message;
+                }
+            }
+
+            if (intent.action === "edit_image") {
+                try {
+                    const imageService = require('./imageService');
+                    // Extraer la ruta directamente del userText porque el LLM a veces falla al parsear rutas absolutas de Windows
+                    const pathMatch = String(userText || '').match(/([A-Za-z]:\\[^\s,;]+)/);
+                    const filepath = intent.filepath || (pathMatch ? pathMatch[1] : null);
+                    
+                    if (!filepath) {
+                        return "Por favor, proporciona la ruta de la imagen o vuelve a subirla.";
+                    }
+                    
+                    console.log(`[Jarvis Artista] Recibida orden de edición de imagen: ${filepath} -> ${intent.target} | Mask: ${inpaintingMask ? "YES" : "NO"}`);
+                    const finalPath = await imageService.editImage(filepath, intent.target, 0.75, inpaintingMask);
+                    
+                    const { exec } = require('child_process');
+                    exec(`start "" "${finalPath}"`);
+                    
+                    conversationHistory.push({ role: "user", content: userText });
+                    conversationHistory.push({ role: "assistant", content: intent });
+                    return intent.reply || "He editado la foto y la he abierto en tu pantalla.";
+                } catch (e) {
+                    console.error("Error en edit_image:", e);
+                    return "No pude editar la imagen. " + e.message;
                 }
             }
 

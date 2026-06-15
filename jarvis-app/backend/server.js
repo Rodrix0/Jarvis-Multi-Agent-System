@@ -403,7 +403,7 @@ io.on('connection', (socket) => {
                 else {
                     const activeMode = modeService.getActiveMode();
                     const screenContext = observerService.getScreenContext();
-                    responseText = await aiService.getAIResponse(text, activeMode, screenContext);
+                    responseText = await aiService.getAIResponse(text, activeMode, screenContext, data.inpaintingMask);
                 }
             }
 

@@ -10,6 +10,9 @@ const btnOpenModeModal = document.getElementById('btn-open-mode-modal');
 const btnCloseModal = document.getElementById('close-modal');
 const modeForm = document.getElementById('mode-form');
 
+// Inpainting Global State
+let currentInpaintingMaskBase64 = null;
+
 // --- Socket.io Setup ---
 const socket = io(); 
 
@@ -96,11 +99,12 @@ function sendCommandToJarvis(transcript) {
     if (urlContext) queryToSend += " " + urlContext;
     if (fileContext) queryToSend += " " + fileContext;
 
-    socket.emit('process_speech', { text: queryToSend });
+    socket.emit('process_speech', { text: queryToSend, inpaintingMask: currentInpaintingMaskBase64 });
 
     document.getElementById('context-url').value = "";
     document.getElementById('context-file-path').value = "";
     document.getElementById('dropzone-text').textContent = "Arrastra múltiples archivos aquí (.pdf) o haz clic";
+    currentInpaintingMaskBase64 = null; // Clear mask after sending
 }
 
 if (SpeechRecognition) {
@@ -489,12 +493,13 @@ document.getElementById('btn-send-text').addEventListener('click', () => {
     if (urlContext) queryToSend += " " + urlContext;
     if (fileContext) queryToSend += " " + fileContext;
     
-    socket.emit('process_speech', { text: queryToSend });
+    socket.emit('process_speech', { text: queryToSend, inpaintingMask: currentInpaintingMaskBase64 });
     
     textInput.value = "";
     document.getElementById('context-url').value = "";
     document.getElementById('context-file-path').value = "";
     document.getElementById('dropzone-text').textContent = "Arrastra múltiples archivos aquí (.pdf) o haz clic";
+    currentInpaintingMaskBase64 = null; // Clear mask after sending
 });
 
 document.getElementById('manual-text-input').addEventListener('keypress', (e) => {
@@ -557,6 +562,17 @@ function uploadFile(file) {
             let parts = filePathInput.value.split(" | ").filter(i => i.trim());
             dropzoneText.textContent = `✅ ${parts.length} archivo(s) subido(s) listos`;
             console.log("Archivo guardado en:", data.filepath);
+
+            // Si es imagen, abrimos el canvas modal de Inpainting
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const inpaintingBg = document.getElementById('inpainting-bg');
+                    inpaintingBg.src = e.target.result;
+                    document.getElementById('inpainting-modal').classList.remove('hidden');
+                };
+                reader.readAsDataURL(file);
+            }
         } else {
             dropzoneText.textContent = "❌ Error subiendo archivo";
         }
@@ -572,8 +588,6 @@ function uploadFile(file) {
 
 const btnStop = document.getElementById('btn-stop-audio');
 
-
-
 if (btnStop) {
     btnStop.addEventListener('click', () => {
         window.speechSynthesis.cancel();
@@ -585,3 +599,76 @@ if (btnStop) {
 }
 
 function hideUXButtons() { const b2 = document.getElementById('btn-stop-audio'); if(b2) b2.style.display = 'none'; }
+
+// INPAINTING LOGIC
+const inpaintingModal = document.getElementById('inpainting-modal');
+const btnCloseInpainting = document.getElementById('close-inpainting-modal');
+const btnClearMask = document.getElementById('btn-clear-mask');
+const btnSaveMask = document.getElementById('btn-save-mask');
+const inpaintingBg = document.getElementById('inpainting-bg');
+const inpaintingCanvas = document.getElementById('inpainting-canvas');
+const brushSizeInput = document.getElementById('brush-size');
+
+let isPainting = false;
+let maskCtx = null;
+
+btnCloseInpainting.addEventListener('click', () => {
+    inpaintingModal.classList.add('hidden');
+});
+
+// Inicializar el canvas de mismo tamaño que la imagen al cargar
+inpaintingBg.addEventListener('load', () => {
+    inpaintingCanvas.width = inpaintingBg.width;
+    inpaintingCanvas.height = inpaintingBg.height;
+    maskCtx = inpaintingCanvas.getContext('2d');
+    maskCtx.lineCap = 'round';
+    maskCtx.lineJoin = 'round';
+    
+    // Fondo negro puro (área que no se modificará)
+    maskCtx.fillStyle = 'black';
+    maskCtx.fillRect(0, 0, inpaintingCanvas.width, inpaintingCanvas.height);
+});
+
+function drawMask(e) {
+    if (!isPainting || !maskCtx) return;
+    const rect = inpaintingCanvas.getBoundingClientRect();
+    // Calcular escala correcta si CSS deforma
+    const scaleX = inpaintingCanvas.width / rect.width;
+    const scaleY = inpaintingCanvas.height / rect.height;
+    
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    
+    maskCtx.lineWidth = brushSizeInput.value;
+    maskCtx.strokeStyle = "white"; // Blanco para el área que SÍ se modifica
+    
+    maskCtx.lineTo(x, y);
+    maskCtx.stroke();
+    maskCtx.beginPath();
+    maskCtx.moveTo(x, y);
+}
+
+inpaintingCanvas.addEventListener('mousedown', (e) => {
+    isPainting = true;
+    maskCtx.beginPath();
+    drawMask(e);
+});
+inpaintingCanvas.addEventListener('mousemove', drawMask);
+inpaintingCanvas.addEventListener('mouseup', () => { isPainting = false; maskCtx.beginPath(); });
+inpaintingCanvas.addEventListener('mouseleave', () => { isPainting = false; maskCtx.beginPath(); });
+
+btnClearMask.addEventListener('click', () => {
+    if (maskCtx) {
+        maskCtx.fillStyle = 'black';
+        maskCtx.fillRect(0, 0, inpaintingCanvas.width, inpaintingCanvas.height);
+    }
+});
+
+btnSaveMask.addEventListener('click', () => {
+    if (maskCtx) {
+        // Enviar al servidor como JPEG para asegurar que no hay canal alpha
+        currentInpaintingMaskBase64 = inpaintingCanvas.toDataURL('image/jpeg', 1.0);
+        inpaintingModal.classList.add('hidden');
+        document.getElementById('dropzone-text').textContent = "✅ Máscara lista. Escribe la edición y envía.";
+    }
+});

@@ -56,6 +56,30 @@ async function startForgeSilently() {
 }
 
 /**
+ * Cambia el modelo activo en Forge (sd_model_checkpoint).
+ * Toma unos segundos dependiendo de la memoria.
+ */
+async function switchModel(modelName) {
+    console.log(`[ImageService] Solicitando cambio de modelo a: ${modelName}...`);
+    try {
+        const response = await fetch(`${FORGE_URL}/sdapi/v1/options`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sd_model_checkpoint: modelName })
+        });
+        if (!response.ok) {
+            console.error(`[ImageService] Falló el cambio de modelo: HTTP ${response.status}`);
+            return false;
+        }
+        console.log(`[ImageService] Modelo cambiado exitosamente a ${modelName}.`);
+        return true;
+    } catch (e) {
+        console.error(`[ImageService] Error cambiando modelo a ${modelName}:`, e);
+        return false;
+    }
+}
+
+/**
  * Fuerza el estilo realista y genera la imagen
  */
 async function generateImage(userPrompt) {
@@ -69,14 +93,17 @@ async function generateImage(userPrompt) {
         }
     }
 
+    // Cambiar al modelo base (Juggernaut)
+    await switchModel('juggernautXL_ragnarokBy.safetensors');
+
     if (!fs.existsSync(UPLOAD_DIR)) {
         fs.mkdirSync(UPLOAD_DIR, { recursive: true });
     }
 
-    // Asegurar realismo inyectando sufijos obligatorios
-    const realisticSuffix = ", photorealistic, 8k resolution, highly detailed photograph, cinematic lighting, ultra-realistic, RAW photo, masterpiece, best quality";
-    const finalPrompt = userPrompt + realisticSuffix;
-    const negativePrompt = "cartoon, illustration, 3d render, low quality, bad anatomy, deformed, blurred, worst quality, text, watermark";
+    // Prompt engineering optimizado para Juggernaut XL
+    const qualitySuffix = ", (masterpiece:1.2), (best quality:1.2), highly detailed, sharp focus, professional photograph, 8k uhd, RAW photo";
+    const finalPrompt = userPrompt + qualitySuffix;
+    const negativePrompt = "(worst quality:1.4), (low quality:1.4), cartoon, illustration, 3d render, bad anatomy, deformed, blurred, text, watermark, mutated, ugly, extra limbs, extra fingers, poorly drawn face, duplicate, morbid";
 
     console.log(`[ImageService] Generando imagen: "${finalPrompt}"`);
     
@@ -87,10 +114,11 @@ async function generateImage(userPrompt) {
             body: JSON.stringify({
                 prompt: finalPrompt,
                 negative_prompt: negativePrompt,
-                steps: 20,
+                steps: 30,
+                cfg_scale: 6,
                 width: 1024,
                 height: 1024,
-                sampler_name: "Euler a"
+                sampler_name: "DPM++ 2M Karras"
             })
         });
 
@@ -140,8 +168,124 @@ async function unloadVRAM() {
     }
 }
 
+/**
+ * Edita una imagen existente usando img2img
+ */
+async function editImage(imagePath, userPrompt, denoisingStrength = 0.55, maskBase64 = null) {
+    const isOnline = await checkForgeStatus();
+    if (!isOnline) {
+        try {
+            await startForgeSilently();
+        } catch (e) {
+            throw new Error("No se pudo iniciar el generador de imágenes. " + e.message);
+        }
+    }
+
+    const useInpainting = maskBase64 != null;
+
+    if (useInpainting) {
+        // Juggernaut XL para Inpainting Realista
+        await switchModel('juggernautXL_ragnarokBy.safetensors');
+        if (maskBase64.startsWith('data:image')) maskBase64 = maskBase64.split(',')[1];
+    } else {
+        // Modelo viejo para edición sin máscara
+        await switchModel('instruct-pix2pix-00-22000.safetensors');
+    }
+
+    if (!fs.existsSync(UPLOAD_DIR)) {
+        fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    }
+
+    // Leer la imagen original y convertir a base64
+    let initImageBase64 = '';
+    try {
+        const fileData = fs.readFileSync(imagePath);
+        initImageBase64 = fileData.toString('base64');
+    } catch (e) {
+        throw new Error("No se pudo leer la imagen proporcionada: " + imagePath);
+    }
+
+    let finalPrompt = userPrompt;
+    let negativePrompt = "cartoon, illustration, 3d render, low quality, bad anatomy, deformed, blurred, worst quality, text, watermark, mutated, ugly";
+    
+    let payload = {};
+
+    if (useInpainting) {
+        const qualitySuffix = ", (masterpiece:1.2), (best quality:1.2), highly detailed, sharp focus, professional photograph, 8k uhd, RAW photo";
+        finalPrompt = userPrompt + qualitySuffix;
+        negativePrompt = "(worst quality:1.4), (low quality:1.4), cartoon, illustration, 3d render, bad anatomy, deformed, blurred, text, watermark, mutated, ugly, extra limbs, duplicate";
+        
+        payload = {
+            init_images: [initImageBase64],
+            mask: maskBase64,
+            prompt: finalPrompt,
+            negative_prompt: negativePrompt,
+            steps: 35,
+            cfg_scale: 5.5,
+            denoising_strength: 0.75,
+            sampler_name: "DPM++ 2M Karras",
+            inpaint_full_res: true,
+            inpaint_full_res_padding: 32,
+            inpainting_fill: 1,
+            mask_blur: 6
+        };
+        console.log(`[ImageService] INPAINTING con Juggernaut XL: "${finalPrompt}"`);
+    } else {
+        payload = {
+            init_images: [initImageBase64],
+            prompt: finalPrompt,
+            negative_prompt: negativePrompt,
+            steps: 30,
+            denoising_strength: 1.0,
+            image_cfg_scale: 1.5,
+            cfg_scale: 7.5,
+            sampler_name: "DPM++ 2M Karras",
+            mask: null,
+            include_init_images: false
+        };
+        console.log(`[ImageService] PIX2PIX (sin máscara): "${finalPrompt}"`);
+    }
+    
+    try {
+        const response = await fetch(`${FORGE_URL}/sdapi/v1/img2img`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP Error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const base64Image = data.images[0];
+        
+        if (!base64Image) {
+            throw new Error("El API no devolvió una imagen editada.");
+        }
+
+        const filename = `jarvis_edit_${Date.now()}.png`;
+        const filepath = path.join(UPLOAD_DIR, filename);
+
+        // Guardar la imagen física
+        fs.writeFileSync(filepath, Buffer.from(base64Image, 'base64'));
+        
+        console.log(`[ImageService] Imagen editada guardada en: ${filepath}`);
+        
+        // Iniciar proceso de descarga de modelo de la VRAM (asíncrono)
+        unloadVRAM();
+
+        return filepath;
+
+    } catch (e) {
+        console.error("[ImageService] Error editando imagen:", e);
+        throw e;
+    }
+}
+
 module.exports = {
     generateImage,
+    editImage,
     checkForgeStatus,
     unloadVRAM
 };
