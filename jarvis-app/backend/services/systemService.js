@@ -324,8 +324,9 @@ function handleSystemCommand(text) {
     }
 
     // 3. Extracción estándar de comandos del sistema
-    const match = lowerText.match(/(?:abre|abrir|abri|abrí|abrime|abríme|abrirme|inicia|iniciar|inici[aá]|arranca|arrancar|lanza|ejecuta|ejecutar|ir a|ve a|pon|ponme|reproduce|busca|buscar|mostrame|muestrame|quiero ver)\s+(.+)/i);
-
+    // NOTA: 'quiero ver', 'reproduce', 'busca' fueron REMOVIDOS de aquí
+    // para que las solicitudes de películas/series lleguen al LLM y use search_streaming.
+    const match = lowerText.match(/(?:abre|abrir|abri|abrí|abrime|abríme|abrirme|inicia|iniciar|inici[aá]|arranca|arrancar|lanza|ejecuta|ejecutar|ir a|ve a|pon|ponme)\s+(.+)/i);
 
     if (match) {
         let appToOpen = match[1].trim();
@@ -333,12 +334,19 @@ function handleSystemCommand(text) {
             appToOpen = appToOpen.slice(0, -1);
         }
 
+        // BYPASS STREAMING: Si lo que capturó parece una película/serie, dejamos que la IA lo maneje
+        const streamingKeywords = /^(la |el |los |las |una? )?(pelicula|serie|anime|documental|capitulo|temporada|episodio)/i;
+        const isNotApp = !/^(netflix|spotify|youtube|chrome|discord|steam|whatsapp|telegram|word|excel|powerpoint|visual studio|code|vscode|obs|lol|league|valorant|fortnite|epic games|stremio)/i.test(appToOpen);
+        
+        // Si NO es una app conocida y la frase original contiene "ver" o "poner", es streaming
+        if (isNotApp && (lowerText.includes('quiero ver') || lowerText.includes('poneme') || lowerText.includes('reproduce'))) {
+            return { isSystemCommand: false, isTraining: false };
+        }
+
         // 2. Detectar si la orden concreta es un COMANDO YA ENTRENADO por la red neuronal
-        // Se hace después del Regex general para capturar exactamente "lo que se quiere buscar" en lugar de hacer match al azar en medio de la frase
         if (fs.existsSync(customCommandsFile)) {
             try {
                 const commands = JSON.parse(fs.readFileSync(customCommandsFile, 'utf8'));
-                // Comprobar coincidencia exacta contra los entrenados
                 if (commands[appToOpen]) {
                     return { isSystemCommand: true, appName: commands[appToOpen], isLearned: true };
                 }

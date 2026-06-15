@@ -169,6 +169,9 @@ app.post('/api/process_speech_local', async (req, res) => {
 let lastUserCommand = '';
 let lastUserCommandTime = 0;
 
+// --- Memoria de resultados de streaming ---
+let lastStreamingResults = [];
+
 // Excepciones: frases cortas que SON comandos válidos solos y no deben combinarse
 function isFollowUpException(lower) {
     const exceptions = [
@@ -276,6 +279,23 @@ io.on('connection', (socket) => {
                     });
                 
                 return; // Cortar acá para no seguir procesando como IA
+            }
+            // -------------------------------------------
+
+            // --- CATCH STREAMING: "busca en pelis [titulo]" ---
+            const streamingMatch = lowerText.match(/busca(?:me)? en pelis?\s+(.+)/i);
+            if (streamingMatch) {
+                const title = streamingMatch[1].trim();
+                console.log(`[Jarvis Streaming] Buscando: "${title}"`);
+                
+                const searchUrl = `https://web.stremio.com/#/search?search=${encodeURIComponent(title)}`;
+                require('child_process').exec(`start "" "${searchUrl}"`);
+                
+                socket.emit('response', { 
+                    text: `Buscando "${title}" en Stremio. Selecciona el que quieras ver.`, 
+                    action: null 
+                });
+                return;
             }
             // -------------------------------------------
 
