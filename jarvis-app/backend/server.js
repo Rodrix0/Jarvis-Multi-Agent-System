@@ -13,9 +13,9 @@ const aiService = require('./services/aiService');
 const backgroundTuner = require('./services/backgroundTuner');
 const observerService = require('./services/observerService');
 const appDiscoveryService = require('./services/appDiscoveryService');
-const hotkeyService = require('./services/hotkeyService');
 const reminderService = require('./services/reminderService');
 const powerService = require('./services/powerService');
+const commandCatalog = require('./services/commandCatalog');
 const shopRoutes = require('./routes/shopRoutes');
 
 const app = express();
@@ -105,6 +105,10 @@ app.get('/api/spotify/status', (req, res) => {
 // API Rest para Modos (usado por el cliente cuando quiere crear nuevos modos usando la interfaz)
 app.get('/api/modes', (req, res) => {
     res.json(modeService.getAllModes());
+});
+
+app.get('/api/capabilities', (req, res) => {
+    res.json(commandCatalog);
 });
 
 app.post('/api/modes', (req, res) => {
@@ -413,6 +417,7 @@ io.on('connection', (socket) => {
                 const secPath = require('path').join(__dirname, 'data', 'security.json');
                 let sec = {"pin": selectedPin, "enabled": true};
                 fs.writeFileSync(secPath, JSON.stringify(sec, null, 4));
+                powerService.setSecurityEnabled(true);
 
                 responseText = `Iniciando proceso de entrenamiento biométrico en una ventana externa. Tu PIN temporal de respaldo es ${selectedPin}. Por favor, sigue las instrucciones en pantalla. El escudo quedará activado al finalizar.`;
             }
@@ -424,6 +429,7 @@ io.on('connection', (socket) => {
                     sec.enabled = false;
                     fs.writeFileSync(secPath, JSON.stringify(sec, null, 4));
                 }
+                powerService.setSecurityEnabled(false);
                 responseText = "Escudo biométrico de Windows desactivado. Tu computadora no será bloqueada al entrar en suspensión.";
                 action = "SECURITY_DISABLED";
             }
@@ -436,6 +442,7 @@ io.on('connection', (socket) => {
                     sec.enabled = true;
                 }
                 fs.writeFileSync(secPath, JSON.stringify(sec, null, 4));
+                powerService.setSecurityEnabled(true);
                 responseText = "Escudo Biométrico encendido y armado. Defenderé tu sistema en cuanto lo ordenes.";
                 action = "SECURITY_ENABLED";
             }

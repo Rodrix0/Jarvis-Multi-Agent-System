@@ -44,14 +44,17 @@ En la consola, ejecuta:
 npm start
 ```
 
-Deberías ver visualmente en consola que el servidor se activó.
+Deberías ver visualmente en consola que el servidor se activó. El escudo
+biométrico solo mantiene procesos residentes mientras está habilitado.
 
 ### 4. Abrir la Interfaz de Usuario
 Jarvis está diseñado para correr tanto en web como de interfaz. Simplemente dirígete a:
 **http://localhost:3000** 
 
 Verás la grandiosa interfaz de Jarvis.
-Haz click en el botón **INICIAR SISTEMA** inferior. El navegador te solicitará permisos de micrófono: ACÉPTALOS.
+Jarvis arranca en modo descanso. El navegador puede solicitar permiso de micrófono
+la primera vez: ACÉPTALO. Di **"Jarvis, prendete"** para comenzar a darle órdenes y
+**"Jarvis, apagate"** para volver al descanso. También puedes usar el botón o escribir.
 
 ---
 
@@ -64,6 +67,13 @@ Una vez encendido:
 - **Control de tu Windows:** Di *"Abrir Chrome"* o *"Abrir Calculadora"* para pedirle a tu Node.js local que ejecute un proceso hijo y abra el software.
 
 Disfruta desarrollando y escalando este increíble asistente interactivo.
+
+## Panel de funciones
+
+La columna **Funciones y comandos** muestra el catálogo actualizado de capacidades.
+Puedes buscar una función y hacer click en ella para preparar el comando; reemplaza
+los valores entre corchetes y presiona Enter. El catálogo también está disponible en
+`GET /api/capabilities`.
 
 ---
 

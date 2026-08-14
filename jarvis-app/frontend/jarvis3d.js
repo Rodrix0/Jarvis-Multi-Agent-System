@@ -3,6 +3,8 @@ class Jarvis3D {
         this.container = document.getElementById(containerId);
         this.state = 'idle'; // idle, listening, speaking
         this.time = 0;
+        this.animationTimer = null;
+        this.animationFrame = null;
 
         // Scene setup
         this.scene = new THREE.Scene();
@@ -12,9 +14,13 @@ class Jarvis3D {
         this.camera.position.z = 250; // Distance from the orb
 
         // Renderer setup
-        this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+        this.renderer = new THREE.WebGLRenderer({
+            alpha: true,
+            antialias: false,
+            powerPreference: 'low-power'
+        });
         this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
-        this.renderer.setPixelRatio(window.devicePixelRatio);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
         this.container.appendChild(this.renderer.domElement);
 
         // Core Group (holds everything to rotate together)
@@ -32,9 +38,13 @@ class Jarvis3D {
 
         // Handle Resize
         window.addEventListener('resize', () => this.resize());
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) this.stopAnimation();
+            else this.startAnimation();
+        });
 
         // Start animation
-        this.animate();
+        this.startAnimation();
     }
 
     buildJarvisCore() {
@@ -229,8 +239,6 @@ class Jarvis3D {
     }
 
     animate() {
-        requestAnimationFrame(() => this.animate());
-
         this.time += 0.01;
 
         let speedMult = 1;
@@ -267,6 +275,32 @@ class Jarvis3D {
 
         // Render scene
         this.renderer.render(this.scene, this.camera);
+        this.scheduleNextFrame();
+    }
+
+    scheduleNextFrame() {
+        if (document.hidden || this.animationTimer) return;
+        const frameDelay = this.state === 'idle' ? 100 : 34;
+        this.animationTimer = setTimeout(() => {
+            this.animationTimer = null;
+            this.animationFrame = requestAnimationFrame(() => {
+                this.animationFrame = null;
+                this.animate();
+            });
+        }, frameDelay);
+    }
+
+    startAnimation() {
+        if (document.hidden || this.animationTimer || this.animationFrame) return;
+        this.renderer.render(this.scene, this.camera);
+        this.scheduleNextFrame();
+    }
+
+    stopAnimation() {
+        if (this.animationTimer) clearTimeout(this.animationTimer);
+        if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
+        this.animationTimer = null;
+        this.animationFrame = null;
     }
 }
 

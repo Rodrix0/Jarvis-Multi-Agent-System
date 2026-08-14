@@ -3,6 +3,9 @@ const userBox = document.getElementById('user-transcript');
 const jarvisBox = document.getElementById('jarvis-response');
 const btnToggleMic = document.getElementById('btn-toggle-mic');
 const modesList = document.getElementById('modes-list');
+const capabilitiesList = document.getElementById('capabilities-list');
+const capabilitySearch = document.getElementById('capability-search');
+let capabilities = [];
 
 // Modal Elements
 const modeModal = document.getElementById('mode-modal');
@@ -22,7 +25,7 @@ const socket = io();
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition;
 let isSystemActive = false;  // true = motor de reconocimiento encendido
-let isDormant = false;       // true = mic abierto pero solo escucha "activate"
+let isDormant = true;        // true = mic abierto pero solo escucha la frase de activación
 let isJarvisSpeaking = false;
 let isAwaitingFollowUp = false;
 let followUpTimer = null;
@@ -279,6 +282,9 @@ function speak(text, callback) {
             isJarvisSpeaking = false;
             setRingState('idle');
             if (callback) callback();
+            if (recognition && isSystemActive) {
+                try { recognition.start(); } catch(e) {}
+            }
         }, 1500); // 1.5 segundos de silencio post-habla
     };
 
@@ -287,6 +293,9 @@ function speak(text, callback) {
         setTimeout(() => {
             isJarvisSpeaking = false;
             if(isSystemActive) setRingState('idle');
+            if (recognition && isSystemActive) {
+                try { recognition.start(); } catch(error) {}
+            }
         }, 800);
     };
 
@@ -312,6 +321,59 @@ socket.on('modes_updated', (modes) => {
     const activeId = activeItem ? activeItem.dataset.id : null;
     renderModes(modes, activeId);
 });
+
+function renderCapabilities(query = '') {
+    const normalizedQuery = normalizeText(query);
+    const visible = capabilities.filter(item => normalizeText(
+        `${item.category} ${item.name} ${item.description} ${item.command}`
+    ).includes(normalizedQuery));
+
+    if (visible.length === 0) {
+        capabilitiesList.innerHTML = '<p class="capabilities-empty">No encontré una función con ese nombre.</p>';
+        return;
+    }
+
+    capabilitiesList.innerHTML = '';
+    let currentCategory = '';
+    visible.forEach(item => {
+        if (item.category !== currentCategory) {
+            currentCategory = item.category;
+            const category = document.createElement('h4');
+            category.textContent = currentCategory;
+            capabilitiesList.appendChild(category);
+        }
+
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'capability-card';
+        card.innerHTML = `
+            <span class="capability-name">${item.name}</span>
+            <span class="capability-description">${item.description}</span>
+            <code>${item.command}</code>
+        `;
+        card.addEventListener('click', () => {
+            const textInput = document.getElementById('manual-text-input');
+            textInput.value = item.command;
+            textInput.focus();
+            textInput.setSelectionRange(0, textInput.value.length);
+            jarvisBox.textContent = 'Comando preparado. Reemplazá los datos entre corchetes y presioná Enter.';
+        });
+        capabilitiesList.appendChild(card);
+    });
+}
+
+fetch('/api/capabilities')
+    .then(response => response.ok ? response.json() : Promise.reject(new Error('Catálogo no disponible')))
+    .then(data => {
+        capabilities = data;
+        renderCapabilities();
+    })
+    .catch(error => {
+        console.error(error);
+        capabilitiesList.innerHTML = '<p class="capabilities-empty">No se pudo cargar el catálogo.</p>';
+    });
+
+capabilitySearch.addEventListener('input', event => renderCapabilities(event.target.value));
 
 socket.on('response', (data) => {
     speak(data.text, () => {
@@ -414,34 +476,44 @@ function updateMicButtonUI() {
 function startHandsFreeMode() {
     if (!recognition) return;
     isSystemActive = true;
+    isDormant = false;
     updateMicButtonUI();
     jarvisBox.textContent = "Sistema activo. Di 'Jarvis' o un comando directo (abre, busca, crea...).";
     try { recognition.start(); } catch(e) {}
 }
 
-function stopHandsFreeMode() {
+function startDormantMode() {
     if (!recognition) return;
-    isSystemActive = false;
+    isSystemActive = true;
+    isDormant = true;
     updateMicButtonUI();
-    jarvisBox.textContent = "Sistema dormido. Haz click en el micrófono para activar.";
-    try { recognition.stop(); } catch(e) {}
+    jarvisBox.textContent = 'Jarvis está en descanso. Decí "Jarvis, prendete" para activarlo.';
+    try { recognition.start(); } catch(e) {}
 }
 
 // Click en el botón: toggle encender/apagar
 btnToggleMic.addEventListener('click', (e) => {
     e.preventDefault();
-    if (isSystemActive) {
-        stopHandsFreeMode();
-    } else {
+    if (isSystemActive && !isDormant) {
+        isDormant = true;
+        updateMicButtonUI();
+        jarvisBox.textContent = 'Jarvis está en descanso. Decí "Jarvis, prendete" para activarlo.';
+    } else if (isSystemActive && isDormant) {
         startHandsFreeMode();
+    } else {
+        startDormantMode();
     }
 });
 
-// AUTO-ARRANQUE: Iniciar el sistema automáticamente al cargar la página
-window.addEventListener('load', () => {
-    setTimeout(() => {
-        startHandsFreeMode();
-    }, 1500); // Pequeño delay para que el navegador termine de inicializar
+// Arranca en descanso: mantiene únicamente el reconocimiento de la frase de
+// activación y bloquea todas las demás órdenes hasta oír "Jarvis, prendete".
+window.addEventListener('load', startDormantMode);
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden && isSystemActive && !isDormant) {
+        isDormant = true;
+        updateMicButtonUI();
+    }
 });
 
 

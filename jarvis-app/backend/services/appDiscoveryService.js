@@ -12,6 +12,11 @@ if (!fs.existsSync(dataDir)) {
 }
 
 function triggerBackgroundScan() {
+    const cacheMaxAgeMs = 7 * 24 * 60 * 60 * 1000;
+    if (fs.existsSync(appsPath) && Date.now() - fs.statSync(appsPath).mtimeMs < cacheMaxAgeMs) {
+        console.log('[App Discovery] Usando índice de aplicaciones en caché.');
+        return;
+    }
     console.log("\n[App Discovery] 🔍 Iniciando rastreo silencioso de aplicaciones instaladas...");
     // Aumentamos el buffer por si hay muchísimos archivos
     execFile('powershell', ['-ExecutionPolicy', 'Bypass', '-File', psScript], { maxBuffer: 1024 * 5000 }, (error, stdout) => {

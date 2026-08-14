@@ -77,11 +77,16 @@ async function studyAndOptimize() {
 }
 
 function startBackgroundStudying() {
-    // Al prender el servidor, esperar 8 segundos para no entorpecer el inicio, y estudiar
-    setTimeout(studyAndOptimize, 8000);
-    
-    // Dejarlo estudiando recursivamente cada hora en segundo plano para asimilar nueva memoria
-    setInterval(studyAndOptimize, 60 * 60 * 1000);
+    if (!fs.existsSync(memoriaFile)) return;
+
+    // Solo estudiar cuando la memoria cambió desde la última generación. El antiguo
+    // intervalo horario despertaba el equipo incluso cuando no había nada nuevo.
+    const memoryChanged = !fs.existsSync(comandosFile)
+        || fs.statSync(memoriaFile).mtimeMs > fs.statSync(comandosFile).mtimeMs;
+    if (!memoryChanged) return;
+
+    const timer = setTimeout(studyAndOptimize, 8000);
+    timer.unref();
 }
 
 module.exports = {

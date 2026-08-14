@@ -1,10 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-const cheerio = require('cheerio');
-const { exec } = require('child_process');
 const notifier = require('node-notifier');
 
 const remindersFile = path.join(__dirname, '..', 'data', 'recordatorios.json');
+let schedulerTimer = null;
+let schedulerIo = null;
 
 function initMemory() {
     if (!fs.existsSync(path.dirname(remindersFile))) {
@@ -35,6 +35,7 @@ function addLocalReminder(timeStr, action, target, message) {
         done: false
     });
     fs.writeFileSync(remindersFile, JSON.stringify(reminders, null, 2));
+    scheduleNextWake();
     return true;
 }
 
@@ -124,12 +125,7 @@ async function fetchExternalTasks() {
     }
 }
 
-// Loop cada 60 segundos
-function startScheduler(io) {
-    initMemory();
-    console.log("[Sistema Cronos] Reloj de recordatorios y automatizaciones encendido.");
-
-    setInterval(async () => {
+async function runDueReminders() {
         const now = new Date();
         const currentHours = now.getHours().toString().padStart(2, '0');
         const currentMinutes = now.getMinutes().toString().padStart(2, '0');
@@ -163,9 +159,9 @@ function startScheduler(io) {
                             showWindowsNotification("Jarvis - Éxito", `Se envió correctamente el mensaje a ${task.target}.`);
                             
                             // Le avisamos al usuario por voz si queremos o simplemente lo informamos en pantalla
-                            io.emit('jarvis_response', { 
-                                aiReply: "Acabo de enviar el mensaje programado a " + task.target,
-                                mood: "success"
+                            schedulerIo.emit('response', {
+                                text: "Acabo de enviar el mensaje programado a " + task.target,
+                                action: null
                             });
                         }
                     } catch (e) {
@@ -179,9 +175,9 @@ function startScheduler(io) {
                 } else if (task.action === "speak") {
                     showWindowsNotification("Jarvis - ¡Recordatorio!", task.message || "Es hora de la meta programada.");
                     
-                    io.emit('jarvis_response', { 
-                        aiReply: "¡Atención, señor! Recordatorio especial: " + task.message,
-                        mood: "success"
+                    schedulerIo.emit('response', {
+                        text: "¡Atención, señor! Recordatorio especial: " + task.message,
+                        action: null
                     });
                 }
             }
@@ -192,13 +188,50 @@ function startScheduler(io) {
             const pendingReminders = reminders.filter(r => !r.done);
             fs.writeFileSync(remindersFile, JSON.stringify(pendingReminders, null, 2));
         }
-    }, 60000); // 60 segundos
+
+        scheduleNextWake();
+}
+
+function millisecondsUntil(timeStr) {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(hours, minutes, 0, 0);
+    const isCurrentMinute = now.getHours() === hours && now.getMinutes() === minutes;
+    if (isCurrentMinute) return 50;
+    if (target <= now) target.setDate(target.getDate() + 1);
+    return target.getTime() - now.getTime();
+}
+
+function scheduleNextWake() {
+    if (!schedulerIo) return;
+    if (schedulerTimer) clearTimeout(schedulerTimer);
+    schedulerTimer = null;
+
+    const delays = getLocalReminders()
+        .filter(task => !task.done)
+        .map(task => millisecondsUntil(task.time))
+        .filter(delay => delay !== null);
+    if (delays.length === 0) return;
+
+    schedulerTimer = setTimeout(runDueReminders, Math.min(...delays) + 250);
+    schedulerTimer.unref();
+}
+
+// Se despierta exactamente al próximo recordatorio en lugar de sondear cada minuto.
+function startScheduler(io) {
+    initMemory();
+    schedulerIo = io;
+    console.log("[Sistema Cronos] Planificador de recordatorios bajo demanda encendido.");
+    scheduleNextWake();
 }
 
 // Borrar todas las tareas locales (alarmas/recordatorios)
 function clearLocalReminders() {
     initMemory();
     fs.writeFileSync(remindersFile, JSON.stringify([], null, 2));
+    scheduleNextWake();
     return true;
 }
 
