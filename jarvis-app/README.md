@@ -75,6 +75,51 @@ Puedes buscar una función y hacer click en ella para preparar el comando; reemp
 los valores entre corchetes y presiona Enter. El catálogo también está disponible en
 `GET /api/capabilities`.
 
+## Control de TV con BroadLink y Netflix
+
+Jarvis puede controlar una TV por infrarrojos con un BroadLink RM conectado a la
+misma red Wi-Fi. La configuración se hace desde **Configurar TV / BroadLink**:
+
+1. Configura primero el BroadLink en su aplicación móvil y asegúrate de permitir
+   el control local o desactivar el bloqueo del dispositivo.
+2. Pulsa **Buscar BroadLink**.
+   Si la búsqueda automática no lo encuentra, copia su IP desde la aplicación
+   BroadLink o desde el panel del router, escríbela en **IP manual** y guarda.
+3. Enseña como mínimo las teclas `POWER`, `ARRIBA`, `ABAJO`, `IZQUIERDA`,
+   `DERECHA` y `OK`, apuntando el control físico al BroadLink cuando el panel lo pida.
+4. Deja el arranque en 45 segundos y el perfil en posición 0 para la disposición
+   mostrada en la TV. La tecla `NETFLIX` es opcional si la TV ya inicia dentro de Netflix.
+5. Calibra cuántas pulsaciones hacia abajo hacen falta para llegar a la fila
+   **Continuar viendo**. En la pantalla mostrada, el valor inicial es 1.
+
+Comandos disponibles:
+
+- `Prendé la tele y poné Netflix`
+- `Abrí Netflix en la tele` / `Abrí Netflix en la compu`
+- `Abrí Netflix` (pregunta en qué dispositivo)
+- `Prendé la tele y poné The Walking Dead en Netflix`
+- `Poné The Walking Dead en Netflix` (si la TV ya está encendida)
+- `Continuá viendo mi contenido` (primer elemento de la fila)
+- `Continuá Haikyu` (búsqueda directa por título)
+- `Buscá una película de acción` (deja los resultados visibles)
+- `Dos a la derecha`, `Bajá`, `Subí`, `Volvé`
+- `Reproducí eso`
+- `Cancelá la automatización de la tele`
+
+Después de abrir Netflix en la TV, Jarvis mantiene durante 30 minutos el contexto de control
+de TV. En ese período las órdenes cortas de navegación se envían al BroadLink. Una
+orden con `buscá` deja los resultados visibles para elegir; `poné` o `reproducí`
+buscan y ejecutan el primer resultado. Si no indicás el dispositivo al decir
+`Abrí Netflix`, Jarvis pregunta si querés usar la TV o la computadora. Si el
+BroadLink no responde, utiliza la computadora como alternativa.
+
+La secuencia de arranque enciende la TV, espera 45 segundos, pulsa NETFLIX, confirma
+el perfil y luego permite buscar o navegar. Todos los tiempos relevantes pueden
+calibrarse desde el panel.
+
+La mayoría de controles usan una única señal `POWER` para encender y apagar; por eso
+no debes usar la frase `Prendé la tele` si ya está encendida.
+
 ---
 
 ## 🛡️ Configuración del Escudo Biométrico (Seguridad OS)

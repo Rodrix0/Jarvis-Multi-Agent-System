@@ -16,6 +16,8 @@ const appDiscoveryService = require('./services/appDiscoveryService');
 const reminderService = require('./services/reminderService');
 const powerService = require('./services/powerService');
 const commandCatalog = require('./services/commandCatalog');
+const tvService = require('./services/tvService');
+const tvVoiceService = require('./services/tvVoiceService');
 const shopRoutes = require('./routes/shopRoutes');
 
 const app = express();
@@ -111,6 +113,57 @@ app.get('/api/capabilities', (req, res) => {
     res.json(commandCatalog);
 });
 
+app.get('/api/tv/status', (req, res) => {
+    res.json(tvService.getPublicStatus());
+});
+
+app.post('/api/tv/settings', (req, res) => {
+    try {
+        res.json(tvService.saveSettings(req.body));
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/discover', async (req, res) => {
+    try {
+        res.json(await tvService.discover());
+    } catch (error) {
+        res.status(503).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/learn', async (req, res) => {
+    try {
+        res.json(await tvService.learnButton(String(req.body.button || '').toLowerCase()));
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/test', async (req, res) => {
+    try {
+        const button = String(req.body.button || '').toLowerCase();
+        await tvService.sendButtons([button], 300);
+        res.json({ ok: true, button });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/netflix', async (req, res) => {
+    try {
+        const result = await tvService.playNetflix(req.body, progress => io.emit('tv_progress', progress));
+        res.json({ ok: true, ...result });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/cancel', (req, res) => {
+    res.json({ ok: tvService.cancel() });
+});
+
 app.post('/api/modes', (req, res) => {
     const { name, description } = req.body;
     if (!name || !description) {
@@ -144,18 +197,25 @@ app.post('/api/process_speech_local', async (req, res) => {
 
     let responseText = "";
     try {
-        const sysCommand = systemService.handleSystemCommand(text);
-        
-        if (sysCommand.isSystemCommand) {
-            responseText = sysCommand.isLearned
-                ? `Comando aprendido detectado. Ejecutando ${sysCommand.appName}, señor.`
-                : `Abriendo ${sysCommand.appName}.`;
-            const activeMode = modeService.getActiveMode();
-            await systemService.openApp(sysCommand.appName, activeMode.id);
+        const tvIntent = tvVoiceService.parseTvIntent(text);
+        if (tvIntent?.action === 'setup') {
+            responseText = 'Abrí la interfaz web de Jarvis y entrá en Configurar TV para vincular el BroadLink.';
+        } else if (tvIntent) {
+            responseText = await executeTvIntent(tvIntent, progress => io.emit('tv_progress', progress));
         } else {
-            const activeMode = modeService.getActiveMode();
-            const screenContext = observerService.getScreenContext();
-            responseText = await aiService.getAIResponse(text, activeMode, screenContext);
+            const sysCommand = systemService.handleSystemCommand(text);
+
+            if (sysCommand.isSystemCommand) {
+                responseText = sysCommand.isLearned
+                    ? `Comando aprendido detectado. Ejecutando ${sysCommand.appName}, señor.`
+                    : `Abriendo ${sysCommand.appName}.`;
+                const activeMode = modeService.getActiveMode();
+                await systemService.openApp(sysCommand.appName, activeMode.id);
+            } else {
+                const activeMode = modeService.getActiveMode();
+                const screenContext = observerService.getScreenContext();
+                responseText = await aiService.getAIResponse(text, activeMode, screenContext);
+            }
         }
     } catch (error) {
         console.error(error);
@@ -185,6 +245,50 @@ function isFollowUpException(lower) {
         'qué hora es', 'que hora es', 'hola', 'jarvis',
     ];
     return exceptions.some(e => lower === e || lower === e + '.');
+}
+
+async function executeTvIntent(intent, onProgress) {
+    if (intent.action === 'cancel') {
+        tvVoiceService.deactivateSession();
+        return tvService.cancel() ? 'Cancelé la automatización de la televisión.' : 'Cerré el modo de control de TV.';
+    }
+    if (intent.action === 'navigate') {
+        tvVoiceService.activateSession();
+        await tvService.navigate(intent.button, intent.count);
+        return intent.count > 1
+            ? `Moví ${intent.label} ${intent.count} veces.`
+            : `Listo, ${intent.label}.`;
+    }
+    if (intent.action === 'choose_device') {
+        if (!await tvService.isAvailable()) {
+            tvVoiceService.clearDestinationPrompt();
+            await systemService.openApp('netflix', modeService.getActiveMode().id);
+            return 'El control de la TV no está disponible, así que abrí Netflix en la computadora.';
+        }
+        return '¿Querés abrir Netflix en la tele o en la computadora?';
+    }
+    if (intent.action === 'open_pc') {
+        tvVoiceService.clearDestinationPrompt();
+        tvVoiceService.deactivateSession();
+        await systemService.openApp('netflix', modeService.getActiveMode().id);
+        return 'Abriendo Netflix en la computadora.';
+    }
+    if (intent.action === 'continue_watching') {
+        tvVoiceService.activateSession();
+        const result = await tvService.playNetflix({
+            powerOn: intent.powerOn,
+            continueWatching: true
+        }, onProgress);
+        return result.message;
+    }
+    if (intent.action === 'search') {
+        tvVoiceService.activateSession();
+        const result = await tvService.searchNetflix(intent.title, { playFirst: intent.playFirst }, onProgress);
+        return result.message;
+    }
+    tvVoiceService.activateSession();
+    const result = await tvService.playNetflix(intent, onProgress);
+    return result.message;
 }
 
 // Real-time voice processing y Eventos del Socket
@@ -248,6 +352,35 @@ io.on('connection', (socket) => {
         let actionPayload = null;
 
         try {
+            const tvIntent = tvVoiceService.parseTvIntent(text);
+            if (tvIntent) {
+                if (tvIntent.action === 'setup') {
+                    socket.emit('response', {
+                        text: 'Abriendo la configuración del control BroadLink.',
+                        action: 'OPEN_TV_SETUP',
+                        actionPayload: null
+                    });
+                    return;
+                }
+
+                if (tvIntent.action === 'netflix') {
+                    const targetText = tvIntent.useDefaultSeries
+                        ? 'tu serie configurada'
+                        : (tvIntent.title || 'Netflix');
+                    socket.emit('response', {
+                        text: tvIntent.powerOn
+                            ? `Encendiendo la televisión. En aproximadamente un minuto pondré ${targetText}.`
+                            : `Controlando la televisión para poner ${targetText}.`,
+                        action: null,
+                        actionPayload: null
+                    });
+                }
+
+                responseText = await executeTvIntent(tvIntent, progress => socket.emit('tv_progress', progress));
+                socket.emit('response', { text: responseText, action: null, actionPayload: null });
+                return;
+            }
+
             // --- CATCH DESCARGAS STREMIO (links locales 127.0.0.1:11470) ---
             const stremioMatch = text.match(/(http:\/\/127\.0\.0\.1:11470\/[^\s]+)/i);
             if (stremioMatch) {

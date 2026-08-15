@@ -237,6 +237,32 @@ body::after {
 .capability-name { font-size: 0.8rem; font-weight: 600; }
 .capability-description { color: var(--text-secondary); font-size: 0.68rem; line-height: 1.35; }
 .capability-card code { color: var(--accent); font-size: 0.67rem; white-space: normal; }
+.tv-setup-shortcut { margin-bottom: 6px; padding: 10px; color: var(--accent); }
+
+.tv-modal-content { width: min(760px, 94vw); max-height: 90vh; overflow-y: auto; }
+.tv-modal-content h2 { margin-bottom: 8px; }
+.tv-modal-content h3 { margin: 22px 0 10px; color: var(--accent); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; }
+.tv-help { color: var(--text-secondary); font-size: 0.78rem; line-height: 1.45; margin-bottom: 14px; }
+.tv-status { padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 9px; margin-bottom: 10px; color: var(--text-secondary); font-size: 0.78rem; }
+.tv-status.ready { border-color: #22c55e; color: #86efac; }
+.tv-status.error { border-color: #ef4444; color: #fca5a5; }
+.tv-learn-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.tv-learn-grid button, .tv-test-row select, .tv-test-row input, .tv-settings-grid input {
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border-soft); border-radius: 8px;
+    padding: 10px; color: var(--text-primary); font-family: inherit;
+}
+.tv-learn-grid button { cursor: pointer; font-size: 0.72rem; }
+.tv-learn-grid button.learned { border-color: #22c55e; color: #86efac; }
+.tv-learn-grid button:disabled { opacity: 0.5; cursor: wait; }
+.tv-test-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.tv-test-row > input { flex: 1; min-width: 180px; }
+.tv-test-row .action-btn { width: auto; }
+.tv-settings-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.tv-settings-grid label { display: flex; flex-direction: column; gap: 6px; color: var(--text-secondary); font-size: 0.72rem; }
+.tv-settings-grid .tv-wide { grid-column: 1 / -1; }
+.tv-checkbox { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 0.72rem; }
+.tv-checkbox input { width: auto; }
+.tv-operation-message { min-height: 20px; margin-top: 10px; color: var(--accent); font-size: 0.78rem; }
 
 @media (max-width: 1180px) {
     .side-panel { width: 220px; }
@@ -251,6 +277,12 @@ body::after {
     .side-panel { width: 35%; min-height: 520px; }
     .center-panel { width: 65%; min-width: 0; }
     .capabilities-panel { width: 100%; max-height: 520px; border-left: 0; border-top: 1px solid var(--border-soft); }
+}
+
+@media (max-width: 600px) {
+    .tv-learn-grid { grid-template-columns: repeat(2, 1fr); }
+    .tv-settings-grid { grid-template-columns: 1fr; }
+    .tv-settings-grid .tv-wide { grid-column: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

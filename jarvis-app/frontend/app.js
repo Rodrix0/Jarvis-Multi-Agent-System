@@ -6,6 +6,9 @@ const modesList = document.getElementById('modes-list');
 const capabilitiesList = document.getElementById('capabilities-list');
 const capabilitySearch = document.getElementById('capability-search');
 let capabilities = [];
+const tvModal = document.getElementById('tv-modal');
+const tvStatus = document.getElementById('tv-status');
+const tvOperationMessage = document.getElementById('tv-operation-message');
 
 // Modal Elements
 const modeModal = document.getElementById('mode-modal');
@@ -375,11 +378,164 @@ fetch('/api/capabilities')
 
 capabilitySearch.addEventListener('input', event => renderCapabilities(event.target.value));
 
+async function tvApi(path, options = {}) {
+    const response = await fetch(path, {
+        ...options,
+        headers: options.body ? { 'Content-Type': 'application/json', ...(options.headers || {}) } : options.headers
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Falló la operación de TV.');
+    return payload;
+}
+
+function renderTvStatus(status) {
+    const learned = new Set(status.learnedButtons || []);
+    document.querySelectorAll('[data-tv-learn]').forEach(button => {
+        button.classList.toggle('learned', learned.has(button.dataset.tvLearn));
+        const cleanLabel = button.textContent.replace(/^✓\s*/, '');
+        button.textContent = learned.has(button.dataset.tvLearn) ? `✓ ${cleanLabel}` : cleanLabel;
+    });
+
+    const blocked = status.device?.authenticated === false;
+    tvStatus.className = `tv-status ${blocked ? 'error' : (status.configured ? 'ready' : '')}`;
+    tvStatus.textContent = blocked
+        ? `BroadLink detectado en ${status.device.host}, pero el control local está bloqueado desde la app.`
+        : (status.configured
+            ? `BroadLink conectado en ${status.device.host}. ${learned.size} tecla(s) aprendida(s).`
+            : 'BroadLink todavía no configurado.');
+
+    const settings = status.netflix || {};
+    document.getElementById('tv-boot-wait').value = Math.round((settings.bootWaitMs || 45000) / 1000);
+    document.getElementById('tv-profile-wait').value = Math.round((settings.profileLoadMs || 8000) / 1000);
+    document.getElementById('tv-profile-index').value = settings.profileDownPresses || 0;
+    document.getElementById('tv-continue-down').value = settings.continueWatchingDownPresses ?? 1;
+    document.getElementById('tv-continue-right').value = settings.continueWatchingRightPresses || 0;
+    document.getElementById('tv-key-delay').value = settings.keyDelayMs || 350;
+    document.getElementById('tv-use-netflix-key').checked = settings.pressNetflixAfterBoot === true;
+    document.getElementById('tv-confirm-play').checked = settings.pressPlayAfterResult !== false;
+    document.getElementById('tv-device-ip').value = status.device?.host || '';
+}
+
+async function loadTvStatus() {
+    try {
+        renderTvStatus(await tvApi('/api/tv/status'));
+    } catch (error) {
+        tvStatus.className = 'tv-status error';
+        tvStatus.textContent = error.message;
+    }
+}
+
+function openTvModal() {
+    tvModal.classList.remove('hidden');
+    loadTvStatus();
+}
+
+document.getElementById('btn-open-tv-modal').addEventListener('click', openTvModal);
+document.getElementById('close-tv-modal').addEventListener('click', () => tvModal.classList.add('hidden'));
+
+document.getElementById('btn-tv-discover').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    tvStatus.className = 'tv-status';
+    tvStatus.textContent = 'Buscando BroadLink en la red local…';
+    try {
+        renderTvStatus(await tvApi('/api/tv/discover', { method: 'POST' }));
+    } catch (error) {
+        tvStatus.className = 'tv-status error';
+        tvStatus.textContent = error.message;
+    } finally {
+        button.disabled = false;
+    }
+});
+
+document.querySelectorAll('[data-tv-learn]').forEach(button => {
+    button.addEventListener('click', async () => {
+        const key = button.dataset.tvLearn;
+        document.querySelectorAll('[data-tv-learn]').forEach(item => { item.disabled = true; });
+        tvOperationMessage.textContent = `Ahora apuntá el control físico al BroadLink y presioná ${key.toUpperCase()}. Tenés 20 segundos.`;
+        try {
+            const status = await tvApi('/api/tv/learn', {
+                method: 'POST',
+                body: JSON.stringify({ button: key })
+            });
+            renderTvStatus(status);
+            tvOperationMessage.textContent = `Tecla ${key.toUpperCase()} aprendida correctamente.`;
+        } catch (error) {
+            tvOperationMessage.textContent = error.message;
+        } finally {
+            document.querySelectorAll('[data-tv-learn]').forEach(item => { item.disabled = false; });
+        }
+    });
+});
+
+document.getElementById('btn-tv-test').addEventListener('click', async () => {
+    const button = document.getElementById('tv-test-button').value;
+    tvOperationMessage.textContent = `Enviando ${button.toUpperCase()}…`;
+    try {
+        await tvApi('/api/tv/test', { method: 'POST', body: JSON.stringify({ button }) });
+        tvOperationMessage.textContent = `Tecla ${button.toUpperCase()} enviada.`;
+    } catch (error) {
+        tvOperationMessage.textContent = error.message;
+    }
+});
+
+document.getElementById('btn-tv-save').addEventListener('click', async () => {
+    const settings = {
+        deviceHost: document.getElementById('tv-device-ip').value,
+        bootWaitMs: Number(document.getElementById('tv-boot-wait').value) * 1000,
+        profileLoadMs: Number(document.getElementById('tv-profile-wait').value) * 1000,
+        profileDownPresses: Number(document.getElementById('tv-profile-index').value),
+        continueWatchingDownPresses: Number(document.getElementById('tv-continue-down').value),
+        continueWatchingRightPresses: Number(document.getElementById('tv-continue-right').value),
+        keyDelayMs: Number(document.getElementById('tv-key-delay').value),
+        pressNetflixAfterBoot: document.getElementById('tv-use-netflix-key').checked,
+        pressPlayAfterResult: document.getElementById('tv-confirm-play').checked
+    };
+    try {
+        renderTvStatus(await tvApi('/api/tv/settings', { method: 'POST', body: JSON.stringify(settings) }));
+        tvOperationMessage.textContent = 'Calibración guardada.';
+    } catch (error) {
+        tvOperationMessage.textContent = error.message;
+    }
+});
+
+document.getElementById('btn-tv-run').addEventListener('click', async () => {
+    const runButton = document.getElementById('btn-tv-run');
+    runButton.disabled = true;
+    tvOperationMessage.textContent = 'Iniciando secuencia Netflix…';
+    try {
+        const result = await tvApi('/api/tv/netflix', {
+            method: 'POST',
+            body: JSON.stringify({
+                title: document.getElementById('tv-netflix-title').value,
+                powerOn: document.getElementById('tv-power-on-test').checked
+            })
+        });
+        tvOperationMessage.textContent = result.message;
+    } catch (error) {
+        tvOperationMessage.textContent = error.message;
+    } finally {
+        runButton.disabled = false;
+    }
+});
+
+document.getElementById('btn-tv-cancel').addEventListener('click', async () => {
+    await tvApi('/api/tv/cancel', { method: 'POST' });
+    tvOperationMessage.textContent = 'Automatización cancelada.';
+});
+
+socket.on('tv_progress', progress => {
+    tvOperationMessage.textContent = progress.message;
+    jarvisBox.textContent = progress.message;
+});
+
 socket.on('response', (data) => {
     speak(data.text, () => {
         // Ejecutar acciones visuales una vez termine de hablar
         if (data.action === "OPEN_MODE_MENU") {
             modeModal.classList.remove('hidden');
+        } else if (data.action === "OPEN_TV_SETUP") {
+            openTvModal();
         } else if (data.action === "MODE_CHANGED") {
             document.querySelectorAll('.mode-list li').forEach(li => li.classList.remove('active'));
             const targetLi = document.querySelector(`.mode-list li[data-id="${data.actionPayload}"]`);

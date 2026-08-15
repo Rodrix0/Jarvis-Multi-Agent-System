@@ -4,6 +4,7 @@ node_modules/
 # Jarvis Memory and Databases
 backend/data/memoria.json
 backend/data/modes.json
+backend/data/broadlink.json
 
 # OS
 .DS_Store
