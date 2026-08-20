@@ -34,6 +34,8 @@ let isAwaitingFollowUp = false;
 let followUpTimer = null;
 let lastSpokenWords = [];  // Palabras que Jarvis dijo recientemente (anti-eco inteligente)
 let lastSpokenTimestamp = 0;
+let speechRunId = 0;
+let recognitionRestartTimer = null;
 
 // Activa el modo "esperando respuesta" por N segundos
 function setAwaitingFollowUp(seconds = 30) {
@@ -92,7 +94,7 @@ function isEcho(text) {
     return false;
 }
 
-function sendCommandToJarvis(transcript) {
+function sendCommandToJarvis(transcript, voiceMeta = {}) {
     console.log("[Jarvis] → Enviando:", transcript);
     userBox.textContent = `"${transcript}"`;
     jarvisBox.textContent = "Analizando...";
@@ -104,8 +106,18 @@ function sendCommandToJarvis(transcript) {
     let queryToSend = transcript;
     if (urlContext) queryToSend += " " + urlContext;
     if (fileContext) queryToSend += " " + fileContext;
+    const contextSuffix = `${urlContext ? ` ${urlContext}` : ''}${fileContext ? ` ${fileContext}` : ''}`;
+    const alternativesWithContext = Array.isArray(voiceMeta.alternatives)
+        ? voiceMeta.alternatives.map(item => ({ ...item, transcript: `${item.transcript}${contextSuffix}` }))
+        : undefined;
 
-    socket.emit('process_speech', { text: queryToSend, inpaintingMask: currentInpaintingMaskBase64 });
+    socket.emit('process_speech', {
+        text: queryToSend,
+        source: 'voice',
+        alternatives: alternativesWithContext,
+        confidence: voiceMeta.confidence,
+        inpaintingMask: currentInpaintingMaskBase64
+    });
 
     document.getElementById('context-url').value = "";
     document.getElementById('context-file-path').value = "";
@@ -113,76 +125,120 @@ function sendCommandToJarvis(transcript) {
     currentInpaintingMaskBase64 = null; // Clear mask after sending
 }
 
+function normalizeActivationText(text) {
+    return normalizeText(text)
+        .replace(/\b(?:yarvis|jarbis|charvis|harvis)\b/g, 'jarvis')
+        .replace(/\bprende\s+(?:te|de)\b/g, 'prendete')
+        .replace(/\bapaga\s+(?:te|de)\b/g, 'apagate')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function isWakeCommand(text) {
+    const normalized = normalizeActivationText(text);
+    if (/\b(tele|television|tv|netflix)\b/.test(normalized)) return false;
+    return /\b(prendete|prenderte|despertate|despierta|reactivate)\b/.test(normalized)
+        || (/\bjarvis\b/.test(normalized) && /\b(prende|encende|activa|desperta)\w*\b/.test(normalized));
+}
+
+function isSleepCommand(text) {
+    const normalized = normalizeActivationText(text);
+    if (/\b(tele|television|tv|netflix)\b/.test(normalized)) return false;
+    return /\b(apagate|apagarte|dormite|descansa)\b/.test(normalized)
+        || (/\bjarvis\b/.test(normalized) && /\b(apaga|dormi|descansa)\w*\b/.test(normalized));
+}
+
+function restartRecognition(delay = 300) {
+    clearTimeout(recognitionRestartTimer);
+    recognitionRestartTimer = setTimeout(() => {
+        if (!recognition || !isSystemActive || isJarvisSpeaking) return;
+        try { recognition.start(); } catch(error) {}
+    }, delay);
+}
+
+function handleRecognizedTranscript(transcript, alternatives = []) {
+    if (!transcript || transcript.length < 2 || isJarvisSpeaking) return;
+    const normalized = normalizeActivationText(transcript);
+
+    if (isSleepCommand(normalized)) {
+        isDormant = true;
+        setRingState('idle');
+        updateMicButtonUI();
+        jarvisBox.textContent = "Sistema en pausa. Decí 'Préndete' para reactivar.";
+        console.log('[Jarvis] 🔴 Modo dormido activado');
+        speak('Entendido, entrando en modo espera.');
+        return;
+    }
+
+    if (isWakeCommand(normalized)) {
+        if (isDormant) {
+            isDormant = false;
+            setRingState('listening');
+            updateMicButtonUI();
+            jarvisBox.textContent = 'Sistema activo. Esperando tus órdenes.';
+            console.log('[Jarvis] 🟢 Modo dormido desactivado');
+            speak('Estoy en línea. ¿Qué necesitás?');
+        }
+        return;
+    }
+
+    if (isDormant) {
+        console.log('[Jarvis] 💤 Dormido, ignorando:', transcript);
+        return;
+    }
+    if (isEcho(transcript)) {
+        console.log('[Jarvis] Eco detectado, ignorado:', transcript);
+        return;
+    }
+
+    const selected = alternatives.find(item => item.transcript === transcript) || alternatives[0] || {};
+    sendCommandToJarvis(transcript, { confidence: selected.confidence, alternatives });
+}
+
 if (SpeechRecognition) {
     recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = false;
     recognition.lang = 'es-AR';
+    recognition.maxAlternatives = 3;
 
     recognition.onresult = (event) => {
         if (isJarvisSpeaking) return;
 
+        const resultGroups = [];
         for (let i = event.resultIndex; i < event.results.length; i++) {
-            if (!event.results[i].isFinal) continue;
-
-            const transcript = event.results[i][0].transcript.trim();
-            if (!transcript || transcript.length < 2) continue;
-
-            const lower = transcript.toLowerCase();
-            const normalized = normalizeText(transcript); // sin acentos, todo minúscula
-
-            // --- APAGADO: interceptar ANTES de cualquier otra cosa ---
-            if (normalized.includes('apagate') || normalized.includes('apagarte')) {
-                isDormant = true;
-                setRingState('idle');
-                updateMicButtonUI();
-                jarvisBox.textContent = "Sistema en pausa. Decí 'Préndete' para reactivar.";
-                console.log('[Jarvis] 🔴 Modo dormido activado');
-                speak('Entendido, entrando en modo espera.');
-                continue;
-            }
-
-            // --- ENCENDIDO ---
-            if (normalized.includes('prendete') || normalized.includes('prenderte')) {
-                if (isDormant) {
-                    isDormant = false;
-                    setRingState('listening');
-                    updateMicButtonUI();
-                    jarvisBox.textContent = "Sistema activo. Esperando tus órdenes.";
-                    console.log('[Jarvis] 🟢 Modo dormido desactivado');
-                    speak('Estoy en línea. ¿Qué necesitás?');
-                }
-                continue;
-            }
-
-            // --- Si está dormido, bloquear TODO lo demás ---
-            if (isDormant) {
-                console.log('[Jarvis] 💤 Dormido, ignorando:', transcript);
-                continue;
-            }
-
-            // Único filtro: anti-eco
-            if (isEcho(transcript)) {
-                console.log("[Jarvis] Eco detectado, ignorado:", transcript);
-                continue;
-            }
-
-            // Todo lo demás va directo a Jarvis
-            sendCommandToJarvis(transcript);
+            const result = event.results[i];
+            if (!result.isFinal) continue;
+            const alternatives = Array.from(result)
+                .slice(0, 3)
+                .map(item => ({ transcript: item.transcript.trim(), confidence: item.confidence }));
+            if (alternatives[0]?.transcript) resultGroups.push(alternatives);
         }
+        if (!resultGroups.length) return;
+        const alternativeCount = Math.min(3, Math.max(...resultGroups.map(group => group.length)));
+        const alternatives = Array.from({ length: alternativeCount }, (_, rank) => {
+            const parts = resultGroups.map(group => group[rank] || group[0]);
+            return {
+                transcript: parts.map(part => part.transcript).join(' ').replace(/\s+/g, ' ').trim(),
+                confidence: parts.reduce((sum, part) => sum + (Number(part.confidence) || 0), 0) / parts.length
+            };
+        });
+        const activationAlternative = isDormant
+            ? alternatives.find(item => isWakeCommand(item.transcript))
+            : alternatives.find(item => isSleepCommand(item.transcript));
+        handleRecognizedTranscript((activationAlternative || alternatives[0]).transcript, alternatives);
     };
 
     recognition.onend = () => {
         // Chrome corta el reconocimiento después de un silencio. Lo reiniciamos automáticamente.
-        if (isSystemActive && !isJarvisSpeaking) {
-            setTimeout(() => {
-                try { recognition.start(); } catch(e) {}
-            }, 300);
-        }
+        restartRecognition(300);
     };
 
     recognition.onerror = (event) => {
-        if (event.error === 'no-speech') return; // Normal, ignorar
+        if (event.error === 'no-speech') {
+            restartRecognition(350);
+            return;
+        }
         if (event.error === 'not-allowed') {
             jarvisBox.textContent = '⚠️ Error: Permisos de micrófono denegados. Permite el micrófono en Chrome.';
             isSystemActive = false;
@@ -191,9 +247,7 @@ if (SpeechRecognition) {
         }
         // Para otros errores, reintentar si el sistema sigue activo
         if (isSystemActive) {
-            setTimeout(() => {
-                try { recognition.start(); } catch(e) {}
-            }, 1000);
+            restartRecognition(1000);
         }
     };
 
@@ -208,33 +262,110 @@ function populateVoices() {
     if (!select) return;
     const voices = window.speechSynthesis.getVoices();
     if (voices.length === 0) return;
-    const currentVal = select.value;
+    const currentVal = select.value || localStorage.getItem('jarvisVoiceName') || '';
     select.innerHTML = '';
     let foundDefault = false;
     voices.forEach((voice, index) => {
         const option = document.createElement('option');
         option.textContent = `${voice.name} (${voice.lang})`;
-        option.value = index;
-        if (voice.name.includes("Google español") || voice.name.includes("Microsoft Helena")) {
+        option.value = voice.name;
+        if (voice.name === currentVal) {
+            option.selected = true;
+            foundDefault = true;
+        } else if (!currentVal && (voice.name.includes("Google español") || voice.name.includes("Microsoft Helena"))) {
             if(!currentVal) { option.selected = true; foundDefault = true; }
         }
         select.appendChild(option);
     });
-    if(currentVal) select.value = currentVal;
+    if (currentVal && voices.some(voice => voice.name === currentVal)) select.value = currentVal;
 }
 
 window.speechSynthesis.onvoiceschanged = () => {
     populateVoices();
 };
 window.addEventListener('load', () => populateVoices());
+document.getElementById('voice-select')?.addEventListener('change', event => {
+    localStorage.setItem('jarvisVoiceName', event.target.value);
+});
+document.getElementById('btn-test-voice')?.addEventListener('click', () => {
+    speak('Prueba de voz completada. El sistema de audio de Jarvis está funcionando.');
+});
+
+function speechChunks(text, maxLength = 180) {
+    const spoken = String(text || '')
+        .replace(/```[\s\S]*?```/g, ' código omitido ')
+        .replace(/[*_#>`~\[\]]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const sentences = spoken.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [spoken];
+    const chunks = [];
+    let current = '';
+    for (const sentence of sentences) {
+        if (current && `${current} ${sentence}`.length > maxLength) {
+            chunks.push(current.trim());
+            current = '';
+        }
+        current += ` ${sentence}`;
+    }
+    if (current.trim()) chunks.push(current.trim());
+    return chunks;
+}
 
 function speak(text, callback) {
+    const runId = ++speechRunId;
+    window.speechSynthesis?.cancel();
+    isJarvisSpeaking = true;
+    setRingState('speaking');
+
+    if (typeof marked !== 'undefined') {
+        jarvisBox.innerHTML = marked.parse(text);
+        if (window.MathJax) MathJax.typesetPromise([jarvisBox]);
+    } else {
+        jarvisBox.textContent = text;
+    }
+    userBox.textContent = '...';
+    document.getElementById('btn-stop-audio').style.display = 'block';
+    if (recognition && isSystemActive) {
+        try { recognition.abort(); } catch(error) {}
+    }
+
+    lastSpokenWords = String(text || '').split(/\s+/).filter(word => word.length > 2);
+    const voice = document.getElementById('voice-select')?.value || '';
+    const spokenText = speechChunks(text).join(' ');
+    fetch('/api/tts/speak', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: spokenText, voice })
+    }).then(response => {
+        if (!response.ok) throw new Error('Falló la voz nativa');
+        if (runId !== speechRunId) return;
+        lastSpokenTimestamp = Date.now();
+        setTimeout(() => {
+            if (runId !== speechRunId) return;
+            isJarvisSpeaking = false;
+            setRingState('idle');
+            if (callback) callback();
+            if (recognition && isSystemActive) {
+                try { recognition.start(); } catch(error) {}
+            }
+        }, 700);
+    }).catch(error => {
+        if (runId !== speechRunId) return;
+        console.warn('[TTS] Voz nativa no disponible, usando navegador:', error.message);
+        speakInBrowser(text, callback);
+    });
+}
+
+function speakInBrowser(text, callback) {
     if (!window.speechSynthesis) {
         console.warn("SpeechSynthesis no soportado");
+        if (callback) callback();
         return;
     }
 
+    const runId = ++speechRunId;
     window.speechSynthesis.cancel();
+    window.speechSynthesis.resume();
 
     isJarvisSpeaking = true;
     setRingState('speaking');
@@ -257,55 +388,81 @@ function speak(text, callback) {
         try { recognition.abort(); } catch(e){}
     }
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'es-ES';
-    utterance.rate = 1.15;
-    utterance.pitch = 1.0;
-
     const voices = window.speechSynthesis.getVoices();
     const select = document.getElementById('voice-select');
     let selectedVoice = null;
     
     if (select && select.value !== "" && voices.length > 0) {
-        selectedVoice = voices[select.value];
+        selectedVoice = voices.find(voice => voice.name === select.value);
     } else {
-        selectedVoice = voices.find(v => v.name.includes("Google español") || v.lang.includes('es-'));
+        selectedVoice = voices.find(v => v.localService && /^es[-_]/i.test(v.lang))
+            || voices.find(v => /^es[-_]/i.test(v.lang));
     }
 
-    if (selectedVoice) {
-        utterance.voice = selectedVoice;
-    }
-
-    utterance.onend = () => {
-        // Reiniciar el contador anti-eco JUSTO cuando termina de hablar
+    const chunks = speechChunks(text);
+    let finished = false;
+    const finish = () => {
+        if (finished || runId !== speechRunId) return;
+        finished = true;
         lastSpokenTimestamp = Date.now();
-        
-        // Retraso generoso para que el eco de la sala se disipe por completo
         setTimeout(() => {
+            if (runId !== speechRunId) return;
             isJarvisSpeaking = false;
             setRingState('idle');
             if (callback) callback();
             if (recognition && isSystemActive) {
                 try { recognition.start(); } catch(e) {}
             }
-        }, 1500); // 1.5 segundos de silencio post-habla
+        }, 900);
     };
 
-    utterance.onerror = (e) => {
-        console.error("TTS Error:", e);
-        setTimeout(() => {
-            isJarvisSpeaking = false;
-            if(isSystemActive) setRingState('idle');
-            if (recognition && isSystemActive) {
-                try { recognition.start(); } catch(error) {}
+    const playChunk = (index, useDefaultVoice = false) => {
+        if (runId !== speechRunId) return;
+        if (index >= chunks.length) return finish();
+
+        const utterance = new SpeechSynthesisUtterance(chunks[index]);
+        utterance.lang = 'es-AR';
+        utterance.rate = 1.05;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+        if (selectedVoice && !useDefaultVoice) utterance.voice = selectedVoice;
+
+        let started = false;
+        const watchdog = setTimeout(() => {
+            if (started || runId !== speechRunId) return;
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.resume();
+            if (!useDefaultVoice) playChunk(index, true);
+            else finish();
+        }, 1800);
+
+        utterance.onstart = () => {
+            started = true;
+            clearTimeout(watchdog);
+        };
+        utterance.onend = () => {
+            clearTimeout(watchdog);
+            playChunk(index + 1, useDefaultVoice);
+        };
+        utterance.onerror = event => {
+            clearTimeout(watchdog);
+            if (runId !== speechRunId || event.error === 'interrupted' || event.error === 'canceled') return;
+            console.error('TTS Error:', event.error);
+            if (!useDefaultVoice) {
+                window.speechSynthesis.cancel();
+                window.speechSynthesis.resume();
+                playChunk(index, true);
+            } else {
+                finish();
             }
-        }, 800);
+        };
+        setTimeout(() => {
+            if (runId === speechRunId) window.speechSynthesis.speak(utterance);
+        }, 80);
     };
 
-    // Guardar las palabras que Jarvis va a decir para el filtro anti-eco
     lastSpokenWords = text.split(/\s+/).filter(w => w.length > 2);
-
-    window.speechSynthesis.speak(utterance);
+    setTimeout(() => playChunk(0), 120);
 }
 
 // Ensure voices are loaded (Chrome things)
@@ -411,6 +568,7 @@ function renderTvStatus(status) {
     document.getElementById('tv-continue-down').value = settings.continueWatchingDownPresses ?? 1;
     document.getElementById('tv-continue-right').value = settings.continueWatchingRightPresses || 0;
     document.getElementById('tv-key-delay').value = settings.keyDelayMs || 350;
+    document.getElementById('tv-keyboard-delay').value = settings.keyboardKeyDelayMs || 700;
     document.getElementById('tv-use-netflix-key').checked = settings.pressNetflixAfterBoot === true;
     document.getElementById('tv-confirm-play').checked = settings.pressPlayAfterResult !== false;
     document.getElementById('tv-device-ip').value = status.device?.host || '';
@@ -488,6 +646,7 @@ document.getElementById('btn-tv-save').addEventListener('click', async () => {
         continueWatchingDownPresses: Number(document.getElementById('tv-continue-down').value),
         continueWatchingRightPresses: Number(document.getElementById('tv-continue-right').value),
         keyDelayMs: Number(document.getElementById('tv-key-delay').value),
+        keyboardKeyDelayMs: Number(document.getElementById('tv-keyboard-delay').value),
         pressNetflixAfterBoot: document.getElementById('tv-use-netflix-key').checked,
         pressPlayAfterResult: document.getElementById('tv-confirm-play').checked
     };
@@ -665,14 +824,6 @@ btnToggleMic.addEventListener('click', (e) => {
 // activación y bloquea todas las demás órdenes hasta oír "Jarvis, prendete".
 window.addEventListener('load', startDormantMode);
 
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden && isSystemActive && !isDormant) {
-        isDormant = true;
-        updateMicButtonUI();
-    }
-});
-
-
 // Modal UI Handlers
 btnOpenModeModal.addEventListener('click', () => {
     modeModal.classList.remove('hidden');
@@ -818,9 +969,15 @@ const btnStop = document.getElementById('btn-stop-audio');
 
 if (btnStop) {
     btnStop.addEventListener('click', () => {
+        speechRunId++;
+        fetch('/api/tts/stop', { method: 'POST' }).catch(() => {});
         window.speechSynthesis.cancel();
+        window.speechSynthesis.resume();
         isJarvisSpeaking = false;
         if(isSystemActive) { setRingState('idle'); }
+        if (recognition && isSystemActive) {
+            setTimeout(() => { try { recognition.start(); } catch(error) {} }, 200);
+        }
         btnStop.innerHTML = '<i class="fa-solid fa-check"></i> Silenciado';
         setTimeout(() => btnStop.innerHTML = '<i class="fa-solid fa-volume-xmark"></i> Detener Audio', 2500);
     });

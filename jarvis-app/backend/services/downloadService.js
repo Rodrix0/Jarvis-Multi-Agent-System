@@ -160,7 +160,9 @@ function downloadMedia(url, isAudioOnly) {
             url,
             '-o', path.join(downloadsDir, '%(title)s.%(ext)s'),
             '--no-playlist',
-            '--ffmpeg-location', ffmpeg
+            '--ffmpeg-location', ffmpeg,
+            '--js-runtimes', 'node',
+            '--remote-components', 'ejs:github'
         ];
 
         if (isAudioOnly) {

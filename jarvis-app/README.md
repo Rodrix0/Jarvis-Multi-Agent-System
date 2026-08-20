@@ -75,10 +75,45 @@ Puedes buscar una función y hacer click en ella para preparar el comando; reemp
 los valores entre corchetes y presiona Enter. El catálogo también está disponible en
 `GET /api/capabilities`.
 
+## Reconocimiento de voz
+
+La escucha usa español de Argentina (`es-AR`) y procesa cada frase final sin
+acumular fragmentos de eventos anteriores. Chrome entrega hasta tres alternativas:
+Jarvis conserva la primera para no convertir una opción menos probable en otra
+orden física, y normaliza nombres
+frecuentes como Netflix, Haikyu, The Walking Dead y Dorohedoro. La frase completa
+entendida aparece en el panel central.
+
+Las alternativas de Chrome pasan por una capa general de comprensión que reconstruye
+la frase usando el contexto reciente y el estado actual del asistente. No depende de
+una lista cerrada de títulos o comandos. Si el servicio contextual no está disponible,
+Jarvis conserva automáticamente la primera transcripción del navegador.
+Esta capa se habilita con `VOICE_CONTEXT_AI_ENABLED=true`: al hacerlo, envía a Gemini
+las hipótesis de texto y hasta seis frases recientes, pero no el audio crudo.
+
+Para poder diagnosticar errores reales, las transcripciones elegidas y sus
+alternativas se registran localmente en `backend/data/voice_history.jsonl`. El
+archivo se limita automáticamente a 1 MB. Los modelos Whisper locales permanecen
+apagados durante la escucha normal para evitar consumo innecesario de CPU y batería.
+
+Las respuestas se reproducen primero con el sintetizador nativo de Windows
+(Microsoft Helena, volumen 100) para no depender de los bloqueos de audio de Chrome.
+El navegador queda como respaldo y divide los textos largos en fragmentos seguros.
+El botón **Probar voz** permite verificar la salida y la selección queda guardada
+por nombre, aunque Windows cambie el orden de sus voces.
+
+Jarvis arranca en descanso, pero después solo cambia de estado mediante
+`Jarvis, prendete`, `Jarvis, apagate` o el botón del micrófono. Perder el foco,
+minimizar la ventana o terminar una respuesta no lo pone en descanso. El detector
+revisa todas las alternativas de Chrome y tolera variantes como `prende te`,
+`despertate` y errores frecuentes al reconocer el nombre Jarvis, sin confundir
+`apagá la tele` con una orden para dormir al asistente.
+
 ## Control de TV con BroadLink y Netflix
 
 Jarvis puede controlar una TV por infrarrojos con un BroadLink RM conectado a la
 misma red Wi-Fi. La configuración se hace desde **Configurar TV / BroadLink**:
+por seguridad, este panel solo se abre con el botón y no mediante una orden de voz.
 
 1. Configura primero el BroadLink en su aplicación móvil y asegúrate de permitir
    el control local o desactivar el bloqueo del dispositivo.
@@ -87,6 +122,9 @@ misma red Wi-Fi. La configuración se hace desde **Configurar TV / BroadLink**:
    BroadLink o desde el panel del router, escríbela en **IP manual** y guarda.
 3. Enseña como mínimo las teclas `POWER`, `ARRIBA`, `ABAJO`, `IZQUIERDA`,
    `DERECHA` y `OK`, apuntando el control físico al BroadLink cuando el panel lo pida.
+   Jarvis compara la firma NEC de cada señal y rechaza una tecla nueva si coincide
+   con otra ya aprendida; esto evita que una dirección guardada accidentalmente
+   como POWER apague y encienda la TV durante una búsqueda.
 4. Deja el arranque en 45 segundos y el perfil en posición 0 para la disposición
    mostrada en la TV. La tecla `NETFLIX` es opcional si la TV ya inicia dentro de Netflix.
 5. Calibra cuántas pulsaciones hacia abajo hacen falta para llegar a la fila
@@ -113,12 +151,21 @@ buscan y ejecutan el primer resultado. Si no indicás el dispositivo al decir
 `Abrí Netflix`, Jarvis pregunta si querés usar la TV o la computadora. Si el
 BroadLink no responde, utiliza la computadora como alternativa.
 
+El contexto de TV conserva la última acción, búsqueda y dirección. Por seguridad,
+una frase ambigua o no reconocida nunca se convierte mediante IA en pulsaciones
+físicas: Jarvis pide reformular y mantiene la pantalla actual. Frases directas como
+`quiero ver John Wick 3` o `poné la tercera` siguen admitidas. Al mencionar Spotify,
+YouTube, la computadora u otro tema explícito, el contexto de Netflix se descarta.
+
 La secuencia de arranque enciende la TV, espera 45 segundos, pulsa NETFLIX, confirma
 el perfil y luego permite buscar o navegar. Todos los tiempos relevantes pueden
 calibrarse desde el panel.
 
 La mayoría de controles usan una única señal `POWER` para encender y apagar; por eso
 no debes usar la frase `Prendé la tele` si ya está encendida.
+Internamente, Jarvis solo permite enviar POWER cuando la intención contiene
+`powerOn === true`, generado exclusivamente por una orden explícita de encendido;
+buscar, navegar, reproducir o continuar nunca asumen ese valor por defecto.
 
 ---
 

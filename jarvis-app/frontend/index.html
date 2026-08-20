@@ -32,6 +32,9 @@
                 <select id="voice-select" class="voice-select-box">
                     <option value="">Cargando voces...</option>
                 </select>
+                <button id="btn-test-voice" class="voice-test-btn" type="button" title="Probar salida de voz">
+                    <i class="fa-solid fa-volume-high"></i> Probar voz
+                </button>
                 <div class="system-status">
                     <span class="status-dot"></span> Online
                 </div>
@@ -178,6 +181,7 @@
                 <label>Bajadas hasta “Continuar viendo”<input id="tv-continue-down" type="number" min="0" max="10" value="1"></label>
                 <label>Posición dentro de la fila<input id="tv-continue-right" type="number" min="0" max="10" value="0"></label>
                 <label>Demora entre teclas (ms)<input id="tv-key-delay" type="number" min="100" max="1500" value="350"></label>
+                <label>Demora al escribir (ms)<input id="tv-keyboard-delay" type="number" min="300" max="2000" value="700"></label>
                 <label class="tv-checkbox tv-wide"><input id="tv-use-netflix-key" type="checkbox"> Pulsar tecla NETFLIX después de encender (dejalo apagado si la TV ya inicia en Netflix)</label>
                 <label class="tv-checkbox tv-wide"><input id="tv-confirm-play" type="checkbox" checked> Pulsar OK otra vez para reproducir después de elegir el resultado</label>
             </div>

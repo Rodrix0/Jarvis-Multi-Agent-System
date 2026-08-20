@@ -18,6 +18,9 @@ const powerService = require('./services/powerService');
 const commandCatalog = require('./services/commandCatalog');
 const tvService = require('./services/tvService');
 const tvVoiceService = require('./services/tvVoiceService');
+const voiceInputService = require('./services/voiceInputService');
+const voiceUnderstandingService = require('./services/voiceUnderstandingService');
+const ttsService = require('./services/ttsService');
 const shopRoutes = require('./routes/shopRoutes');
 
 const app = express();
@@ -164,6 +167,19 @@ app.post('/api/tv/cancel', (req, res) => {
     res.json({ ok: tvService.cancel() });
 });
 
+app.post('/api/tts/speak', async (req, res) => {
+    try {
+        await ttsService.speak(req.body.text, req.body.voice);
+        res.json({ ok: true });
+    } catch (error) {
+        res.status(503).json({ error: error.message });
+    }
+});
+
+app.post('/api/tts/stop', (req, res) => {
+    res.json({ ok: true, stopped: ttsService.stop() });
+});
+
 app.post('/api/modes', (req, res) => {
     const { name, description } = req.body;
     if (!name || !description) {
@@ -189,18 +205,31 @@ app.post('/api/speak', (req, res) => {
 
 // Endpoint principal para el cliente de Audio Python (Fondo)
 app.post('/api/process_speech_local', async (req, res) => {
-    const text = req.body.text;
+    const selectedVoice = voiceInputService.chooseTranscript(req.body);
+    const understoodVoice = await voiceUnderstandingService.understand({
+        text: selectedVoice.text,
+        alternatives: selectedVoice.alternatives,
+        tvContext: tvVoiceService.getSessionContext()
+    });
+    const text = voiceInputService.normalizeVoiceTranscript(understoodVoice.text);
     if (!text) return res.status(400).json({ error: "Text missing" });
+    voiceInputService.recordTranscript({
+        source: 'local-audio',
+        understood: text,
+        confidence: selectedVoice.confidence,
+        alternatives: selectedVoice.alternatives,
+        original: selectedVoice.text,
+        provider: understoodVoice.provider,
+        refined: understoodVoice.refined
+    });
     
     const lowerText = text.toLowerCase();
     console.log(`[Jarvis Audio Python]: ${text}`);
 
     let responseText = "";
     try {
-        const tvIntent = tvVoiceService.parseTvIntent(text);
-        if (tvIntent?.action === 'setup') {
-            responseText = 'Abrí la interfaz web de Jarvis y entrá en Configurar TV para vincular el BroadLink.';
-        } else if (tvIntent) {
+        const tvIntent = await resolveTvIntent(text);
+        if (tvIntent) {
             responseText = await executeTvIntent(tvIntent, progress => io.emit('tv_progress', progress));
         } else {
             const sysCommand = systemService.handleSystemCommand(text);
@@ -229,22 +258,13 @@ app.post('/api/process_speech_local', async (req, res) => {
     res.json({ response: responseText });
 });
 
-// --- Memoria de contexto para follow-ups ---
-let lastUserCommand = '';
-let lastUserCommandTime = 0;
-
-// --- Memoria de resultados de streaming ---
-let lastStreamingResults = [];
-
-// Excepciones: frases cortas que SON comandos válidos solos y no deben combinarse
-function isFollowUpException(lower) {
-    const exceptions = [
-        'si', 'sí', 'no', 'vale', 'ok', 'dale', 'listo', 'gracias',
-        'para', 'pausa', 'stop', 'basta', 'callate', 'cállate',
-        'apágate', 'apagate', 'préndete', 'prendete',
-        'qué hora es', 'que hora es', 'hola', 'jarvis',
-    ];
-    return exceptions.some(e => lower === e || lower === e + '.');
+async function resolveTvIntent(text) {
+    const directIntent = tvVoiceService.parseTvIntent(text);
+    if (directIntent) return directIntent;
+    if (!tvVoiceService.isSessionActive() || tvVoiceService.switchesAwayFromTv(text)) return null;
+    // En contexto TV, una frase no reconocida nunca debe convertirse por IA en
+    // movimientos físicos. Pedimos reformular y preservamos el estado actual.
+    return { action: 'clarify' };
 }
 
 async function executeTvIntent(intent, onProgress) {
@@ -255,9 +275,20 @@ async function executeTvIntent(intent, onProgress) {
     if (intent.action === 'navigate') {
         tvVoiceService.activateSession();
         await tvService.navigate(intent.button, intent.count);
+        tvVoiceService.rememberIntent(intent);
         return intent.count > 1
             ? `Moví ${intent.label} ${intent.count} veces.`
             : `Listo, ${intent.label}.`;
+    }
+    if (intent.action === 'select') {
+        tvVoiceService.activateSession();
+        const offset = Math.max(0, intent.index - 1);
+        await tvService.sendButtons([...Array(offset).fill('right'), 'ok'], 350);
+        tvVoiceService.rememberIntent(intent);
+        return `Seleccioné la opción ${intent.index}.`;
+    }
+    if (intent.action === 'clarify') {
+        return 'Sigo en Netflix, pero no entendí qué querés hacer. Podés decirme el título, una dirección o cuál opción elegís.';
     }
     if (intent.action === 'choose_device') {
         if (!await tvService.isAvailable()) {
@@ -274,20 +305,20 @@ async function executeTvIntent(intent, onProgress) {
         return 'Abriendo Netflix en la computadora.';
     }
     if (intent.action === 'continue_watching') {
-        tvVoiceService.activateSession();
         const result = await tvService.playNetflix({
             powerOn: intent.powerOn,
             continueWatching: true
         }, onProgress);
+        tvVoiceService.rememberIntent(intent);
         return result.message;
     }
     if (intent.action === 'search') {
-        tvVoiceService.activateSession();
         const result = await tvService.searchNetflix(intent.title, { playFirst: intent.playFirst }, onProgress);
+        tvVoiceService.rememberIntent(intent);
         return result.message;
     }
-    tvVoiceService.activateSession();
     const result = await tvService.playNetflix(intent, onProgress);
+    tvVoiceService.rememberIntent(intent);
     return result.message;
 }
 
@@ -303,47 +334,26 @@ io.on('connection', (socket) => {
 
     // Evento de procesamiento de voz (cuando Jarvis escucha al usuario)
     socket.on('process_speech', async (data) => {
-        let text = data.text;
+        const selectedVoice = voiceInputService.chooseTranscript(data);
+        const understoodVoice = data.source === 'voice'
+            ? await voiceUnderstandingService.understand({
+                text: selectedVoice.text,
+                alternatives: selectedVoice.alternatives,
+                tvContext: tvVoiceService.getSessionContext()
+            })
+            : { text: selectedVoice.text, provider: 'direct', refined: false };
+        let text = voiceInputService.normalizeVoiceTranscript(understoodVoice.text);
+        if (!text) return;
+        voiceInputService.recordTranscript({
+            source: data.source || 'web',
+            understood: text,
+            confidence: selectedVoice.confidence,
+            alternatives: selectedVoice.alternatives,
+            original: selectedVoice.text,
+            provider: understoodVoice.provider,
+            refined: understoodVoice.refined
+        });
         console.log(`[Usuario dice]: ${text}`);
-
-        // ─── MEMORIA DE CONTEXTO CONVERSACIONAL ────────────────────────
-        // Sistema inteligente que detecta cuando el usuario hace un
-        // follow-up a su comando anterior y los combina automáticamente.
-        const CONTEXT_WINDOW_MS = 20000; // 20 segundos de ventana
-        const now = Date.now();
-        const trimmed = text.trim();
-        const lower = trimmed.toLowerCase();
-        
-        // Detectar si es un follow-up (frase corta que no tiene sentido sola)
-        let isFollowUp = false;
-        
-        if (trimmed.length < 40 && lastUserCommand && (now - lastUserCommandTime) < CONTEXT_WINDOW_MS) {
-            // Patrón 1: Empieza con preposición/conector ("en Spotify", "de React", "con Python")
-            const startsWithConnector = /^(en|por|con|de|del|para|sobre|como|que|y|también|tambien|pero|o sea|eso|esto|lo mismo|ahí|ahi)\s/i.test(lower);
-            
-            // Patrón 2: Frase ultra-corta sin verbo (probablemente fragmento)
-            const isFragment = trimmed.length < 20 && !/^(abre|abrir|reproduce|busca|crea|genera|programa|activa|desactiva|apaga|enciende|muestra)/i.test(lower);
-            
-            // Patrón 3: Referencias explícitas al contexto anterior
-            const refersToContext = /(dame más|más detalles|lo mismo|otra vez|de nuevo|repite|repetilo|cambialo|modificalo|ahora|y eso|qué más|que más|cuánto|cuanto|dónde|donde|cuándo|cuando)/i.test(lower);
-            
-            if (startsWithConnector || (isFragment && !isFollowUpException(lower)) || refersToContext) {
-                isFollowUp = true;
-            }
-        }
-        
-        if (isFollowUp) {
-            const combined = `${lastUserCommand} ${text}`;
-            console.log(`[Contexto] 🧠 Combinando: "${lastUserCommand}" + "${text}" → "${combined}"`);
-            text = combined;
-        }
-        
-        // Guardar este comando como contexto (solo los sustanciales)
-        if (!isFollowUp && trimmed.length > 5) {
-            lastUserCommand = text;
-            lastUserCommandTime = now;
-        }
-        // ────────────────────────────────────────────────────────────────
 
         const lowerText = text.toLowerCase();
 
@@ -352,17 +362,8 @@ io.on('connection', (socket) => {
         let actionPayload = null;
 
         try {
-            const tvIntent = tvVoiceService.parseTvIntent(text);
+            const tvIntent = await resolveTvIntent(text);
             if (tvIntent) {
-                if (tvIntent.action === 'setup') {
-                    socket.emit('response', {
-                        text: 'Abriendo la configuración del control BroadLink.',
-                        action: 'OPEN_TV_SETUP',
-                        actionPayload: null
-                    });
-                    return;
-                }
-
                 if (tvIntent.action === 'netflix') {
                     const targetText = tvIntent.useDefaultSeries
                         ? 'tu serie configurada'

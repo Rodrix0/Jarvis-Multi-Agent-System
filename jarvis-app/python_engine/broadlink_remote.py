@@ -76,6 +76,25 @@ def device_details(device):
     }
 
 
+def nec_signature(packet):
+    """Devuelve los 32 bits NEC ignorando pequeñas variaciones de temporización."""
+    if not isinstance(packet, (bytes, bytearray)) or len(packet) < 20 or packet[0] != 0x26:
+        return None
+    pulses = []
+    index = 4
+    while index < len(packet) - 2 and len(pulses) < 67:
+        value = packet[index]
+        if value == 0:
+            value = (packet[index + 1] << 8) | packet[index + 2]
+            index += 3
+        else:
+            index += 1
+        pulses.append(value)
+    if len(pulses) < 67 or pulses[0] < 180 or pulses[1] < 80:
+        return None
+    return tuple(1 if pulses[position] > 30 else 0 for position in range(3, 67, 2))
+
+
 def local_ipv4():
     """Obtiene la interfaz usada por Windows sin enviar tráfico por Internet."""
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -131,7 +150,19 @@ def learn_button(button, timeout):
             packet = device.check_data()
             if packet:
                 config = load_config()
-                config.setdefault("codes", {})[button] = base64.b64encode(packet).decode("ascii")
+                codes = config.setdefault("codes", {})
+                learned_signature = nec_signature(packet)
+                if learned_signature:
+                    for existing_button, encoded in codes.items():
+                        if existing_button == button:
+                            continue
+                        existing_signature = nec_signature(base64.b64decode(encoded))
+                        if existing_signature == learned_signature:
+                            raise RuntimeError(
+                                f"La señal de {button} coincide con {existing_button}. "
+                                f"Presiona la tecla física {button.upper()}, no {existing_button.upper()}."
+                            )
+                codes[button] = base64.b64encode(packet).decode("ascii")
                 save_config(config)
                 return {"button": button, "learned": True}
         except Exception as error:  # El dispositivo responde "sin datos" hasta recibir una tecla.

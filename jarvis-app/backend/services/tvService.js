@@ -18,6 +18,7 @@ const DEFAULT_CONFIG = {
         searchLoadMs: 2200,
         resultLoadMs: 3000,
         keyDelayMs: 350,
+        keyboardKeyDelayMs: 700,
         profileDownPresses: 0,
         continueWatchingDownPresses: 1,
         continueWatchingRightPresses: 0,
@@ -67,6 +68,7 @@ function saveSettings(settings = {}) {
         searchLoadMs: boundedNumber(settings.searchLoadMs, config.netflix.searchLoadMs, 500, 15000),
         resultLoadMs: boundedNumber(settings.resultLoadMs, config.netflix.resultLoadMs, 500, 15000),
         keyDelayMs: boundedNumber(settings.keyDelayMs, config.netflix.keyDelayMs, 100, 1500),
+        keyboardKeyDelayMs: boundedNumber(settings.keyboardKeyDelayMs, config.netflix.keyboardKeyDelayMs, 300, 2000),
         profileDownPresses: boundedNumber(settings.profileDownPresses, config.netflix.profileDownPresses, 0, 10),
         continueWatchingDownPresses: boundedNumber(settings.continueWatchingDownPresses, config.netflix.continueWatchingDownPresses, 0, 10),
         continueWatchingRightPresses: boundedNumber(settings.continueWatchingRightPresses, config.netflix.continueWatchingRightPresses, 0, 10),
@@ -191,10 +193,11 @@ function buildNetflixSearchSequence(title, selectFirstResult = true) {
         cursor = target;
     }
 
-    // Volver a "a" sin seleccionarla y cruzar desde allí al primer resultado.
+    // Subir a la primera fila y cruzar desde la columna actual al panel de
+    // resultados. Evita recorrer de vuelta hasta "a", que agregaba pulsaciones
+    // innecesarias y aumentaba la posibilidad de que la TV perdiera una señal.
     sequence.push(...repeat('up', cursor.row));
-    sequence.push(...repeat('left', cursor.column));
-    sequence.push(...repeat('right', 6));
+    sequence.push(...repeat('right', KEYBOARD_ROWS[0].length - cursor.column));
     if (selectFirstResult) sequence.push('ok');
     return sequence;
 }
@@ -229,7 +232,9 @@ function assertConfigured(config, { powerOn, needsSearch }) {
 async function playNetflix(options = {}, onProgress = () => {}) {
     if (currentJob) throw new Error('Ya hay una automatización de TV en curso.');
     const config = getConfig();
-    const powerOn = options.powerOn !== false;
+    // POWER es una tecla de alternancia: un valor ausente jamás debe enviarla.
+    // Solo una orden explícita de encendido puede establecer exactamente `true`.
+    const powerOn = options.powerOn === true;
     const selectProfile = options.selectProfile ?? (powerOn || config.netflix.pressNetflixAfterBoot);
     let title = String(options.title || '').trim();
     assertConfigured(config, { powerOn, needsSearch: Boolean(title) });
@@ -278,14 +283,17 @@ async function playNetflix(options = {}, onProgress = () => {}) {
         progress('search', `Buscando “${title}” en Netflix…`);
         await sendButtons(['left', 'up', 'ok'], config.netflix.keyDelayMs);
         await sleep(config.netflix.searchLoadMs, job);
-        await sendButtons(buildNetflixSearchSequence(title), config.netflix.keyDelayMs);
+        const playFirst = options.playFirst !== false;
+        await sendButtons(buildNetflixSearchSequence(title, playFirst), config.netflix.keyboardKeyDelayMs);
         await sleep(config.netflix.resultLoadMs, job);
 
-        if (config.netflix.pressPlayAfterResult) {
+        if (playFirst && config.netflix.pressPlayAfterResult) {
             progress('play', `Reproduciendo “${title}”…`);
             await sendButtons(['ok'], config.netflix.keyDelayMs);
         }
-        return { title, message: `Listo, puse ${title} en Netflix.` };
+        return playFirst
+            ? { title, message: `Listo, puse ${title} en Netflix.` }
+            : { title, message: `Te muestro los resultados de ${title}.` };
     } finally {
         currentJob = null;
     }
@@ -307,7 +315,7 @@ async function searchNetflix(title, options = {}, onProgress = () => {}) {
         await sleep(config.netflix.searchLoadMs, job);
         await sendButtons(
             buildNetflixSearchSequence(query, options.playFirst === true),
-            config.netflix.keyDelayMs
+            config.netflix.keyboardKeyDelayMs
         );
         await sleep(config.netflix.resultLoadMs, job);
 

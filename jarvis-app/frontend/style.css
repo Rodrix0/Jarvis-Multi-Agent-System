@@ -263,6 +263,8 @@ body::after {
 .tv-checkbox { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 0.72rem; }
 .tv-checkbox input { width: auto; }
 .tv-operation-message { min-height: 20px; margin-top: 10px; color: var(--accent); font-size: 0.78rem; }
+.voice-test-btn { background: transparent; border: 1px solid var(--border-soft); color: var(--text-secondary); border-radius: 7px; padding: 7px 10px; cursor: pointer; }
+.voice-test-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 @media (max-width: 1180px) {
     .side-panel { width: 220px; }
