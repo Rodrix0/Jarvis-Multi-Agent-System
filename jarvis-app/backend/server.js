@@ -5,46 +5,96 @@ const cors = require('cors');
 const path = require('path');
 const compression = require('compression');
 const helmet = require('helmet');
+const multer = require('multer');
+const fs = require('fs');
 require('dotenv').config();
 
 const modeService = require('./services/modeService');
 const systemService = require('./services/systemService');
 const aiService = require('./services/aiService');
-const backgroundTuner = require('./services/backgroundTuner');
 const observerService = require('./services/observerService');
 const appDiscoveryService = require('./services/appDiscoveryService');
 const reminderService = require('./services/reminderService');
 const powerService = require('./services/powerService');
-const commandCatalog = require('./services/commandCatalog');
 const tvService = require('./services/tvService');
 const tvVoiceService = require('./services/tvVoiceService');
 const voiceInputService = require('./services/voiceInputService');
 const voiceUnderstandingService = require('./services/voiceUnderstandingService');
+const voiceSettingsService = require('./services/voiceSettingsService');
+const memoryService = require('./services/memoryService');
+const jarvisActionService = require('./services/jarvisActionService');
 const ttsService = require('./services/ttsService');
+const voiceLearningService = require('./services/voiceLearningService');
 const shopRoutes = require('./routes/shopRoutes');
 
-const app = express();
+// --- JARVIS OS V6 ENTERPRISE SERVICES ---
+const eventBus = require('./services/core/eventBusService');
+const databaseService = require('./services/persistence/databaseService');
+const emergencyService = require('./services/core/emergencyService');
+const healthService = require('./services/core/healthService');
+const undoManager = require('./services/core/undoManager');
+const explanationService = require('./services/core/explanationService');
+const trashService = require('./services/core/trashService');
+const goalManagerService = require('./services/goals/goalManagerService');
+const agendaService = require('./services/agenda/agendaService');
+const schedulerService = require('./services/agenda/schedulerService');
+const notificationService = require('./services/core/notificationService');
+const windowsControlService = require('./services/windowsControlService');
+eventBus.setDatabaseService(databaseService);
 
-// Optimizaciones de Seguridad y Rendimiento
-app.use(helmet({ contentSecurityPolicy: false })); // Protege cabeceras HTTP sin romper la carga local de scripts
-app.use(compression()); // Comprime las respuestas HTTP enviadas al cliente para mayor eficiencia
+const app = express();
+let localVoiceStatus = { online: false, engine: 'Vosk + WebRTC VAD + faster-whisper', fullyLocal: true };
+let lastLocalSpeech = { text: '', at: 0 };
+
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(compression());
+app.use(cors());
+app.use(express.json());
+app.use('/api/shop', shopRoutes);
+app.use(express.static(path.join(__dirname, '../frontend')));
 
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: '*' },
-    perMessageDeflate: true, // Habilitar compresión en Socket.io
+    perMessageDeflate: true
+});
+notificationService.setSocketIO(io);
+
+// Reenviar eventos de Jarvis OS al HUD
+eventBus.subscribe('*', (ev) => {
+    io.emit('jarvis_event', ev);
 });
 
-app.use(cors());
-app.use(express.json());
-app.use('/api/shop', shopRoutes);
+// --- ENDPOINTS JARVIS OS V6 ---
+app.post('/api/emergency-stop', (req, res) => {
+    const result = emergencyService.triggerEmergencyStop(req.body.source || 'REST_API');
+    res.json(result);
+});
 
-// Servir frontend si se corre el server directo (opcional para facilidad)
-app.use(express.static(path.join(__dirname, '../frontend')));
+app.get('/api/health', async (req, res) => {
+    const health = await healthService.getSystemHealth();
+    res.json(health);
+});
 
-// --- NUEVO: RUTA PARA SUBIR ARCHIVOS (RAG) ---
-const multer = require('multer');
-const fs = require('fs');
+app.post('/api/undo', async (req, res) => {
+    const result = await undoManager.undoLast(req.body.scope || 'GLOBAL', req.body.filter);
+    res.json(result);
+});
+
+app.post('/api/explain', async (req, res) => {
+    const explanation = await explanationService.explainDecision(req.body.query);
+    res.json({ explanation });
+});
+
+app.get('/api/goals', (req, res) => res.json(goalManagerService.listGoals(req.query.status)));
+app.post('/api/goals', (req, res) => res.json(goalManagerService.createGoal(req.body)));
+
+app.get('/api/agenda', (req, res) => res.json(agendaService.listReminders(req.query.status)));
+app.post('/api/agenda', (req, res) => res.json(agendaService.addReminder(req.body)));
+app.delete('/api/agenda/:id', (req, res) => res.json(agendaService.deleteReminder(req.params.id)));
+
+app.get('/api/trash', (req, res) => res.json(trashService.listTrash()));
+app.post('/api/trash/restore', (req, res) => res.json(trashService.restoreFromTrash(req.body.identifier, req.body.conflictResolution)));
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -64,23 +114,19 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: "No se subió ningún archivo." });
     }
-    // Return absolute path
     const absolutePath = req.file.path;
     console.log(`[Servidor] 💾 Archivo recibido y guardado en: ${absolutePath}`);
     res.json({ filepath: absolutePath });
 });
-// ----------------------------------------------
 
 // --- SPOTIFY WEB API ROUTES ---
 const spotifyService = require('./services/spotifyService');
 
-// Ruta para iniciar la autenticación con Spotify (abrir en navegador)
 app.get('/api/spotify/login', (req, res) => {
     const authUrl = spotifyService.getAuthURL();
     res.redirect(authUrl);
 });
 
-// Callback de Spotify después de que el usuario autoriza
 app.get('/api/spotify/callback', async (req, res) => {
     const { code, error } = req.query;
     if (error) {
@@ -112,8 +158,56 @@ app.get('/api/modes', (req, res) => {
     res.json(modeService.getAllModes());
 });
 
-app.get('/api/capabilities', (req, res) => {
-    res.json(commandCatalog);
+app.get('/api/capabilities', async (req, res) => {
+    res.json(await jarvisActionService.describe({}));
+});
+
+app.get('/api/actions', async (req, res) => res.json(await jarvisActionService.describe({})));
+app.post('/api/actions/execute', async (req, res) => {
+    const result = await jarvisActionService.execute(req.body.id, req.body.params || {}, actionContext());
+    res.status(result.ok || result.status === 'awaiting_confirmation' ? 200 : 400).json(result);
+});
+app.post('/api/actions/confirm', async (req, res) => res.json(await jarvisActionService.confirm(req.body.token, actionContext())));
+app.post('/api/actions/cancel', (req, res) => res.json({ ok: jarvisActionService.cancelConfirmation(req.body.token) }));
+
+app.get('/api/memory', (req, res) => res.json(memoryService.snapshot()));
+app.post('/api/memory/preferences', (req, res) => {
+    try { res.json(memoryService.addPreference(req.body.key, req.body.value, 'panel')); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post('/api/memory/corrections', (req, res) => {
+    try { memoryService.addCorrection(req.body.from, req.body.to); res.json({ ok: true }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.patch('/api/memory/:collection/:id', (req, res) => {
+    try { res.json(memoryService.updateItem(req.params.collection, req.params.id, req.body)); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.delete('/api/memory/:collection/:id', (req, res) => {
+    try { res.json({ ok: memoryService.removeItem(req.params.collection, req.params.id) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.get('/api/voice/settings', (req, res) => res.json(voiceSettingsService.get()));
+app.get('/api/voice/learning', (req, res) => res.json(voiceLearningService.snapshot()));
+app.post('/api/voice/settings', (req, res) => {
+    try { res.json(voiceSettingsService.save(req.body)); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.get('/api/voice/local/status', (req, res) => res.json(localVoiceStatus));
+app.post('/api/voice/local/status', (req, res) => {
+    localVoiceStatus = { ...localVoiceStatus, ...req.body, lastSeenAt: new Date().toISOString() };
+    io.emit('local_voice_status', localVoiceStatus);
+    res.json({ ok: true });
+});
+app.post('/api/voice/local/state', (req, res) => {
+    const state = req.body.state === 'awake' ? 'awake' : 'dormant';
+    if (state === 'dormant') ttsService.stop();
+    const statePath = path.join(__dirname, 'data', 'local_voice_state.json');
+    fs.writeFileSync(statePath, JSON.stringify({ state, updatedAt: Date.now() }, null, 2));
+    localVoiceStatus = { ...localVoiceStatus, state, lastSeenAt: new Date().toISOString() };
+    io.emit('local_voice_status', localVoiceStatus);
+    res.json({ ok: true, state });
 });
 
 app.get('/api/tv/status', (req, res) => {
@@ -206,13 +300,27 @@ app.post('/api/speak', (req, res) => {
 // Endpoint principal para el cliente de Audio Python (Fondo)
 app.post('/api/process_speech_local', async (req, res) => {
     const selectedVoice = voiceInputService.chooseTranscript(req.body);
+    const duplicateKey = voiceInputService.normalizeVoiceTranscript(selectedVoice.text).toLowerCase();
+    if (duplicateKey && duplicateKey === lastLocalSpeech.text && Date.now() - lastLocalSpeech.at < 1500) {
+        return res.json({ response: '', result: { ok: true, status: 'ignored_duplicate', verified: true } });
+    }
+    lastLocalSpeech = { text: duplicateKey, at: Date.now() };
+    if (selectedVoice.text) {
+        io.emit('action_status', { phase: 'heard', message: `Escuché: “${selectedVoice.text}”. Verificando…`, text: selectedVoice.text });
+    }
     const understoodVoice = await voiceUnderstandingService.understand({
         text: selectedVoice.text,
         alternatives: selectedVoice.alternatives,
-        tvContext: tvVoiceService.getSessionContext()
+        tvContext: tvVoiceService.getSessionContext(),
+        allowLocal: voiceSettingsService.get().localContextEnabled,
+        confidence: selectedVoice.confidence,
+        provider: 'local-whisper'
     });
     const text = voiceInputService.normalizeVoiceTranscript(understoodVoice.text);
     if (!text) return res.status(400).json({ error: "Text missing" });
+    if (selectedVoice.uncertain && !req.body.confirmed) {
+        return res.status(409).json({ status: 'voice_confirmation_required', ...selectedVoice, text, provider: understoodVoice.provider });
+    }
     voiceInputService.recordTranscript({
         source: 'local-audio',
         understood: text,
@@ -223,40 +331,22 @@ app.post('/api/process_speech_local', async (req, res) => {
         refined: understoodVoice.refined
     });
     
-    const lowerText = text.toLowerCase();
     console.log(`[Jarvis Audio Python]: ${text}`);
-
-    let responseText = "";
-    try {
-        const tvIntent = await resolveTvIntent(text);
-        if (tvIntent) {
-            responseText = await executeTvIntent(tvIntent, progress => io.emit('tv_progress', progress));
-        } else {
-            const sysCommand = systemService.handleSystemCommand(text);
-
-            if (sysCommand.isSystemCommand) {
-                responseText = sysCommand.isLearned
-                    ? `Comando aprendido detectado. Ejecutando ${sysCommand.appName}, señor.`
-                    : `Abriendo ${sysCommand.appName}.`;
-                const activeMode = modeService.getActiveMode();
-                await systemService.openApp(sysCommand.appName, activeMode.id);
-            } else {
-                const activeMode = modeService.getActiveMode();
-                const screenContext = observerService.getScreenContext();
-                responseText = await aiService.getAIResponse(text, activeMode, screenContext);
-            }
-        }
-    } catch (error) {
-        console.error(error);
-        responseText = "Lo siento, mi núcleo central interceptó una excepción no controlada.";
-    }
+    io.emit('action_status', { phase: 'accepted', message: `Entendí: “${text}”. Lo estoy haciendo…`, text });
+    const result = await jarvisActionService.process(text, actionContext(progress => io.emit('tv_progress', progress)));
+    if (result.actionId === 'voice.sleep') ttsService.stop();
+    const responseText = result.message;
     
     // Sincronizar la respuesta con cualquier UI web abierta
-    io.emit('response', { text: responseText, action: null, actionPayload: null });
+    io.emit('response', { text: responseText, action: result.actionId, actionPayload: result.data || null, suppressTts: true, verified: result.verified, status: result.status });
     
     // Responder a Python para que lo hable por TTS
-    res.json({ response: responseText });
+    res.json({ response: responseText, result });
 });
+
+function actionContext(onTvProgress) {
+    return { executeTvIntent, onTvProgress, inpaintingMask: null };
+}
 
 async function resolveTvIntent(text) {
     const directIntent = tvVoiceService.parseTvIntent(text);
@@ -335,13 +425,41 @@ io.on('connection', (socket) => {
     // Evento de procesamiento de voz (cuando Jarvis escucha al usuario)
     socket.on('process_speech', async (data) => {
         const selectedVoice = voiceInputService.chooseTranscript(data);
+        socket.emit('voice_status', {
+            engine: 'Navegador · reconocimiento general',
+            confidence: selectedVoice.confidence,
+            agreement: selectedVoice.agreement,
+            audioLevel: selectedVoice.audioLevel,
+            uncertain: selectedVoice.uncertain
+        });
+        if (data.source === 'voice' && selectedVoice.uncertain && !data.confirmed) {
+            socket.emit('voice_confirmation_required', {
+                text: selectedVoice.text,
+                alternatives: selectedVoice.alternatives,
+                reason: selectedVoice.uncertaintyReason,
+                confidence: selectedVoice.confidence,
+                agreement: selectedVoice.agreement
+            });
+            return;
+        }
         const understoodVoice = data.source === 'voice'
             ? await voiceUnderstandingService.understand({
                 text: selectedVoice.text,
                 alternatives: selectedVoice.alternatives,
-                tvContext: tvVoiceService.getSessionContext()
+                tvContext: tvVoiceService.getSessionContext(),
+                allowLocal: voiceSettingsService.get().localContextEnabled,
+                confidence: selectedVoice.confidence,
+                provider: 'browser'
             })
             : { text: selectedVoice.text, provider: 'direct', refined: false };
+        socket.emit('voice_status', {
+            engine: understoodVoice.provider === 'ollama-local' ? 'Ollama · comprensión local' : 'Navegador · reconocimiento general',
+            confidence: selectedVoice.confidence,
+            agreement: selectedVoice.agreement,
+            audioLevel: selectedVoice.audioLevel,
+            uncertain: false,
+            refined: understoodVoice.refined === true
+        });
         let text = voiceInputService.normalizeVoiceTranscript(understoodVoice.text);
         if (!text) return;
         voiceInputService.recordTranscript({
@@ -354,6 +472,32 @@ io.on('connection', (socket) => {
             refined: understoodVoice.refined
         });
         console.log(`[Usuario dice]: ${text}`);
+        socket.emit('action_status', { phase: 'accepted', message: `Entendí: “${text}”. Lo estoy haciendo…`, text });
+
+        // Toda solicitud entra por el mismo registro. El bloque antiguo que queda
+        // debajo se conserva temporalmente para compatibilidad, pero ya no recibe
+        // comandos nuevos.
+        try {
+            const result = await jarvisActionService.process(text, {
+                ...actionContext(progress => socket.emit('tv_progress', progress)),
+                inpaintingMask: data.inpaintingMask
+            });
+            if (result.actionId === 'voice.sleep') ttsService.stop();
+            socket.emit('action_result', result);
+            socket.emit('response', {
+                text: result.message,
+                action: result.actionId,
+                actionPayload: result.data || null,
+                verified: result.verified,
+                status: result.status,
+                confirmationToken: result.confirmationToken
+            });
+            return;
+        } catch (error) {
+            console.error('[Núcleo de acciones]', error);
+            socket.emit('response', { text: `No pude completar la acción: ${error.message}`, action: null });
+            return;
+        }
 
         const lowerText = text.toLowerCase();
 
@@ -672,8 +816,6 @@ server.listen(PORT, () => {
     console.log(`  => Server running on http://localhost:${PORT}`);
     console.log(`===========================================\n`);
     
-    // Iniciar el estudio automático en segundo plano
-    backgroundTuner.startBackgroundStudying();
     // Iniciar el indexador de accesos directos
     appDiscoveryService.triggerBackgroundScan();
     // Iniciar modulo Cronos para tareas y recordatorios

@@ -265,6 +265,34 @@ body::after {
 .tv-operation-message { min-height: 20px; margin-top: 10px; color: var(--accent); font-size: 0.78rem; }
 .voice-test-btn { background: transparent; border: 1px solid var(--border-soft); color: var(--text-secondary); border-radius: 7px; padding: 7px 10px; cursor: pointer; }
 .voice-test-btn:hover { border-color: var(--accent); color: var(--accent); }
+.brain-modal-content { width: min(980px, 96vw); max-height: 92vh; overflow-y: auto; }
+.brain-modal-content h2 { margin-bottom: 8px; }
+.brain-section { margin-top: 16px; padding: 15px; border: 1px solid var(--border-soft); border-radius: 12px; background: rgba(0,0,0,.12); }
+.brain-section h3 { margin: 0 0 12px; color: var(--accent); font-size: .78rem; text-transform: uppercase; letter-spacing: .1em; }
+.brain-section h4 { color: var(--text-secondary); font-size: .72rem; margin-bottom: 8px; }
+.brain-field, .brain-grid label { display: flex; flex-direction: column; gap: 6px; color: var(--text-secondary); font-size: .72rem; }
+.brain-field select, .brain-grid input, .memory-add-row input, #voice-confirmation-text { background: rgba(0,0,0,.25); border: 1px solid var(--border-soft); color: var(--text-primary); border-radius: 8px; padding: 9px; }
+.brain-note, .cloud-consent { display: block; margin: 8px 0; color: var(--text-secondary); font-size: .68rem; line-height: 1.45; }
+.brain-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; margin: 12px 0; }
+.brain-actions, .brain-section-title, .memory-add-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.brain-actions .hud-btn, .brain-section-title .hud-btn { display: inline-block; }
+.brain-section-title { justify-content: space-between; }
+.voice-meter { height: 10px; overflow: hidden; border: 1px solid var(--border-soft); border-radius: 10px; margin: 10px 0; background: #071018; }
+.voice-meter span { display: block; height: 100%; width: 0; background: linear-gradient(90deg,#22c55e,#eab308,#ef4444); transition: width .08s linear; }
+.voice-confirmation { border-color: #eab308; }
+.voice-confirmation p { color: #fde68a; font-size: .75rem; margin-bottom: 8px; }
+.voice-confirmation input { width: 100%; margin-bottom: 9px; }
+.memory-add-row input { flex: 1; min-width: 170px; }
+.memory-add-row .action-btn { width: auto; }
+.memory-columns { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; margin-top: 14px; }
+.memory-list { max-height: 210px; overflow-y: auto; }
+.memory-item { padding: 8px; margin-bottom: 6px; border: 1px solid var(--border-soft); border-radius: 8px; color: var(--text-secondary); font-size: .68rem; line-height: 1.4; }
+.memory-item strong { color: var(--text-primary); }
+.memory-item-actions { float: right; display: flex; gap: 3px; }
+.memory-item button { border: 0; background: transparent; color: #fca5a5; cursor: pointer; }
+.memory-item button[data-edit] { color: var(--accent); }
+.capability-status { font-size: .63rem; color: #86efac; }
+.capability-status.offline { color: #fca5a5; }
 
 @media (max-width: 1180px) {
     .side-panel { width: 220px; }
@@ -285,6 +313,7 @@ body::after {
     .tv-learn-grid { grid-template-columns: repeat(2, 1fr); }
     .tv-settings-grid { grid-template-columns: 1fr; }
     .tv-settings-grid .tv-wide { grid-column: auto; }
+    .brain-grid, .memory-columns { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -691,6 +720,7 @@ body::after {
 
 /* Modal */
 .modal { position: fixed; inset: 0; background: rgba(10,15,28,0.9); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.hidden { display: none !important; }
 .modal.hidden { display: none; }
 .modal-content { background: var(--bg-panel); border: 1px solid var(--border-soft); border-radius: 20px; padding: 32px; width: 400px; position: relative; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
 .close { position: absolute; right: 24px; top: 24px; font-size: 1.5rem; color: var(--text-secondary); cursor: pointer; transition: 0.2s; }
@@ -723,3 +753,25 @@ body::after {
     background: var(--bg-main);
     color: var(--text-primary);
 }
+
+.jarvis-action-toast {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 1000;
+    max-width: min(460px, calc(100vw - 48px));
+    padding: 14px 18px;
+    border-radius: 12px;
+    border: 1px solid var(--accent);
+    background: rgba(9, 18, 32, 0.96);
+    color: var(--text-primary);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), 0 0 18px rgba(0, 229, 255, 0.12);
+    font: 500 0.92rem/1.4 'Inter', sans-serif;
+    opacity: 0;
+    transform: translateY(16px);
+    pointer-events: none;
+    transition: opacity .2s ease, transform .2s ease;
+}
+.jarvis-action-toast.visible { opacity: 1; transform: translateY(0); }
+.jarvis-action-toast.completed { border-color: #22c55e; }
+.jarvis-action-toast.failed { border-color: #ef4444; }

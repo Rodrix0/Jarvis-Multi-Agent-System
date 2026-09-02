@@ -44,6 +44,29 @@ En la consola, ejecuta:
 npm start
 ```
 
+Para iniciar absolutamente todo con una sola orden desde la carpeta del proyecto,
+usa `jarvis` en CMD o `.\jarvis.cmd` en PowerShell:
+
+```cmd
+jarvis
+```
+
+También podés hacer doble clic en `start_jarvis.bat`. El
+lanzador inicia Ollama, el motor Python, Node, la voz local y abre el panel. Si algún
+componente ya está activo no lo duplica y comprueba que todos respondan antes de
+mostrar que Jarvis está listo. Los registros quedan dentro de `logs/`.
+
+Para apagar completamente todos los procesos de Jarvis desde CMD o PowerShell:
+
+```powershell
+.\apagar_jarvis.cmd
+```
+
+Cerrar el navegador o Visual Studio Code no apaga los procesos ocultos. La orden de
+voz `Jarvis, apagate` deja un detector mínimo para poder escuchar `Jarvis, prendete`;
+el comando anterior realiza el cierre total. Ollama solo se detiene si Jarvis fue
+quien lo inició, para no interrumpir otras aplicaciones locales.
+
 Deberías ver visualmente en consola que el servidor se activó. El escudo
 biométrico solo mantiene procesos residentes mientras está habilitado.
 
@@ -55,6 +78,9 @@ Verás la grandiosa interfaz de Jarvis.
 Jarvis arranca en modo descanso. El navegador puede solicitar permiso de micrófono
 la primera vez: ACÉPTALO. Di **"Jarvis, prendete"** para comenzar a darle órdenes y
 **"Jarvis, apagate"** para volver al descanso. También puedes usar el botón o escribir.
+El nombre `Jarvis` es obligatorio en esas dos frases para impedir activaciones por
+ruido, televisión o conversaciones cercanas. Las órdenes normales no necesitan
+repetir el nombre mientras el asistente está despierto.
 
 ---
 
@@ -70,31 +96,79 @@ Disfruta desarrollando y escalando este increíble asistente interactivo.
 
 ## Panel de funciones
 
-La columna **Funciones y comandos** muestra el catálogo actualizado de capacidades.
+La columna **Funciones y comandos** se genera desde el registro central de acciones.
 Puedes buscar una función y hacer click en ella para preparar el comando; reemplaza
-los valores entre corchetes y presiona Enter. El catálogo también está disponible en
-`GET /api/capabilities`.
+los valores necesarios y presiona Enter. Cada tarjeta muestra disponibilidad,
+permiso y si requiere confirmación. El catálogo también está disponible en
+`GET /api/actions` y `GET /api/capabilities`.
+
+Cada ejecución devuelve estado, evidencia, duración y el campo `verified`. Las
+acciones no se anuncian como completadas si falta una dependencia. Las operaciones
+delicadas usan una confirmación con vencimiento y la auditoría local queda en
+`backend/data/action_audit.jsonl`.
 
 ## Reconocimiento de voz
 
-La escucha usa español de Argentina (`es-AR`) y procesa cada frase final sin
-acumular fragmentos de eventos anteriores. Chrome entrega hasta tres alternativas:
-Jarvis conserva la primera para no convertir una opción menos probable en otra
-orden física, y normaliza nombres
-frecuentes como Netflix, Haikyu, The Walking Dead y Dorohedoro. La frase completa
-entendida aparece en el panel central.
+La escucha usa español de Argentina y un motor de dictado local general. No hay una
+lista fija de títulos. Whisper devuelve una confianza y Jarvis pide revisar la frase
+cuando el resultado es inseguro, especialmente para órdenes físicas.
 
-Las alternativas de Chrome pasan por una capa general de comprensión que reconstruye
-la frase usando el contexto reciente y el estado actual del asistente. No depende de
-una lista cerrada de títulos o comandos. Si el servicio contextual no está disponible,
-Jarvis conserva automáticamente la primera transcripción del navegador.
-Esta capa se habilita con `VOICE_CONTEXT_AI_ENABLED=true`: al hacerlo, envía a Gemini
-las hipótesis de texto y hasta seis frases recientes, pero no el audio crudo.
+Las transcripciones dudosas pasan por una capa local que reconstruye la frase usando
+el contexto reciente y el estado actual del asistente. No depende de una lista
+cerrada de títulos o comandos.
+La corrección contextual funciona con Ollama local y solo se usa cuando una frase
+es dudosa o contiene referencias como “eso” y “lo anterior”. El audio y el texto
+permanecen dentro de la notebook.
+
+El panel **Voz y memoria** permite seleccionar el micrófono local, revisar el motor
+usado y enseñar correcciones con `No dije X, dije Y`. Vosk escucha la activación,
+WebRTC VAD delimita cada frase y faster-whisper Small realiza la transcripción
+general en español. El reconocimiento del navegador queda solamente como respaldo
+si el proceso local no está iniciado.
+
+### Motor completamente local
+
+`start_jarvis.bat` inicia también `python_engine/voice_assistant.py`. La ruta local
+usa estos componentes:
+
+- Vosk español pequeño: solo escucha `Jarvis, prendete` mientras está en descanso.
+- WebRTC VAD: conserva 450 ms anteriores al habla y espera 1.050 ms de silencio al
+  final para no cortar palabras.
+- faster-whisper Small INT8: transcribe órdenes libres en español usando CPU.
+- Qwen 2.5 3B mediante Ollama: corrige localmente frases dudosas y referencias.
+- TTS nativo de Windows: responde aunque la interfaz web no tenga el foco.
+
+Los modelos se descargan una sola vez y quedan en `python_engine/models/`. El
+entorno aislado está en `python_engine/voice_venv/`; ambos se mantienen fuera de Git.
+
+Para verificar la instalación sin abrir el micrófono:
+
+```powershell
+python_engine\voice_venv\Scripts\python.exe python_engine\voice_assistant.py --diagnose
+```
+
+El panel informa **Motor local activo** cuando el proceso está conectado. En ese
+caso desactiva automáticamente Web Speech para impedir que una misma frase se
+ejecute dos veces. Si el proceso local falla, el navegador queda como respaldo.
 
 Para poder diagnosticar errores reales, las transcripciones elegidas y sus
 alternativas se registran localmente en `backend/data/voice_history.jsonl`. El
-archivo se limita automáticamente a 1 MB. Los modelos Whisper locales permanecen
-apagados durante la escucha normal para evitar consumo innecesario de CPU y batería.
+archivo se limita automáticamente a 1 MB. Whisper se carga recién después de
+despertar y detectar una frase; mientras está en descanso solo trabaja Vosk.
+
+## Memoria contextual
+
+La memoria central separa automáticamente los temas, conserva el hilo para
+referencias como “eso”, “la anterior” y “seguí con lo mismo”, y resume conversaciones
+antiguas al crecer. Solo guarda preferencias permanentes cuando el usuario pide
+explícitamente recordarlas. Conversaciones, preferencias, correcciones y resúmenes
+se pueden inspeccionar y borrar desde **Voz y memoria**. El archivo local es
+`backend/data/jarvis_memory.json`.
+
+Las antiguas 3.627 variaciones automáticas se retiraron de ejecución y se archivaron
+de forma recuperable en `backend/data/comandos.generated.archive.json`. El afinador
+que las regeneraba fue eliminado para reducir falsos positivos, disco y trabajo en
+segundo plano.
 
 Las respuestas se reproducen primero con el sintetizador nativo de Windows
 (Microsoft Helena, volumen 100) para no depender de los bloqueos de audio de Chrome.
@@ -143,6 +217,15 @@ Comandos disponibles:
 - `Dos a la derecha`, `Bajá`, `Subí`, `Volvé`
 - `Reproducí eso`
 - `Cancelá la automatización de la tele`
+- `Buscá el canal de Kurzgesagt en YouTube` (abre resultados en la notebook)
+- `Buscá The Walking Dead en Netflix desde mi computadora`
+- `Dame información sobre computación cuántica` (crea un Word en el Escritorio)
+
+El panel muestra inmediatamente un cartel con la frase entendida y luego confirma si
+la acción terminó o falló. Las búsquedas de YouTube y Netflix en la computadora usan
+una ruta directa y no esperan al modelo general. El modo de descanso solo cambia con
+una orden completa como `Jarvis, apagate`; palabras parecidas dentro de otra frase no
+pueden apagarlo.
 
 Después de abrir Netflix en la TV, Jarvis mantiene durante 30 minutos el contexto de control
 de TV. En ese período las órdenes cortas de navegación se envían al BroadLink. Una
@@ -156,6 +239,8 @@ una frase ambigua o no reconocida nunca se convierte mediante IA en pulsaciones
 físicas: Jarvis pide reformular y mantiene la pantalla actual. Frases directas como
 `quiero ver John Wick 3` o `poné la tercera` siguen admitidas. Al mencionar Spotify,
 YouTube, la computadora u otro tema explícito, el contexto de Netflix se descarta.
+Si el BroadLink está desenchufado o no responde, abrir o buscar Netflix cambia
+automáticamente a la notebook y no termina mostrando un error de dispositivo.
 
 La secuencia de arranque enciende la TV, espera 45 segundos, pulsa NETFLIX, confirma
 el perfil y luego permite buscar o navegar. Todos los tiempos relevantes pueden

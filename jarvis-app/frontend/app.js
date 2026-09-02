@@ -36,6 +36,83 @@ let lastSpokenWords = [];  // Palabras que Jarvis dijo recientemente (anti-eco i
 let lastSpokenTimestamp = 0;
 let speechRunId = 0;
 let recognitionRestartTimer = null;
+let voiceSettings = null;
+let voiceMonitorStream = null;
+let voiceAudioContext = null;
+let voiceAnalyser = null;
+let voiceMeterTimer = null;
+let currentAudioLevel = 0;
+let pendingVoiceTranscript = null;
+let localVoiceOnline = false;
+let actionToastTimer = null;
+
+function stopAllSpeech({ restartBrowserRecognition = false } = {}) {
+    speechRunId++;
+    fetch('/api/tts/stop', { method: 'POST' }).catch(() => {});
+    window.speechSynthesis?.cancel();
+    window.speechSynthesis?.resume();
+    isJarvisSpeaking = false;
+    document.getElementById('btn-stop-audio')?.style.setProperty('display', 'none');
+    if (isSystemActive) setRingState('idle');
+    if (restartBrowserRecognition && recognition && isSystemActive && !localVoiceOnline) {
+        setTimeout(() => { try { recognition.start(); } catch(error) {} }, 200);
+    }
+}
+
+// --- PARADA DE EMERGENCIA MULTI-ACCESO (Ctrl+Alt+J y HUD) ---
+function triggerEmergencyStop(source = 'KEYBOARD_SHORTCUT') {
+    stopAllSpeech();
+    showActionToast('🚨 PARADA DE EMERGENCIA EJECUTADA (Deteniendo todo)', 'failed', 4000);
+    fetch('/api/emergency-stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source })
+    })
+    .then(r => r.json())
+    .then(data => {
+        console.log('[Emergency] Señal confirmada con latencia:', data.cancelSignalLatencyMs, 'ms');
+    })
+    .catch(err => console.error('[Emergency] Error enviando señal:', err));
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const btnEmerg = document.getElementById('btn-emergency-stop');
+    if (btnEmerg) {
+        btnEmerg.addEventListener('click', () => triggerEmergencyStop('HUD_BUTTON'));
+    }
+});
+
+window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey && e.altKey && (e.key === 'j' || e.key === 'J')) || (e.ctrlKey && (e.key === 'j' || e.key === 'J'))) {
+        e.preventDefault();
+        triggerEmergencyStop('HOTKEY_CTRL_ALT_J');
+    }
+});
+
+socket.on('jarvis_event', (ev) => {
+    console.log('[Jarvis Event]:', ev.eventName, ev);
+});
+
+socket.on('notification', (data) => {
+    showActionToast(`[${data.title}] ${data.message}`, data.priority === 'EMERGENCY' ? 'failed' : 'success', 5000);
+});
+
+function showActionToast(message, phase = 'working', duration = 4500) {
+    let toast = document.getElementById('jarvis-action-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'jarvis-action-toast';
+        toast.setAttribute('role', 'status');
+        toast.setAttribute('aria-live', 'polite');
+        document.body.appendChild(toast);
+    }
+    clearTimeout(actionToastTimer);
+    toast.className = `jarvis-action-toast ${phase} visible`;
+    toast.textContent = message;
+    if (duration > 0) {
+        actionToastTimer = setTimeout(() => toast.classList.remove('visible'), duration);
+    }
+}
 
 // Activa el modo "esperando respuesta" por N segundos
 function setAwaitingFollowUp(seconds = 30) {
@@ -98,6 +175,7 @@ function sendCommandToJarvis(transcript, voiceMeta = {}) {
     console.log("[Jarvis] → Enviando:", transcript);
     userBox.textContent = `"${transcript}"`;
     jarvisBox.textContent = "Analizando...";
+    showActionToast(`Entendí: “${transcript}”. Lo estoy haciendo…`, 'working', 0);
     hideUXButtons();
     setRingState('idle');
 
@@ -116,6 +194,7 @@ function sendCommandToJarvis(transcript, voiceMeta = {}) {
         source: 'voice',
         alternatives: alternativesWithContext,
         confidence: voiceMeta.confidence,
+        audioLevel: currentAudioLevel,
         inpaintingMask: currentInpaintingMaskBase64
     });
 
@@ -127,31 +206,60 @@ function sendCommandToJarvis(transcript, voiceMeta = {}) {
 
 function normalizeActivationText(text) {
     return normalizeText(text)
-        .replace(/\b(?:yarvis|jarbis|charvis|harvis)\b/g, 'jarvis')
+        .replace(/\b(?:yarvis|jarbis|charvis|harvis|yervis|edrey|edrei)\b/g, 'jarvis')
         .replace(/\bprende\s+(?:te|de)\b/g, 'prendete')
         .replace(/\bapaga\s+(?:te|de)\b/g, 'apagate')
         .replace(/\s+/g, ' ')
         .trim();
 }
 
+function extractWakeWordCommand(text) {
+    const raw = String(text || '').trim();
+    const wakeRegex = /(?:hola|hey|oye|che|ok|bueno)?\s*\b(?:jarvis|yarvis|jarbis|charvis|harvis|yervis|edrey|edrei)\b[\s,.:;!?-]*(.*)$/i;
+    const match = raw.match(wakeRegex);
+    if (match) {
+        return { hasWakeWord: true, command: match[1].trim() };
+    }
+    return { hasWakeWord: false, command: raw };
+}
+
+function isDirectImperativeCommand(text) {
+    const norm = normalizeActivationText(text);
+    const tokens = norm.split(/\s+/).filter(Boolean);
+    if (tokens.length > 12) return false; // Frases largas de charla no son comandos directos
+
+    const directPrefixes = [
+        'abri ', 'abrir ', 'abre ', 'abrime ', 'cerra ', 'cerrar ', 'cierra ',
+        'pone ', 'poner ', 'pon ', 'poneme ', 'reproduce ', 'reproduci ', 'reproducime ',
+        'busca ', 'buscar ', 'buscame ', 'descarga ', 'descargar ', 'descargame ',
+        'baja ', 'bajar ', 'bajame ', 'guarda ', 'guardar ',
+        'prende ', 'prender ', 'encende ', 'encender ', 'apaga ', 'apagar ',
+        'sube', 'subi', 'baja', 'derecha', 'izquierda', 'arriba', 'abajo',
+        'silencio', 'pausa', 'play', 'para', 'continua', 'atras', 'volve',
+        'dolar', 'cuanto esta el dolar', 'cotizacion', 'que hora es', 'hora',
+        'modo estudio', 'modo juego', 'modo productividad', 'activar modo',
+        'activa observador', 'desactiva observador'
+    ];
+
+    return directPrefixes.some(prefix => norm.startsWith(prefix) || norm.startsWith(`el ${prefix}`));
+}
+
 function isWakeCommand(text) {
     const normalized = normalizeActivationText(text);
     if (/\b(tele|television|tv|netflix)\b/.test(normalized)) return false;
-    return /\b(prendete|prenderte|despertate|despierta|reactivate)\b/.test(normalized)
-        || (/\bjarvis\b/.test(normalized) && /\b(prende|encende|activa|desperta)\w*\b/.test(normalized));
+    return /^(?:hola\s+)?jarvis\s+(?:prendete|prenderte|despertate|despierta|reactivate)$/.test(normalized) || /^jarvis\s+activa(?:te)?$/.test(normalized);
 }
 
 function isSleepCommand(text) {
     const normalized = normalizeActivationText(text);
     if (/\b(tele|television|tv|netflix)\b/.test(normalized)) return false;
-    return /\b(apagate|apagarte|dormite|descansa)\b/.test(normalized)
-        || (/\bjarvis\b/.test(normalized) && /\b(apaga|dormi|descansa)\w*\b/.test(normalized));
+    return /^(?:hola\s+)?jarvis\s+(?:apagate|apagarte|dormite|modo descanso|entra en modo descanso)$/.test(normalized);
 }
 
 function restartRecognition(delay = 300) {
     clearTimeout(recognitionRestartTimer);
     recognitionRestartTimer = setTimeout(() => {
-        if (!recognition || !isSystemActive || isJarvisSpeaking) return;
+        if (!recognition || !isSystemActive || isJarvisSpeaking || localVoiceOnline) return;
         try { recognition.start(); } catch(error) {}
     }, delay);
 }
@@ -160,25 +268,27 @@ function handleRecognizedTranscript(transcript, alternatives = []) {
     if (!transcript || transcript.length < 2 || isJarvisSpeaking) return;
     const normalized = normalizeActivationText(transcript);
 
+    // 1. Manejo de apagar/dormir
     if (isSleepCommand(normalized)) {
+        stopAllSpeech();
         isDormant = true;
         setRingState('idle');
         updateMicButtonUI();
-        jarvisBox.textContent = "Sistema en pausa. Decí 'Préndete' para reactivar.";
+        jarvisBox.textContent = "Sistema en pausa. Decí 'Jarvis, prendete' para reactivar.";
         console.log('[Jarvis] 🔴 Modo dormido activado');
-        speak('Entendido, entrando en modo espera.');
+        speak('Entrando en modo descanso.');
         return;
     }
 
+    // 2. Manejo de despertar
     if (isWakeCommand(normalized)) {
-        if (isDormant) {
-            isDormant = false;
-            setRingState('listening');
-            updateMicButtonUI();
-            jarvisBox.textContent = 'Sistema activo. Esperando tus órdenes.';
-            console.log('[Jarvis] 🟢 Modo dormido desactivado');
-            speak('Estoy en línea. ¿Qué necesitás?');
-        }
+        isDormant = false;
+        setRingState('listening');
+        updateMicButtonUI();
+        jarvisBox.textContent = 'Sistema activo. Esperando tus órdenes.';
+        console.log('[Jarvis] 🟢 Modo dormido desactivado');
+        speak('Estoy en línea. ¿Qué necesitás?');
+        setAwaitingFollowUp(30);
         return;
     }
 
@@ -191,8 +301,39 @@ function handleRecognizedTranscript(transcript, alternatives = []) {
         return;
     }
 
+    // 3. Extracción de Wake-Word y filtrado de conversaciones de fondo
+    const wakeResult = extractWakeWordCommand(transcript);
+    let finalQuery = transcript;
+
+    if (wakeResult.hasWakeWord) {
+        if (!wakeResult.command || wakeResult.command.length < 2) {
+            // El usuario solo dijo "Jarvis" o "Hola Jarvis"
+            console.log('[Jarvis] 🙋 Wake-word detectado solo, solicitando orden');
+            jarvisBox.textContent = "Te escucho. ¿Qué necesitás?";
+            speak('Te escucho. ¿Qué necesitás?');
+            setAwaitingFollowUp(30);
+            return;
+        }
+        // Dijo "Jarvis [orden]" -> extraemos únicamente la orden limpia
+        finalQuery = wakeResult.command;
+        console.log(`[Jarvis] ⚡ Wake-word detectado. Orden limpia: "${finalQuery}" (Original: "${transcript}")`);
+        setAwaitingFollowUp(30);
+    } else if (isAwaitingFollowUp) {
+        // El usuario está en medio de una conversación activa con Jarvis
+        console.log(`[Jarvis] 💬 Modo seguimiento activo. Procesando: "${transcript}"`);
+        setAwaitingFollowUp(30);
+    } else if (isDirectImperativeCommand(transcript)) {
+        // Orden directa inequívoca ("abrí spotify", "poné youtube", etc.)
+        console.log(`[Jarvis] 🎯 Comando imperativo directo detectado: "${transcript}"`);
+        setAwaitingFollowUp(30);
+    } else {
+        // Es una conversación casual con otra persona o ruido en la habitación
+        console.log(`[Jarvis] 🔇 Conversación de fondo ignorada (no dirigida a Jarvis): "${transcript}"`);
+        return;
+    }
+
     const selected = alternatives.find(item => item.transcript === transcript) || alternatives[0] || {};
-    sendCommandToJarvis(transcript, { confidence: selected.confidence, alternatives });
+    sendCommandToJarvis(finalQuery, { confidence: selected.confidence, alternatives });
 }
 
 if (SpeechRecognition) {
@@ -485,7 +626,7 @@ socket.on('modes_updated', (modes) => {
 function renderCapabilities(query = '') {
     const normalizedQuery = normalizeText(query);
     const visible = capabilities.filter(item => normalizeText(
-        `${item.category} ${item.name} ${item.description} ${item.command}`
+        `${item.category || item.permission} ${item.name} ${item.description} ${(item.examples || []).join(' ')}`
     ).includes(normalizedQuery));
 
     if (visible.length === 0) {
@@ -496,8 +637,13 @@ function renderCapabilities(query = '') {
     capabilitiesList.innerHTML = '';
     let currentCategory = '';
     visible.forEach(item => {
-        if (item.category !== currentCategory) {
-            currentCategory = item.category;
+        const categoryLabels = {
+            standard: 'Asistente', 'memory-write': 'Memoria', destructive: 'Acciones delicadas',
+            'physical-device': 'Dispositivos físicos', 'desktop-control': 'Notebook', 'screen-observation': 'Privacidad'
+        };
+        const itemCategory = categoryLabels[item.permission] || item.permission || 'Asistente';
+        if (itemCategory !== currentCategory) {
+            currentCategory = itemCategory;
             const category = document.createElement('h4');
             category.textContent = currentCategory;
             capabilitiesList.appendChild(category);
@@ -509,11 +655,12 @@ function renderCapabilities(query = '') {
         card.innerHTML = `
             <span class="capability-name">${item.name}</span>
             <span class="capability-description">${item.description}</span>
-            <code>${item.command}</code>
+            <code>${item.examples?.[0] || item.id}</code>
+            <span class="capability-status ${item.available ? '' : 'offline'}">${item.available ? 'Disponible' : 'No disponible'} · ${item.confirmation ? 'requiere confirmación' : 'sin confirmación extra'}</span>
         `;
         card.addEventListener('click', () => {
             const textInput = document.getElementById('manual-text-input');
-            textInput.value = item.command;
+            textInput.value = item.examples?.[0] || '';
             textInput.focus();
             textInput.setSelectionRange(0, textInput.value.length);
             jarvisBox.textContent = 'Comando preparado. Reemplazá los datos entre corchetes y presioná Enter.';
@@ -534,6 +681,260 @@ fetch('/api/capabilities')
     });
 
 capabilitySearch.addEventListener('input', event => renderCapabilities(event.target.value));
+
+// --- Panel central de voz y memoria ---
+const brainModal = document.getElementById('brain-modal');
+const microphoneSelect = document.getElementById('voice-microphone');
+
+async function voiceApi(path, options = {}) {
+    const response = await fetch(path, {
+        ...options,
+        headers: options.body ? { 'Content-Type': 'application/json', ...(options.headers || {}) } : options.headers
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'La operación no se pudo completar.');
+    return payload;
+}
+
+async function loadVoiceSettings() {
+    const [settings, localStatus] = await Promise.all([
+        voiceApi('/api/voice/settings'),
+        voiceApi('/api/voice/local/status').catch(() => ({ online: false }))
+    ]);
+    voiceSettings = settings;
+    document.getElementById('voice-whisper-model').value = voiceSettings.whisperModel || 'turbo';
+    document.getElementById('voice-whisper-device').value = voiceSettings.whisperDevice || 'cuda';
+    document.getElementById('voice-confidence').value = voiceSettings.confidenceThreshold;
+    document.getElementById('voice-agreement').value = voiceSettings.agreementThreshold;
+    document.getElementById('voice-echo').checked = voiceSettings.echoCancellation;
+    document.getElementById('voice-noise').checked = voiceSettings.noiseSuppression;
+    document.getElementById('voice-gain').checked = voiceSettings.autoGainControl;
+    document.getElementById('voice-confirm').checked = voiceSettings.confirmUncertain;
+    document.getElementById('voice-local-context').checked = voiceSettings.localContextEnabled !== false;
+    renderLocalVoiceStatus(localStatus);
+}
+
+function renderLocalVoiceStatus(status = {}) {
+    localVoiceOnline = status.online === true && (!status.lastSeenAt || Date.now() - Date.parse(status.lastSeenAt) < 15000);
+    const box = document.getElementById('voice-engine-status');
+    box.textContent = localVoiceOnline
+        ? `Motor local activo · ${status.engine} · ${status.stage || status.state || 'listening'}${status.model ? ` · ${status.model}` : ''}`
+        : 'Motor local detenido · se usará el reconocimiento del navegador como respaldo';
+    box.classList.toggle('ready', localVoiceOnline);
+    box.classList.toggle('error', !localVoiceOnline);
+    if (Array.isArray(status.devices) && status.devices.length) {
+        microphoneSelect.innerHTML = '';
+        status.devices.forEach(device => {
+            const option = document.createElement('option');
+            option.value = String(device.index);
+            option.dataset.local = 'true';
+            option.textContent = device.name;
+            option.selected = Number(voiceSettings?.localDeviceIndex) === device.index;
+            microphoneSelect.appendChild(option);
+        });
+    }
+    if (localVoiceOnline) {
+        isSystemActive = true;
+        isDormant = status.state !== 'awake';
+        try { recognition?.abort(); } catch (_) {}
+        updateMicButtonUI();
+    }
+}
+
+function stopVoiceMonitor() {
+    clearInterval(voiceMeterTimer);
+    voiceMonitorStream?.getTracks().forEach(track => track.stop());
+    voiceAudioContext?.close().catch(() => {});
+    voiceMonitorStream = voiceAudioContext = voiceAnalyser = null;
+    currentAudioLevel = 0;
+}
+
+async function listMicrophones(requestPermission = false, startMonitor = false) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+        microphoneSelect.innerHTML = '<option value="">Predeterminado de Windows</option>';
+        return;
+    }
+    if (requestPermission) {
+        const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        permissionStream.getTracks().forEach(track => track.stop());
+    }
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audioinput');
+    microphoneSelect.innerHTML = '';
+    devices.forEach((device, index) => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.textContent = device.label || `Micrófono ${index + 1}`;
+        option.selected = voiceSettings?.microphoneId === device.deviceId;
+        microphoneSelect.appendChild(option);
+    });
+    if (!devices.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'Predeterminado de Windows (habilitá permiso para ver nombres)';
+        microphoneSelect.appendChild(option);
+    }
+    if (startMonitor) await startVoiceMonitor();
+}
+
+async function startVoiceMonitor() {
+    stopVoiceMonitor();
+    const deviceId = microphoneSelect.value || voiceSettings?.microphoneId;
+    voiceMonitorStream = await navigator.mediaDevices.getUserMedia({ audio: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        echoCancellation: voiceSettings?.echoCancellation !== false,
+        noiseSuppression: voiceSettings?.noiseSuppression !== false,
+        autoGainControl: voiceSettings?.autoGainControl !== false
+    } });
+    voiceAudioContext = new AudioContext();
+    voiceAnalyser = voiceAudioContext.createAnalyser();
+    voiceAnalyser.fftSize = 512;
+    voiceAudioContext.createMediaStreamSource(voiceMonitorStream).connect(voiceAnalyser);
+    const samples = new Uint8Array(voiceAnalyser.fftSize);
+    // 4 muestras por segundo: suficiente para cercanía/ruido sin animar a 60 FPS.
+    voiceMeterTimer = setInterval(() => {
+        voiceAnalyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (const value of samples) sum += ((value - 128) / 128) ** 2;
+        currentAudioLevel = Math.sqrt(sum / samples.length);
+        document.getElementById('voice-meter-bar').style.width = `${Math.min(100, currentAudioLevel * 600)}%`;
+    }, 250);
+}
+
+async function loadMemory() {
+    const [memory, learning] = await Promise.all([
+        voiceApi('/api/memory'),
+        voiceApi('/api/voice/learning')
+    ]);
+    document.getElementById('voice-learning-status').textContent =
+        `${learning.phrases.length} órdenes verificadas · ${learning.vocabulary.length} términos aprendidos · ${learning.lexicon.length} palabras activas`;
+    renderMemoryList('memory-preferences', memory.preferences, item => `<strong>${escapeHtml(item.key)}</strong>: ${escapeHtml(item.value)}`, 'preferences', true);
+    renderMemoryList('memory-corrections', memory.corrections, item => `<strong>${escapeHtml(item.from)}</strong> → ${escapeHtml(item.to)}`, 'corrections', true);
+    renderMemoryList('memory-conversations', [...memory.conversations].reverse().slice(0, 30), item => `<strong>${escapeHtml(item.role)}</strong> · ${escapeHtml(item.topic)}<br>${escapeHtml(item.text)}`, 'conversations');
+    renderMemoryList('memory-summaries', [...memory.summaries].reverse(), item => `<strong>${escapeHtml(item.topic)}</strong><br>${escapeHtml(item.text)}`, 'summaries');
+}
+
+function escapeHtml(value) {
+    const span = document.createElement('span');
+    span.textContent = String(value ?? '');
+    return span.innerHTML;
+}
+
+function renderMemoryList(id, items, formatter, collection, editable = false) {
+    const container = document.getElementById(id);
+    container.innerHTML = items.length ? '' : '<div class="memory-item">Sin datos.</div>';
+    items.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'memory-item';
+        row.innerHTML = `<span class="memory-item-actions">${editable ? '<button data-edit title="Corregir">✎</button>' : ''}<button data-delete title="Borrar">×</button></span>${formatter(item)}`;
+        row.querySelector('[data-delete]').addEventListener('click', async () => {
+            if (!confirm('¿Borrar este recuerdo?')) return;
+            await voiceApi(`/api/memory/${collection}/${item.id}`, { method: 'DELETE' });
+            await loadMemory();
+        });
+        row.querySelector('[data-edit]')?.addEventListener('click', async () => {
+            let patch;
+            if (collection === 'preferences') {
+                const key = prompt('Tema de la preferencia:', item.key);
+                if (key === null) return;
+                const value = prompt('Preferencia correcta:', item.value);
+                if (value === null) return;
+                patch = { key, value };
+            } else {
+                const from = prompt('Texto que Jarvis suele entender:', item.from);
+                if (from === null) return;
+                const to = prompt('Texto correcto:', item.to);
+                if (to === null) return;
+                patch = { from, to };
+            }
+            await voiceApi(`/api/memory/${collection}/${item.id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+            await loadMemory();
+        });
+        container.appendChild(row);
+    });
+}
+
+document.getElementById('btn-open-brain-modal').addEventListener('click', async () => {
+    brainModal.classList.remove('hidden');
+    try { await loadVoiceSettings(); if (!localVoiceOnline) await listMicrophones(false, false); await loadMemory(); }
+    catch (error) { document.getElementById('voice-engine-status').textContent = error.message; }
+});
+document.getElementById('close-brain-modal').addEventListener('click', () => brainModal.classList.add('hidden'));
+document.getElementById('btn-refresh-mics').addEventListener('click', () => listMicrophones(true, true).catch(error => alert(error.message)));
+microphoneSelect.addEventListener('change', () => startVoiceMonitor().catch(error => alert(error.message)));
+document.getElementById('btn-refresh-memory').addEventListener('click', () => loadMemory().catch(error => alert(error.message)));
+
+document.getElementById('btn-calibrate-voice').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'Guardá silencio…';
+    try {
+        if (!voiceAnalyser) await startVoiceMonitor();
+        const readings = [];
+        const sampler = setInterval(() => readings.push(currentAudioLevel), 100);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        clearInterval(sampler);
+        const floor = readings.reduce((sum, value) => sum + value, 0) / Math.max(1, readings.length);
+        voiceSettings = await voiceApi('/api/voice/settings', { method: 'POST', body: JSON.stringify({ noiseFloor: Math.max(.003, floor) }) });
+        document.getElementById('voice-engine-status').textContent = `Calibrado. Piso de ruido: ${voiceSettings.noiseFloor.toFixed(4)}`;
+    } finally { button.disabled = false; button.textContent = 'Calibrar ruido (3 s)'; }
+});
+
+document.getElementById('btn-save-voice').addEventListener('click', async () => {
+    const selected = microphoneSelect.selectedOptions[0];
+    voiceSettings = await voiceApi('/api/voice/settings', { method: 'POST', body: JSON.stringify({
+        microphoneId: selected?.dataset.local ? voiceSettings.microphoneId : microphoneSelect.value,
+        microphoneLabel: selected?.textContent || '',
+        localDeviceIndex: selected?.dataset.local ? Number(microphoneSelect.value) : voiceSettings.localDeviceIndex,
+        whisperModel: document.getElementById('voice-whisper-model').value,
+        whisperDevice: document.getElementById('voice-whisper-device').value,
+        confidenceThreshold: document.getElementById('voice-confidence').value,
+        agreementThreshold: document.getElementById('voice-agreement').value,
+        echoCancellation: document.getElementById('voice-echo').checked,
+        noiseSuppression: document.getElementById('voice-noise').checked,
+        autoGainControl: document.getElementById('voice-gain').checked,
+        confirmUncertain: document.getElementById('voice-confirm').checked,
+        localContextEnabled: document.getElementById('voice-local-context').checked
+    }) });
+    await startVoiceMonitor();
+    document.getElementById('voice-engine-status').textContent = 'Configuración de voz guardada.';
+});
+
+document.getElementById('btn-add-correction').addEventListener('click', async () => {
+    const from = document.getElementById('memory-correction-from').value.trim();
+    const to = document.getElementById('memory-correction-to').value.trim();
+    await voiceApi('/api/memory/corrections', { method: 'POST', body: JSON.stringify({ from, to }) });
+    document.getElementById('memory-correction-from').value = '';
+    document.getElementById('memory-correction-to').value = '';
+    await loadMemory();
+});
+
+socket.on('voice_status', status => {
+    const confidence = status.confidence ? `${Math.round(status.confidence * 100)}%` : 'sin dato';
+    document.getElementById('voice-engine-status').textContent = `${status.engine} · confianza ${confidence} · acuerdo ${Math.round((status.agreement || 0) * 100)}%`;
+});
+
+socket.on('local_voice_status', renderLocalVoiceStatus);
+
+socket.on('voice_confirmation_required', payload => {
+    pendingVoiceTranscript = payload;
+    brainModal.classList.remove('hidden');
+    document.getElementById('voice-confirmation-box').classList.remove('hidden');
+    document.getElementById('voice-confirmation-reason').textContent = `La transcripción es insegura: ${payload.reason}. Revisala antes de ejecutar.`;
+    document.getElementById('voice-confirmation-text').value = payload.text;
+});
+
+function executeConfirmedTranscript(teachCorrection) {
+    const corrected = document.getElementById('voice-confirmation-text').value.trim();
+    if (!corrected) return;
+    if (teachCorrection && pendingVoiceTranscript?.text !== corrected) {
+        voiceApi('/api/memory/corrections', { method: 'POST', body: JSON.stringify({ from: pendingVoiceTranscript.text, to: corrected }) }).catch(console.error);
+    }
+    document.getElementById('voice-confirmation-box').classList.add('hidden');
+    socket.emit('process_speech', { text: corrected, source: 'voice', confirmed: true, confidence: 1, audioLevel: currentAudioLevel });
+    pendingVoiceTranscript = null;
+}
+document.getElementById('btn-confirm-transcript').addEventListener('click', () => executeConfirmedTranscript(false));
+document.getElementById('btn-correct-transcript').addEventListener('click', () => executeConfirmedTranscript(true));
 
 async function tvApi(path, options = {}) {
     const response = await fetch(path, {
@@ -688,8 +1089,30 @@ socket.on('tv_progress', progress => {
     jarvisBox.textContent = progress.message;
 });
 
+socket.on('action_status', status => {
+    const phase = status.phase === 'failed' ? 'failed' : status.phase === 'completed' ? 'completed' : 'working';
+    showActionToast(status.message || 'Procesando…', phase, phase === 'working' ? 0 : 5000);
+    if (status.message) jarvisBox.textContent = status.message;
+});
+
 socket.on('response', (data) => {
-    speak(data.text, () => {
+    const enteringSleep = data.action === 'voice.sleep' || data.actionPayload?.voiceState === 'dormant';
+    const succeeded = data.status !== 'failed' && data.status !== 'unavailable';
+    showActionToast(
+        succeeded ? `Listo: ${data.text || 'acción completada.'}` : `No pude completarlo: ${data.text || 'error desconocido.'}`,
+        succeeded ? 'completed' : 'failed',
+        5500
+    );
+    if (data.action === 'voice.wake' || data.actionPayload?.voiceState === 'awake') {
+        isSystemActive = true;
+        isDormant = false;
+        updateMicButtonUI();
+    } else if (data.action === 'voice.sleep' || data.actionPayload?.voiceState === 'dormant') {
+        isSystemActive = true;
+        isDormant = true;
+        updateMicButtonUI();
+    }
+    const afterResponse = () => {
         // Ejecutar acciones visuales una vez termine de hablar
         if (data.action === "OPEN_MODE_MENU") {
             modeModal.classList.remove('hidden');
@@ -733,7 +1156,19 @@ socket.on('response', (data) => {
         if (isAskingFollowUp) {
             setAwaitingFollowUp(30); // 30 segundos para responder
         }
-    });
+    };
+    if (enteringSleep) {
+        stopAllSpeech();
+        jarvisBox.textContent = data.text || 'Sistema en pausa.';
+        afterResponse();
+        return;
+    }
+    if (data.suppressTts) {
+        jarvisBox.textContent = data.text;
+        afterResponse();
+    } else {
+        speak(data.text, afterResponse);
+    }
 });
 
 // Hotkey global ya no se usa (sistema manos libres activo)
@@ -809,6 +1244,15 @@ function startDormantMode() {
 // Click en el botón: toggle encender/apagar
 btnToggleMic.addEventListener('click', (e) => {
     e.preventDefault();
+    if (localVoiceOnline) {
+        const state = isDormant ? 'awake' : 'dormant';
+        if (state === 'dormant') stopAllSpeech();
+        voiceApi('/api/voice/local/state', { method: 'POST', body: JSON.stringify({ state }) })
+            .then(() => voiceApi('/api/voice/local/status'))
+            .then(renderLocalVoiceStatus)
+            .catch(error => { jarvisBox.textContent = error.message; });
+        return;
+    }
     if (isSystemActive && !isDormant) {
         isDormant = true;
         updateMicButtonUI();
@@ -822,7 +1266,15 @@ btnToggleMic.addEventListener('click', (e) => {
 
 // Arranca en descanso: mantiene únicamente el reconocimiento de la frase de
 // activación y bloquea todas las demás órdenes hasta oír "Jarvis, prendete".
-window.addEventListener('load', startDormantMode);
+window.addEventListener('load', async () => {
+    try {
+        const status = await voiceApi('/api/voice/local/status');
+        renderLocalVoiceStatus(status);
+        if (!localVoiceOnline) startDormantMode();
+    } catch (_) {
+        startDormantMode();
+    }
+});
 
 // Modal UI Handlers
 btnOpenModeModal.addEventListener('click', () => {
@@ -867,6 +1319,7 @@ document.getElementById('btn-send-text').addEventListener('click', () => {
 
     userBox.textContent = `"${queryToSend}"`;
     jarvisBox.textContent = "Analizando memoria y directivas...";
+    showActionToast(`Entendí: “${queryToSend}”. Lo estoy haciendo…`, 'working', 0);
     setRingState('idle');
     
     if (urlContext) queryToSend += " " + urlContext;
@@ -969,15 +1422,7 @@ const btnStop = document.getElementById('btn-stop-audio');
 
 if (btnStop) {
     btnStop.addEventListener('click', () => {
-        speechRunId++;
-        fetch('/api/tts/stop', { method: 'POST' }).catch(() => {});
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.resume();
-        isJarvisSpeaking = false;
-        if(isSystemActive) { setRingState('idle'); }
-        if (recognition && isSystemActive) {
-            setTimeout(() => { try { recognition.start(); } catch(error) {} }, 200);
-        }
+        stopAllSpeech({ restartBrowserRecognition: true });
         btnStop.innerHTML = '<i class="fa-solid fa-check"></i> Silenciado';
         setTimeout(() => btnStop.innerHTML = '<i class="fa-solid fa-volume-xmark"></i> Detener Audio', 2500);
     });

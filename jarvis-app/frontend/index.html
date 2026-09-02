@@ -28,12 +28,18 @@
             <div class="logo">
                 <i class="fa-solid fa-microchip"></i> JARVIS <span>OS</span>
             </div>
-            <div style="display: flex; align-items: center; gap: 15px;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <button id="btn-emergency-stop" class="voice-test-btn" type="button" style="background: rgba(255, 51, 102, 0.2); border-color: #ff3366; color: #ff3366; font-weight: bold;" title="Parada de Emergencia Global (Ctrl+Alt+J)">
+                    <i class="fa-solid fa-triangle-exclamation"></i> DETENER TODO
+                </button>
                 <select id="voice-select" class="voice-select-box">
                     <option value="">Cargando voces...</option>
                 </select>
                 <button id="btn-test-voice" class="voice-test-btn" type="button" title="Probar salida de voz">
                     <i class="fa-solid fa-volume-high"></i> Probar voz
+                </button>
+                <button id="btn-open-brain-modal" class="voice-test-btn" type="button" title="Voz, memoria y acciones">
+                    <i class="fa-solid fa-brain"></i> Voz y memoria
                 </button>
                 <div class="system-status">
                     <span class="status-dot"></span> Online
@@ -43,7 +49,6 @@
 
         <!-- MAIN LAYOUT -->
         <main class="main-layout">
-            
             <!-- LEFT PANEL: MODES -->
             <aside class="side-panel modes-panel">
                 <h3><i class="fa-solid fa-layer-group"></i> Modos de Operación</h3>
@@ -57,12 +62,11 @@
 
             <!-- CENTER PANEL: AI INTERFACE -->
             <section class="center-panel">
-                
                 <div class="visualizer-container" id="visualizer-container" style="position: relative; height: 350px;">
                     <!-- El canvas 3D se inyectará aquí -->
                 </div>
 
-                <div class="transcript-box" >
+                <div class="transcript-box">
                     <div id="user-transcript" class="user-text">Esperando interacción...</div>
                     <div id="jarvis-response" class="jarvis-text">Sistema Jarvis. Inicia el sistema para interactuar.</div>
                     
@@ -71,7 +75,7 @@
                     </div>
                 </div>
 
-                <!-- PANEL DE ARCHIVOS Y LINKS (NUEVO) -->
+                <!-- PANEL DE ARCHIVOS Y LINKS -->
                 <div class="controls-wrapper">
                     <div class="context-input-container">
                         <div class="context-group">
@@ -96,7 +100,6 @@
                         </button>
                     </div>
                 </div>
-
             </section>
 
             <!-- RIGHT PANEL: CAPABILITIES AND COMMANDS -->
@@ -112,121 +115,139 @@
                         <i class="fa-solid fa-tv"></i> Configurar TV / BroadLink
                     </button>
                 </div>
-                <div id="capabilities-list" class="capabilities-list">
-                    <p class="capabilities-empty">Cargando funciones...</p>
-                </div>
+                <ul id="capabilities-list" class="capabilities-list" role="list">
+                    <!-- Dinámico -->
+                </ul>
             </aside>
         </main>
     </div>
 
-    <!-- MODAL: CREAR MODO -->
+    <!-- MODAL CREAR MODO -->
     <div id="mode-modal" class="modal hidden">
-        <div class="modal-content glass-panel">
-            <span id="close-modal" class="close">&times;</span>
-            <h2>Nuevo Modo de IA</h2>
+        <div class="modal-content">
+            <span class="close-btn" id="close-modal">&times;</span>
+            <h2>Nuevo Modo Operativo</h2>
             <form id="mode-form">
                 <div class="form-group">
-                    <label for="mode-name">Nombre del Modo:</label>
-                    <input type="text" id="mode-name" required placeholder="Ej: Modo Hacker">
+                    <label>Nombre del Modo:</label>
+                    <input type="text" id="mode-name" required placeholder="Ej: Modo Estudio">
                 </div>
                 <div class="form-group">
-                    <label for="mode-desc">Descripción (Propósito del modo):</label>
-                    <textarea id="mode-desc" required placeholder="Ej: Respuestas con tono sarcástico y enfocado en ciberseguridad..."></textarea>
+                    <label>Prompt del Sistema (Instrucciones):</label>
+                    <textarea id="mode-prompt" required rows="3" placeholder="Ej: Sé conciso, enfócate en matemáticas..."></textarea>
                 </div>
-                <button type="submit" class="action-btn w-100">Guardar en Base de Datos</button>
+                <div class="form-group">
+                    <label>Apps Asociadas (Separadas por coma):</label>
+                    <input type="text" id="mode-apps" placeholder="Ej: chrome, notion, spotify">
+                </div>
+                <div class="form-group">
+                    <label>Disposición de Pantalla:</label>
+                    <select id="mode-layout">
+                        <option value="single">Pantalla Completa</option>
+                        <option value="split_horizontal">Dividida Horizontal</option>
+                        <option value="split_vertical">Dividida Vertical</option>
+                    </select>
+                </div>
+                <button type="submit" class="action-btn">Guardar Modo</button>
             </form>
         </div>
     </div>
 
-    <!-- MODAL: CONTROL BROADLINK Y NETFLIX -->
+    <!-- MODAL TV Y BROADLINK -->
     <div id="tv-modal" class="modal hidden">
-        <div class="modal-content glass-panel tv-modal-content">
-            <span id="close-tv-modal" class="close">&times;</span>
-            <h2><i class="fa-solid fa-tv"></i> Control TV con BroadLink</h2>
-            <p class="tv-help">El BroadLink y esta PC deben estar en la misma red Wi-Fi. Para aprender una tecla, pulsá el botón de abajo y luego apuntá el control físico al BroadLink. POWER es una tecla de alternancia: usá “prendé la tele” solamente cuando esté apagada.</p>
+        <div class="modal-content tv-modal-content">
+            <span class="close-btn" id="close-tv-modal">&times;</span>
+            <h2><i class="fa-solid fa-tv"></i> Control de Televisión y Netflix</h2>
+            <p class="modal-subtitle">Configura tu BroadLink y los botones aprendidos.</p>
 
-            <div id="tv-status" class="tv-status">Consultando estado…</div>
-            <div class="tv-test-row">
-                <button id="btn-tv-discover" class="action-btn"><i class="fa-solid fa-wifi"></i> Buscar BroadLink</button>
-                <input id="tv-device-ip" type="text" inputmode="decimal" placeholder="IP manual, ej. 192.168.1.50">
+            <div id="tv-status" class="tv-status-card">
+                <div class="tv-status-badge">Estado: Comprobando...</div>
+                <div class="tv-status-details"></div>
             </div>
 
-            <h3>1. Aprender teclas</h3>
-            <div class="tv-learn-grid">
-                <button data-tv-learn="power">POWER</button>
-                <button data-tv-learn="up">ARRIBA</button>
-                <button data-tv-learn="down">ABAJO</button>
-                <button data-tv-learn="left">IZQUIERDA</button>
-                <button data-tv-learn="right">DERECHA</button>
-                <button data-tv-learn="ok">OK</button>
-                <button data-tv-learn="back">ATRÁS</button>
-                <button data-tv-learn="netflix">NETFLIX (opcional)</button>
+            <div id="tv-operation-message" class="tv-operation-message" style="display: none;"></div>
+
+            <div class="tv-tabs">
+                <button class="tv-tab-btn active" data-tab="setup">Configuración</button>
+                <button class="tv-tab-btn" data-tab="learning">Aprender Botones</button>
+                <button class="tv-tab-btn" data-tab="testing">Pruebas Rápidas</button>
             </div>
 
-            <div class="tv-test-row">
-                <select id="tv-test-button">
-                    <option value="power">POWER</option><option value="up">ARRIBA</option>
-                    <option value="down">ABAJO</option><option value="left">IZQUIERDA</option>
-                    <option value="right">DERECHA</option><option value="ok">OK</option>
-                    <option value="back">ATRÁS</option><option value="netflix">NETFLIX</option>
-                </select>
-                <button id="btn-tv-test" class="hud-btn">Probar tecla</button>
+            <div class="tv-tab-content" id="tab-setup">
+                <form id="tv-settings-form">
+                    <div class="form-group">
+                        <label>IP del Dispositivo:</label>
+                        <input type="text" id="tv-host" placeholder="Ej: 192.168.1.100">
+                    </div>
+                    <div class="form-group">
+                        <label>MAC Address:</label>
+                        <input type="text" id="tv-mac" placeholder="Ej: 34:ea:34:xx:xx:xx">
+                    </div>
+                    <div class="form-group">
+                        <label>Tipo de Dispositivo (Hex):</label>
+                        <input type="text" id="tv-dev-type" placeholder="Ej: 0x272a (Opcional)">
+                    </div>
+                    <div class="form-row">
+                        <button type="button" id="btn-discover-tv" class="action-btn secondary"><i class="fa-solid fa-radar"></i> Auto-Detectar</button>
+                        <button type="submit" class="action-btn primary"><i class="fa-solid fa-floppy-disk"></i> Guardar Configuración</button>
+                    </div>
+                </form>
             </div>
 
-            <h3>2. Calibrar Netflix</h3>
-            <div class="tv-settings-grid">
-                <label>Arranque de TV (segundos)<input id="tv-boot-wait" type="number" min="1" max="120" value="45"></label>
-                <label>Carga del perfil (segundos)<input id="tv-profile-wait" type="number" min="1" max="30" value="8"></label>
-                <label>Posición del perfil Rodri<input id="tv-profile-index" type="number" min="0" max="10" value="0"></label>
-                <label>Bajadas hasta “Continuar viendo”<input id="tv-continue-down" type="number" min="0" max="10" value="1"></label>
-                <label>Posición dentro de la fila<input id="tv-continue-right" type="number" min="0" max="10" value="0"></label>
-                <label>Demora entre teclas (ms)<input id="tv-key-delay" type="number" min="100" max="1500" value="350"></label>
-                <label>Demora al escribir (ms)<input id="tv-keyboard-delay" type="number" min="300" max="2000" value="700"></label>
-                <label class="tv-checkbox tv-wide"><input id="tv-use-netflix-key" type="checkbox"> Pulsar tecla NETFLIX después de encender (dejalo apagado si la TV ya inicia en Netflix)</label>
-                <label class="tv-checkbox tv-wide"><input id="tv-confirm-play" type="checkbox" checked> Pulsar OK otra vez para reproducir después de elegir el resultado</label>
+            <div class="tv-tab-content" id="tab-learning" style="display: none;">
+                <div class="learning-grid">
+                    <button class="btn-learn" data-btn="power"><i class="fa-solid fa-power-off"></i> Power</button>
+                    <button class="btn-learn" data-btn="home"><i class="fa-solid fa-house"></i> Home</button>
+                    <button class="btn-learn" data-btn="netflix"><i class="fa-solid fa-play"></i> Netflix</button>
+                    <button class="btn-learn" data-btn="up"><i class="fa-solid fa-arrow-up"></i> Arriba</button>
+                    <button class="btn-learn" data-btn="down"><i class="fa-solid fa-arrow-down"></i> Abajo</button>
+                    <button class="btn-learn" data-btn="left"><i class="fa-solid fa-arrow-left"></i> Izquierda</button>
+                    <button class="btn-learn" data-btn="right"><i class="fa-solid fa-arrow-right"></i> Derecha</button>
+                    <button class="btn-learn" data-btn="ok"><i class="fa-solid fa-check"></i> OK / Enter</button>
+                    <button class="btn-learn" data-btn="back"><i class="fa-solid fa-rotate-left"></i> Volver</button>
+                    <button class="btn-learn" data-btn="vol_up"><i class="fa-solid fa-volume-high"></i> Vol +</button>
+                    <button class="btn-learn" data-btn="vol_down"><i class="fa-solid fa-volume-low"></i> Vol -</button>
+                </div>
             </div>
-            <button id="btn-tv-save" class="action-btn">Guardar calibración</button>
 
-            <h3>3. Probar secuencia</h3>
-            <div class="tv-test-row">
-                <input id="tv-netflix-title" type="text" placeholder="Título para buscar (opcional)">
-                <label class="tv-checkbox"><input id="tv-power-on-test" type="checkbox" checked> TV apagada</label>
-                <button id="btn-tv-run" class="action-btn">Ejecutar Netflix</button>
-                <button id="btn-tv-cancel" class="hud-btn btn-stop">Cancelar</button>
-            </div>
-            <p id="tv-operation-message" class="tv-operation-message"></p>
-        </div>
-    </div>
-
-    <!-- MODAL: INPAINTING CANVAS -->
-    <div id="inpainting-modal" class="modal hidden">
-        <div class="modal-content glass-panel" style="max-width: 800px; text-align: center;">
-            <span id="close-inpainting-modal" class="close">&times;</span>
-            <h2>Pincel Mágico (Edición con Máscara)</h2>
-            <p style="margin-bottom: 15px; font-size: 0.9em; opacity: 0.8;">Pinta la zona EXACTA que quieres modificar. Todo lo negro se mantendrá idéntico.</p>
-            <div style="display: flex; gap: 10px; justify-content: center; margin-bottom: 15px; align-items: center;">
-                <label>Pincel: <input type="range" id="brush-size" min="5" max="100" value="30" style="vertical-align: middle;"></label>
-                <button id="btn-clear-mask" class="hud-btn" style="display: inline-block;">Limpiar</button>
-                <button id="btn-save-mask" class="action-btn">Guardar Máscara</button>
-            </div>
-            <div style="position: relative; display: inline-block; box-shadow: 0 0 15px rgba(0,255,255,0.2);">
-                <img id="inpainting-bg" src="" style="max-width: 100%; max-height: 50vh; display: block; border-radius: 8px;">
-                <canvas id="inpainting-canvas" style="position: absolute; top: 0; left: 0; cursor: crosshair; opacity: 0.65; border-radius: 8px;"></canvas>
+            <div class="tv-tab-content" id="tab-testing" style="display: none;">
+                <div class="testing-grid">
+                    <button class="btn-test-cmd" data-btn="power">Test Power</button>
+                    <button class="btn-test-cmd" data-btn="netflix">Test Netflix</button>
+                    <button class="btn-test-cmd" data-btn="home">Test Home</button>
+                    <button class="btn-test-cmd" data-btn="ok">Test OK</button>
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- Three.js para el núcleo 3D Real -->
+    <!-- MODAL DE VOZ Y MEMORIA -->
+    <div id="brain-modal" class="modal hidden">
+        <div class="modal-content brain-modal-content">
+            <span class="close-btn" id="close-brain-modal">&times;</span>
+            <h2><i class="fa-solid fa-brain"></i> Configuración de Voz y Memoria</h2>
+            <div class="brain-tabs">
+                <button class="brain-tab-btn active" data-tab="voice">Ajustes de Voz</button>
+                <button class="brain-tab-btn" data-tab="memory">Memoria y Preferencias</button>
+            </div>
+            <div class="brain-tab-content" id="tab-voice">
+                <p>Configuración del reconocimiento de voz continuo y anti-eco.</p>
+                <div class="form-group">
+                    <label>Umbral de Confianza:</label>
+                    <input type="range" id="voice-conf-range" min="0" max="100" value="70">
+                </div>
+            </div>
+            <div class="brain-tab-content" id="tab-memory" style="display: none;">
+                <p>Recuerdos persistentes almacenados en la base de datos de Jarvis.</p>
+                <ul id="memory-items-list" style="list-style: none; padding: 0;"></ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    
-    <!-- Socket.io -->
-    <script src="/socket.io/socket.io.js"></script>
     <script src="jarvis3d.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
-
-
-
-
-

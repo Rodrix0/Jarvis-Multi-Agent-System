@@ -18,7 +18,6 @@ function saveCustomCommand(triggerPhrase, targetApp) {
         } catch (e) { console.error("Error leyendo comandos.json:", e); }
     }
 
-    // Limpiar puntuación del trigger para coincidencias más fáciles
     let cleanTrigger = triggerPhrase.toLowerCase().replace(/['".,?!]/g, '').trim();
     let cleanTarget = targetApp.toLowerCase().trim();
 
@@ -26,20 +25,50 @@ function saveCustomCommand(triggerPhrase, targetApp) {
     fs.writeFileSync(customCommandsFile, JSON.stringify(commands, null, 2));
 }
 
-
 // --- 1. Scraper Dinámico ---
 async function buscarEnYoutube(query) {
     const queryFormateado = encodeURIComponent(query);
-    const urlBusqueda = `https://www.youtube.com/results?search_query=${queryFormateado}`;
+    return `https://www.youtube.com/results?search_query=${queryFormateado}`;
+}
 
-    try {
-        const respuesta = await fetch(urlBusqueda);
-        // Simplemente devolvemos la URL de búsqueda en vez de forzar a abrir el primer video
-        return urlBusqueda;
-    } catch (error) {
-        console.error("Falló la búsqueda:", error);
+function mediaSearchUrl(platform, query) {
+    const encoded = encodeURIComponent(String(query || '').trim());
+    if (platform === 'youtube') return `https://www.youtube.com/results?search_query=${encoded}`;
+    if (platform === 'netflix') return `https://www.netflix.com/search?q=${encoded}`;
+    throw new Error(`Plataforma de búsqueda no admitida: ${platform}`);
+}
+
+function isWebUrl(value) {
+    return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function urlLaunchCommand(url, platform = os.platform()) {
+    const target = String(url || '').trim();
+    if (!isWebUrl(target)) throw new Error('La dirección web no es válida.');
+    if (platform === 'win32') return `start "" "${target}"`;
+    if (platform === 'darwin') return `open "${target}"`;
+    return `xdg-open "${target}"`;
+}
+
+function discordLaunchCommand(environment = process.env) {
+    const localAppData = environment.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    const installations = [
+        { folder: 'Discord', executable: 'Discord.exe' },
+        { folder: 'DiscordPTB', executable: 'DiscordPTB.exe' },
+        { folder: 'DiscordCanary', executable: 'DiscordCanary.exe' }
+    ];
+    for (const installation of installations) {
+        const updater = path.join(localAppData, installation.folder, 'Update.exe');
+        if (fs.existsSync(updater)) {
+            return `start "" "${updater}" --processStart ${installation.executable}`;
+        }
     }
-    return "https://www.youtube.com"; // Fallback general
+    return 'start discord:';
+}
+
+async function openMediaSearch(platform, query) {
+    const url = mediaSearchUrl(platform, query);
+    return openApp(url);
 }
 
 // --- 2. Sistema de Memoria Persistente ---
@@ -47,12 +76,10 @@ async function procesarMemoriaDinamica(busqueda, modeId) {
     const archivoMemoria = path.join(__dirname, '..', 'data', 'memoria.json');
     let memoria = {};
 
-    // Nos aseguramos de que el sistema de memoria exista
     if (!fs.existsSync(path.dirname(archivoMemoria))) {
         fs.mkdirSync(path.dirname(archivoMemoria), { recursive: true });
     }
 
-    // Leemos la memoria si el archivo ya existe
     if (fs.existsSync(archivoMemoria)) {
         try {
             memoria = JSON.parse(fs.readFileSync(archivoMemoria, 'utf8'));
@@ -61,8 +88,6 @@ async function procesarMemoriaDinamica(busqueda, modeId) {
         }
     }
 
-    // Revisamos si ya conocemos la búsqueda y NO interfiere con el contexto
-    // Para evitar que "chat gpt" guardado abra youtube si antes falló, usamos claves con prefijo de modo
     const claveMemoria = `${modeId}_${busqueda}`;
 
     if (memoria[claveMemoria]) {
@@ -70,11 +95,8 @@ async function procesarMemoriaDinamica(busqueda, modeId) {
         return memoria[claveMemoria];
     } else {
         console.log(`[Búsqueda Dinámica]: Navegando en internet para aprender "${busqueda}"...`);
-
         let nuevoLink;
 
-        // Enrutador inteligente avanzado (con consciencia de MODO):
-        // 1. Si pide ChatGPT o Gemini EXPLÍCITAMENTE
         if (busqueda.includes('chat gpt') || busqueda.includes('chatgpt') || busqueda.includes('en chat') || busqueda.includes('con chat') || busqueda.includes('chat')) {
             let promptBase = busqueda.replace(/chat|chat gpt|chatgpt|en chat|con chat|busca en|buscar|busca|y me busque sobre|y busca sobre|y busca|la palabra|información|informacion/gi, '').trim();
             if (promptBase.length > 2) {
@@ -84,32 +106,20 @@ async function procesarMemoriaDinamica(busqueda, modeId) {
             }
         } else if (busqueda.includes('gemini')) {
             nuevoLink = 'https://gemini.google.com';
-        }
-        // 2. Si estamos en modo ESTUDIO o pide INFORMACION
-        else if (modeId === 'estudio' || busqueda.includes('información') || busqueda.includes('informacion') || busqueda.includes('google')) {
-            let queryLimpio = busqueda
-                .replace(/información sobre|informacion sobre|información de|informacion de|información|informacion|en google/gi, '')
-                .trim();
-
-            // Si el query quedó super corto y estamos en estudio, los mandamos a ChatGPT por defecto
+        } else if (modeId === 'estudio' || busqueda.includes('información') || busqueda.includes('informacion') || busqueda.includes('google')) {
+            let queryLimpio = busqueda.replace(/información sobre|informacion sobre|información de|informacion de|información|informacion|en google/gi, '').trim();
             if (queryLimpio.length < 3 && modeId === 'estudio') {
                 nuevoLink = 'https://chat.openai.com';
             } else {
                 nuevoLink = `https://www.google.com/search?q=${encodeURIComponent(queryLimpio)}`;
             }
-        }
-        // 3. Default: Youtube, limpiando la palabra clave previamente (Ideal para modo productividad o juego)
-        else {
-            let queryYoutube = busqueda
-                .replace(/youtube|en youtube|buscar|busca|pon|el canal de|el video de/gi, '')
-                .trim();
+        } else {
+            let queryYoutube = busqueda.replace(/youtube|en youtube|buscar|busca|pon|el canal de|el video de/gi, '').trim();
             nuevoLink = await buscarEnYoutube(queryYoutube);
         }
 
-        // Lo guardamos en el JSON para no tener que buscarlo nunca más
         memoria[claveMemoria] = nuevoLink;
         fs.writeFileSync(archivoMemoria, JSON.stringify(memoria, null, 2));
-
         return nuevoLink;
     }
 }
@@ -118,19 +128,19 @@ async function procesarMemoriaDinamica(busqueda, modeId) {
 async function openApp(appName, modeId = 'productividad') {
     const platform = os.platform();
     let command = '';
-    // Limpieza mega estricta para quitar variaciones que el cerebro haya dejado pasar
-    let lowerApp = appName.toLowerCase().trim();
+    let lowerApp = String(appName || '').toLowerCase().trim();
     lowerApp = lowerApp.replace(/^(abrir|abre|abrí|abr[ií]me|iniciar|inici[aá]|arrancar|arranc[aá]|lanza|ejecutar|ejecut[aá]|entrar a|entr[aá] a|entrar|entr[aá]|met[eé]te en|ir a|ve a|buscar|busca|buscar en|pon|pon[eé]|reproduce|abrirme el|abrime el|el|la|los|las|un|una)\s+/gi, '').trim();
 
-    // 1. Cargar links personalizados (ignorado en Git por estar en /data/)
+    if (isWebUrl(lowerApp)) {
+        command = urlLaunchCommand(lowerApp, platform);
+    }
+
     const customLinksFile = path.join(__dirname, '..', 'data', 'custom_links.json');
     let customLinks = {};
     if (fs.existsSync(customLinksFile)) {
         try {
             customLinks = JSON.parse(fs.readFileSync(customLinksFile, 'utf8'));
-        } catch (e) {
-            console.error("Error leyendo custom_links.json:", e);
-        }
+        } catch (e) { console.error("Error leyendo custom_links.json:", e); }
     }
 
     const defaultWebsiteMap = {
@@ -156,22 +166,34 @@ async function openApp(appName, modeId = 'productividad') {
         'github': 'https://github.com'
     };
 
-    // Combinar los links por defecto con los personalizados del usuario
     const websiteMap = { ...defaultWebsiteMap, ...customLinks };
 
     const pcGamesMap = {
         'steam': 'start steam://',
         'spotify': 'start spotify:',
-        'discord': 'start discord:',
+        'discord': discordLaunchCommand(),
         'epic games': 'start com.epicgames.launcher://',
         'league of legends': 'start "" "C:\\Riot Games\\Riot Client\\RiotClientServices.exe" --launch-product=league_of_legends --launch-patchline=live',
         'lol': 'start "" "C:\\Riot Games\\Riot Client\\RiotClientServices.exe" --launch-product=league_of_legends --launch-patchline=live',
         'valorant': 'start "" "C:\\Riot Games\\Riot Client\\RiotClientServices.exe" --launch-product=valorant --launch-patchline=live',
-        'minecraft': 'start minecraft://'
+        'minecraft': 'start minecraft://',
+        'visual studio code': 'code || start "" "C:\\Users\\' + (process.env.USERNAME || 'Rodrigo') + '\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"',
+        'vs code': 'code || start "" "C:\\Users\\' + (process.env.USERNAME || 'Rodrigo') + '\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"',
+        'vscode': 'code || start "" "C:\\Users\\' + (process.env.USERNAME || 'Rodrigo') + '\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"',
+        'visual studio': 'code || start "" "C:\\Users\\' + (process.env.USERNAME || 'Rodrigo') + '\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"',
+        'word': 'start winword',
+        'excel': 'start excel',
+        'powerpoint': 'start powerpnt',
+        'power point': 'start powerpnt',
+        'descargas': 'start "" "' + path.join(os.homedir(), 'Downloads') + '"',
+        'escritorio': 'start "" "' + path.join(os.homedir(), 'Desktop') + '"',
+        'explorador': 'start explorer',
+        'archivos': 'start explorer'
     };
 
     // A. ¿Es un juego/programa nativo exacto?
     for (const [key, cmd] of Object.entries(pcGamesMap)) {
+        if (command) break;
         if (lowerApp === key || lowerApp === `el ${key}`) {
             command = platform === 'win32' ? cmd : `open "${key}"`;
             break;
@@ -179,7 +201,6 @@ async function openApp(appName, modeId = 'productividad') {
             if (key === 'spotify') {
                 let query = lowerApp.replace(key, '').replace(/reproduce|pon|busca|buscar|en|cancion|canciones|playlist|de|la|el|los|las/gi, '').trim();
                 if (query.length > 0) {
-                    // Usar Spotify Web API si está autenticado
                     const spotifyService = require('./spotifyService');
                     if (spotifyService.isAuthenticated()) {
                         try {
@@ -188,11 +209,9 @@ async function openApp(appName, modeId = 'productividad') {
                             return true;
                         } catch (e) {
                             console.error('[Spotify API] Error:', e.message);
-                            // Fallback: abrir Spotify normalmente
                             command = platform === 'win32' ? cmd : `open "${key}"`;
                         }
                     } else {
-                        console.log('[Spotify] No autenticado. Abriendo app normalmente. Usa http://localhost:3000/api/spotify/login para conectar.');
                         command = platform === 'win32' ? cmd : `open "${key}"`;
                     }
                 } else {
@@ -205,14 +224,18 @@ async function openApp(appName, modeId = 'productividad') {
         }
     }
 
-    // B. ¿Es una aplicación del núcleo de Windows puro? (Garantizadas globalmente)
+    // B. ¿Es una aplicación del núcleo de Windows?
     const localAppsMap = {
         'calculadora': 'calc',
         'calc': 'calc',
         'bloc de notas': 'notepad',
         'notepad': 'notepad',
+        'notas': 'notepad',
         'paint': 'mspaint',
-        'administrador de tareas': 'taskmgr'
+        'administrador de tareas': 'taskmgr',
+        'cmd': 'start cmd',
+        'terminal': 'start cmd',
+        'consola': 'start cmd'
     };
 
     if (!command) {
@@ -224,14 +247,13 @@ async function openApp(appName, modeId = 'productividad') {
         }
     }
 
+    // C. ¿Es una web conocida?
     if (!command) {
         if (lowerApp.includes('chrome') || lowerApp.includes('google chrome')) {
             command = platform === 'win32' ? 'start chrome' : 'open -a "Google Chrome"';
-            // Casos web exactos
         } else {
             for (const [siteName, url] of Object.entries(websiteMap)) {
-                // Si la orden contiene la palabra, PERO el usuario no está pidiendo buscar un video o info extra (es corta)
-                if (lowerApp.includes(siteName) && lowerApp.length <= siteName.length + 5) {
+                if (lowerApp.includes(siteName) && lowerApp.length <= siteName.length + 8) {
                     command = platform === 'win32' ? `start "" "${url}"` : `open "${url}"`;
                     break;
                 }
@@ -239,53 +261,67 @@ async function openApp(appName, modeId = 'productividad') {
         }
     }
 
+    // D. Búsqueda en aplicaciones indexadas y archivos/carpetas del Escritorio
     if (!command) {
         const discovered = appDiscoveryService.getAppDictionary();
-        // Palabras a ignorar al buscar
-        const ignoreWords = ["el", "la", "los", "las", "un", "una", "del", "de", "pdf", "carpeta", "archivo", "documento", "foto", "imagen"];
+        const ignoreWords = ["el", "la", "los", "las", "un", "una", "del", "de", "carpeta", "archivo", "documento", "programa", "app"];
         
         function normalizeText(text) {
-            return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/['".,?!\-]/g, ' ');
+            return String(text || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/['".,?!\-_]/g, ' ').replace(/\s+/g, ' ').trim();
         }
 
-        const userKeywords = normalizeText(lowerApp).split(/\s+/).filter(w => w.length > 1 && !ignoreWords.includes(w));
+        const cleanAppQuery = normalizeText(lowerApp);
+        const userKeywords = cleanAppQuery.split(/\s+/).filter(w => w.length > 1 && !ignoreWords.includes(w));
 
+        // 1. Buscar en el diccionario indexado
         for (const [key, appPath] of Object.entries(discovered)) {
             const normalizedKey = normalizeText(key);
-            
-            // Chequeo 1: Substring directo
-            const cleanKey = key.replace(/['".,?!\-]/g, '').replace(/\s+/g, '').trim();
-            const cleanUserQuery = lowerApp.replace(/['".,?!\-]/g, '').replace(/\s+/g, '').trim();
             let isMatch = false;
 
-            if (cleanKey.includes(cleanUserQuery) || cleanUserQuery.includes(cleanKey) || cleanKey === cleanUserQuery) {
+            if (normalizedKey === cleanAppQuery) {
                 isMatch = true;
-            } else if (userKeywords.length > 0) {
-                // Chequeo 2: ¿Todas las palabras clave del usuario están en el nombre del archivo?
-                const allWordsMatch = userKeywords.every(kw => normalizedKey.includes(kw));
-                if (allWordsMatch) isMatch = true;
+            } else if (cleanAppQuery.length >= 3 && (normalizedKey.includes(cleanAppQuery) || cleanAppQuery.includes(normalizedKey))) {
+                isMatch = true;
+            } else if (userKeywords.length > 0 && userKeywords.every(kw => normalizedKey.includes(kw))) {
+                isMatch = true;
             }
 
-            if (isMatch) {
-                if (appPath.startsWith("http")) {
-                    command = platform === 'win32' ? `start "" "${appPath}"` : `open "${appPath}"`;
-                } else {
-                    command = platform === 'win32' ? `start "" "${appPath}"` : `open "${appPath}"`;
-                }
-                console.log(`\n[Jarvis HDD] 🎯 Encontré un programa/archivo en tu disco duro que coincide: ${key}\nLanzando: ${appPath}`);
+            if (isMatch && appPath) {
+                console.log(`\n[Jarvis HDD] 🎯 Encontré aplicación/archivo indexado: ${key} -> ${appPath}`);
+                command = platform === 'win32' ? `start "" "${appPath}"` : `open "${appPath}"`;
                 break;
+            }
+        }
+
+        // 2. Si todavía no se encontró, escanear directamente el Escritorio en tiempo real
+        if (!command && platform === 'win32') {
+            const desktopDirs = [path.join(os.homedir(), 'Desktop'), 'C:\\Users\\Public\\Desktop'];
+            for (const dDir of desktopDirs) {
+                if (command) break;
+                if (!fs.existsSync(dDir)) continue;
+                try {
+                    const files = fs.readdirSync(dDir);
+                    for (const file of files) {
+                        const baseName = path.parse(file).name;
+                        const normFile = normalizeText(baseName);
+                        if (normFile === cleanAppQuery || (userKeywords.length > 0 && userKeywords.every(kw => normFile.includes(kw)))) {
+                            const fullPath = path.join(dDir, file);
+                            console.log(`\n[Jarvis Escritorio] 🎯 Encontré elemento directo en el Escritorio: ${file} -> ${fullPath}`);
+                            command = `start "" "${fullPath}"`;
+                            break;
+                        }
+                    }
+                } catch (e) {}
             }
         }
     }
 
-    // C. El núcleo: Si es una frase desconocida ("el canal de goncho") lo enviamos a memoria
-    // A menos que sea una URL cruda aprendida
     if (!command) {
-        if (lowerApp.startsWith("http")) {
-            command = platform === 'win32' ? `start "" "${lowerApp}"` : platform === 'darwin' ? `open "${lowerApp}"` : `xdg-open "${lowerApp}"`;
+        if (isWebUrl(lowerApp)) {
+            command = urlLaunchCommand(lowerApp, platform);
         } else {
-            const urlObtenida = await procesarMemoriaDinamica(lowerApp, modeId);
-            command = platform === 'win32' ? `start "" "${urlObtenida}"` : platform === 'darwin' ? `open "${urlObtenida}"` : `xdg-open "${urlObtenida}"`;
+            console.warn(`[Jarvis] No encontré una aplicación o archivo seguro para: ${lowerApp}`);
+            return false;
         }
     }
 
@@ -306,15 +342,11 @@ function handleSystemCommand(text) {
     let lowerText = text.toLowerCase().trim();
     let cleanText = lowerText.replace(/['".,?!]/g, '').trim();
 
-    // --- BYPASS DE PROGRAMADOR ---
-    // Si la frase es larguísima o detectamos explícitamente intención de código,
-    // abortamos el escaneo de apps para no abrir "Node.js" por accidente.
     if (text.length > 300 || lowerText.includes("quiero que programes") || lowerText.includes("programá esto") || lowerText.includes("codeame")) {
         return { isSystemCommand: false, isTraining: false };
     }
 
-    // 1. Detectar INTENCIÓN DE ENTRENAMIENTO
-    // Ej: "cuando te diga hora de pelis quiero que abras netflix"
+    // 1. Detectar intención de entrenamiento
     const trainMatch = cleanText.match(/(?:cuando|si) te (?:diga|digo) (.+?) (?:quiero que|abre|abrir|ejecuta|ejecutes|ve a|vayas a|pongas) (.+)/i);
     if (trainMatch) {
         let trigger = trainMatch[1].trim();
@@ -323,9 +355,7 @@ function handleSystemCommand(text) {
         return { isTraining: true, trigger: trigger, appName: app };
     }
 
-    // 3. Extracción estándar de comandos del sistema
-    // NOTA: 'quiero ver', 'reproduce', 'busca' fueron REMOVIDOS de aquí
-    // para que las solicitudes de películas/series lleguen al LLM y use search_streaming.
+    // 2. Extracción estándar de comandos del sistema
     const match = lowerText.match(/(?:abre|abrir|abri|abrí|abrime|abríme|abrirme|inicia|iniciar|inici[aá]|arranca|arrancar|lanza|ejecuta|ejecutar|ir a|ve a|pon|ponme)\s+(.+)/i);
 
     if (match) {
@@ -334,16 +364,12 @@ function handleSystemCommand(text) {
             appToOpen = appToOpen.slice(0, -1);
         }
 
-        // BYPASS STREAMING: Si lo que capturó parece una película/serie, dejamos que la IA lo maneje
-        const streamingKeywords = /^(la |el |los |las |una? )?(pelicula|serie|anime|documental|capitulo|temporada|episodio)/i;
         const isNotApp = !/^(netflix|spotify|youtube|chrome|discord|steam|whatsapp|telegram|word|excel|powerpoint|visual studio|code|vscode|obs|lol|league|valorant|fortnite|epic games|stremio)/i.test(appToOpen);
         
-        // Si NO es una app conocida y la frase original contiene "ver" o "poner", es streaming
         if (isNotApp && (lowerText.includes('quiero ver') || lowerText.includes('poneme') || lowerText.includes('reproduce'))) {
             return { isSystemCommand: false, isTraining: false };
         }
 
-        // 2. Detectar si la orden concreta es un COMANDO YA ENTRENADO por la red neuronal
         if (fs.existsSync(customCommandsFile)) {
             try {
                 const commands = JSON.parse(fs.readFileSync(customCommandsFile, 'utf8'));
@@ -356,7 +382,6 @@ function handleSystemCommand(text) {
         return { isSystemCommand: true, appName: appToOpen, isLearned: false };
     }
 
-    // Comprobación secundaria: Por si dijo directo un comando entrenado y sin el verbo "Abre"
     if (fs.existsSync(customCommandsFile)) {
         try {
             const commands = JSON.parse(fs.readFileSync(customCommandsFile, 'utf8'));
@@ -368,7 +393,6 @@ function handleSystemCommand(text) {
 
     return { isSystemCommand: false, isTraining: false };
 }
-
 
 // --- 4. Python Router Handler ---
 async function handlePythonRouterDecision(decisionJson) {
@@ -392,6 +416,11 @@ async function handlePythonRouterDecision(decisionJson) {
 module.exports = {
     handlePythonRouterDecision,
     openApp,
+    isWebUrl,
+    urlLaunchCommand,
+    openMediaSearch,
+    mediaSearchUrl,
+    discordLaunchCommand,
     handleSystemCommand,
     saveCustomCommand
 };

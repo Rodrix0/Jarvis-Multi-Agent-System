@@ -18,7 +18,7 @@ const DEFAULT_CONFIG = {
         searchLoadMs: 2200,
         resultLoadMs: 3000,
         keyDelayMs: 350,
-        keyboardKeyDelayMs: 700,
+        keyboardKeyDelayMs: 1100,
         profileDownPresses: 0,
         continueWatchingDownPresses: 1,
         continueWatchingRightPresses: 0,
@@ -29,6 +29,7 @@ const DEFAULT_CONFIG = {
 
 let currentJob = null;
 let activeBridgeProcess = null;
+let availabilityCache = { value: false, checkedAt: 0 };
 
 function getConfig() {
     let saved = {};
@@ -134,10 +135,15 @@ async function discover() {
 }
 
 async function isAvailable() {
+    const config = getConfig();
+    if (!config.device.host) return false;
+    if (Date.now() - availabilityCache.checkedAt < 4000) return availabilityCache.value;
     try {
-        const result = await runBridge(['check'], 7000);
-        return result.available === true;
+        const result = await runBridge(['check'], 3000);
+        availabilityCache = { value: result.available === true, checkedAt: Date.now() };
+        return availabilityCache.value;
     } catch (error) {
+        availabilityCache = { value: false, checkedAt: Date.now() };
         return false;
     }
 }
@@ -183,19 +189,29 @@ function buildNetflixSearchSequence(title, selectFirstResult = true) {
     if (!normalizedTitle) throw new Error('El título no contiene caracteres compatibles con el teclado de Netflix.');
 
     const sequence = [];
+
+    // RESET: Forzar cursor a posición 'a' (0,0) mandando suficientes up y left
+    // Esto garantiza que partimos de una posición conocida sin importar dónde
+    // esté el cursor al abrir el buscador.
+    for (let i = 0; i < 6; i++) sequence.push('up');
+    for (let i = 0; i < 6; i++) sequence.push('left');
+
     let cursor = { row: 0, column: 0 };
     for (const character of normalizedTitle) {
         const target = keyboardPosition(character);
         if (!target) continue;
+        // Navegar al caracter
         sequence.push(...repeat(target.row > cursor.row ? 'down' : 'up', Math.abs(target.row - cursor.row)));
         sequence.push(...repeat(target.column > cursor.column ? 'right' : 'left', Math.abs(target.column - cursor.column)));
+        // Presionar OK para seleccionar la letra
         sequence.push('ok');
+        // Pausa extra: insertar un 'ok' dummy que luego filtramos, 
+        // o mejor, usamos un marcador. En su lugar, simplemente dejamos
+        // que el delay natural entre botones haga su trabajo.
         cursor = target;
     }
 
-    // Subir a la primera fila y cruzar desde la columna actual al panel de
-    // resultados. Evita recorrer de vuelta hasta "a", que agregaba pulsaciones
-    // innecesarias y aumentaba la posibilidad de que la TV perdiera una señal.
+    // Subir a la primera fila y cruzar al panel de resultados
     sequence.push(...repeat('up', cursor.row));
     sequence.push(...repeat('right', KEYBOARD_ROWS[0].length - cursor.column));
     if (selectFirstResult) sequence.push('ok');

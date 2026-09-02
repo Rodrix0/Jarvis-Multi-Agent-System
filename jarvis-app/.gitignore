@@ -1,10 +1,17 @@
 node_modules/
 .env
+python_engine/voice_venv/
+python_engine/models/
 
 # Jarvis Memory and Databases
 backend/data/memoria.json
 backend/data/modes.json
 backend/data/broadlink.json
+backend/data/local_voice_state.json
+backend/data/local_voice_utterance.wav
+backend/data/voice_settings.json
+backend/data/jarvis_started_processes.json
+logs/
 
 # OS
 .DS_Store

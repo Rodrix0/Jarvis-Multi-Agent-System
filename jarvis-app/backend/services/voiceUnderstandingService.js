@@ -1,5 +1,5 @@
 const recentConversation = [];
-const MODEL = 'gemini-2.5-flash-lite';
+const LOCAL_MODEL = process.env.OLLAMA_VOICE_MODEL || 'qwen2.5:3b';
 const MAX_CONTEXT_ITEMS = 6;
 
 const CRITICAL_TERMS = [
@@ -37,19 +37,26 @@ async function understand(payload = {}) {
         .map(item => String(item).trim())
         .filter((item, index, all) => item && all.indexOf(item) === index)
         .slice(0, 4);
-    const cloudUnderstandingEnabled = String(process.env.VOICE_CONTEXT_AI_ENABLED || '').toLowerCase() === 'true';
-    if (!original || !process.env.GEMINI_API_KEY || !cloudUnderstandingEnabled) {
+    const localUnderstandingEnabled = payload.allowLocal === true;
+    const confidence = Number(payload.confidence) || 0;
+    const contextualReference = /\b(eso|esa|ese|anterior|lo mismo|segui|seguí|continua|continuá)\b/i.test(original);
+    const alternativesDisagree = candidates.length > 1
+        && normalized(candidates[0]) !== normalized(candidates[1]);
+    // Whisper suele entregar una sola hipótesis con confianza moderada. Enviar cada
+    // orden clara a otro LLM duplicaba el tiempo de respuesta sin mejorarla.
+    const needsRepair = contextualReference || confidence < 0.5 || alternativesDisagree;
+    if (!original || !localUnderstandingEnabled || !needsRepair) {
         remember(original);
         return {
             text: original,
             refined: false,
-            provider: 'browser',
-            contextualUnderstandingDisabled: !cloudUnderstandingEnabled
+            provider: payload.provider || 'local-whisper',
+            contextualUnderstandingDisabled: !localUnderstandingEnabled
         };
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    const timeout = setTimeout(() => controller.abort(), 8000);
     const context = recentConversation.length ? recentConversation.join('\n- ') : '(sin contexto previo)';
     const tvContext = payload.tvContext || {};
     const prompt = [
@@ -63,41 +70,33 @@ async function understand(payload = {}) {
     ].join('\n');
 
     try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+        const response = await fetch('http://127.0.0.1:11434/api/generate', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': process.env.GEMINI_API_KEY
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                generationConfig: {
-                    temperature: 0.1,
-                    maxOutputTokens: 160,
-                    responseMimeType: 'application/json',
-                    responseSchema: {
-                        type: 'OBJECT',
-                        properties: { text: { type: 'STRING' } },
-                        required: ['text']
-                    }
-                }
+                model: LOCAL_MODEL,
+                prompt,
+                stream: false,
+                format: 'json',
+                keep_alive: '5m',
+                options: { temperature: 0.1, num_predict: 80 }
             }),
             signal: controller.signal
         });
-        if (!response.ok) throw new Error(`Gemini HTTP ${response.status}`);
+        if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
         const data = await response.json();
-        const raw = data.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '';
+        const raw = data.response || '';
         const corrected = String(JSON.parse(raw).text || '').trim().slice(0, 700);
         if (!corrected || addsUnsupportedCriticalAction(candidates, corrected)) {
             remember(original);
             return { text: original, refined: false, provider: 'browser', guarded: true };
         }
         remember(corrected);
-        return { text: corrected, refined: normalized(corrected) !== normalized(original), provider: 'gemini' };
+        return { text: corrected, refined: normalized(corrected) !== normalized(original), provider: 'ollama-local' };
     } catch (error) {
         console.warn('[Voz] Comprensión general no disponible:', error.message);
         remember(original);
-        return { text: original, refined: false, provider: 'browser', error: error.message };
+        return { text: original, refined: false, provider: payload.provider || 'local-whisper', error: error.message };
     } finally {
         clearTimeout(timeout);
     }
