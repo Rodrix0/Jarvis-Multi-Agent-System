@@ -1,25 +1,37 @@
 const { execSync } = require('child_process');
 
+function runPowerShell(script, timeout = 6000) {
+    const buffer = Buffer.from(script, 'utf16le');
+    const base64 = buffer.toString('base64');
+    return execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${base64}`, { timeout }).toString().trim();
+}
+
 class PowerControlService {
     getBatteryStatus() {
         const script = `
             try {
-                $b = Get-CimInstance -ClassName Win32_Battery
+                $b = Get-CimInstance -ClassName Win32_Battery -ErrorAction Stop
                 if ($b) {
+                    $pct = $b.EstimatedChargeRemaining
+                    if ($null -eq $pct) { $pct = 100 }
+                    $st = $b.BatteryStatus
+                    $charging = ($st -eq 2 -or $st -eq 6 -or $st -eq 7 -or $st -eq 8)
                     [PSCustomObject]@{
-                        Percent = $b.EstimatedChargeRemaining
-                        Status = $b.BatteryStatus
-                        Charging = ($b.BatteryStatus -eq 2)
-                    } | ConvertTo-Json
+                        Percent = $pct
+                        Status = $st
+                        Charging = $charging
+                    } | ConvertTo-Json -Compress
                 } else {
                     Write-Output "NO_BATTERY"
                 }
-            } catch { Write-Output "NO_BATTERY" }
+            } catch {
+                Write-Output "NO_BATTERY"
+            }
         `;
         try {
-            const out = execSync(`powershell.exe -NoProfile -Command "${script.replace(/\r?\n/g, ' ')}"`, { timeout: 6000 }).toString().trim();
-            if (out.includes('NO_BATTERY')) {
-                return { ok: true, hasBattery: false, message: 'La PC está conectada a corriente continua de escritorio (sin batería).' };
+            const out = runPowerShell(script);
+            if (!out || out.includes('NO_BATTERY')) {
+                return { ok: true, hasBattery: false, message: 'La PC está conectada a corriente continua (sin batería o PC de escritorio).' };
             }
             const data = JSON.parse(out);
             return {
@@ -30,7 +42,7 @@ class PowerControlService {
                 message: `La batería está al ${data.Percent}% (${data.Charging ? 'Cargando' : 'Descargando'}).`
             };
         } catch (err) {
-            return { ok: true, hasBattery: false, message: 'No se detectó batería en este equipo.' };
+            return { ok: true, hasBattery: false, message: 'No se pudo obtener el estado de la batería.' };
         }
     }
 

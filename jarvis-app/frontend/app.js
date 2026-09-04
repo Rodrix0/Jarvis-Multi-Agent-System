@@ -948,151 +948,217 @@ async function tvApi(path, options = {}) {
 
 function renderTvStatus(status) {
     const learned = new Set(status.learnedButtons || []);
-    document.querySelectorAll('[data-tv-learn]').forEach(button => {
-        button.classList.toggle('learned', learned.has(button.dataset.tvLearn));
-        const cleanLabel = button.textContent.replace(/^✓\s*/, '');
-        button.textContent = learned.has(button.dataset.tvLearn) ? `✓ ${cleanLabel}` : cleanLabel;
+    document.querySelectorAll('.btn-learn').forEach(button => {
+        const key = button.dataset.btn;
+        const normalized = key ? key.replace('_', '').toLowerCase() : '';
+        const isLearned = learned.has(key) || learned.has(normalized);
+        button.classList.toggle('learned', isLearned);
+        if (isLearned) {
+            button.style.borderColor = '#00f2fe';
+            button.style.boxShadow = '0 0 10px rgba(0, 242, 254, 0.4)';
+        } else {
+            button.style.borderColor = '';
+            button.style.boxShadow = '';
+        }
     });
 
+    const statusBadge = document.querySelector('#tv-status .tv-status-badge');
+    const statusDetails = document.querySelector('#tv-status .tv-status-details');
     const blocked = status.device?.authenticated === false;
-    tvStatus.className = `tv-status ${blocked ? 'error' : (status.configured ? 'ready' : '')}`;
-    tvStatus.textContent = blocked
-        ? `BroadLink detectado en ${status.device.host}, pero el control local está bloqueado desde la app.`
-        : (status.configured
-            ? `BroadLink conectado en ${status.device.host}. ${learned.size} tecla(s) aprendida(s).`
-            : 'BroadLink todavía no configurado.');
 
-    const settings = status.netflix || {};
-    document.getElementById('tv-boot-wait').value = Math.round((settings.bootWaitMs || 45000) / 1000);
-    document.getElementById('tv-profile-wait').value = Math.round((settings.profileLoadMs || 8000) / 1000);
-    document.getElementById('tv-profile-index').value = settings.profileDownPresses || 0;
-    document.getElementById('tv-continue-down').value = settings.continueWatchingDownPresses ?? 1;
-    document.getElementById('tv-continue-right').value = settings.continueWatchingRightPresses || 0;
-    document.getElementById('tv-key-delay').value = settings.keyDelayMs || 350;
-    document.getElementById('tv-keyboard-delay').value = settings.keyboardKeyDelayMs || 700;
-    document.getElementById('tv-use-netflix-key').checked = settings.pressNetflixAfterBoot === true;
-    document.getElementById('tv-confirm-play').checked = settings.pressPlayAfterResult !== false;
-    document.getElementById('tv-device-ip').value = status.device?.host || '';
+    if (statusBadge) {
+        statusBadge.textContent = blocked
+            ? 'Estado: Bloqueado (Desactivar Lock Device en app)'
+            : (status.configured ? `Estado: Conectado (${status.device.host})` : 'Estado: No configurado');
+        statusBadge.style.color = blocked ? '#ff4d4d' : (status.configured ? '#00f2fe' : '#ffaa00');
+    }
+    if (statusDetails) {
+        statusDetails.textContent = `${learned.size} tecla(s) aprendida(s) en BroadLink.`;
+    }
+
+    if (status.device?.host) {
+        const hostEl = document.getElementById('tv-host');
+        if (hostEl) hostEl.value = status.device.host;
+    }
+    if (status.device?.mac) {
+        const macEl = document.getElementById('tv-mac');
+        if (macEl) macEl.value = status.device.mac;
+    }
 }
 
 async function loadTvStatus() {
     try {
-        renderTvStatus(await tvApi('/api/tv/status'));
+        const status = await tvApi('/api/tv/status');
+        renderTvStatus(status);
     } catch (error) {
-        tvStatus.className = 'tv-status error';
-        tvStatus.textContent = error.message;
+        const statusDetails = document.querySelector('#tv-status .tv-status-details');
+        if (statusDetails) statusDetails.textContent = error.message;
     }
 }
 
 function openTvModal() {
-    tvModal.classList.remove('hidden');
-    loadTvStatus();
-}
-
-document.getElementById('btn-open-tv-modal').addEventListener('click', openTvModal);
-document.getElementById('close-tv-modal').addEventListener('click', () => tvModal.classList.add('hidden'));
-
-document.getElementById('btn-tv-discover').addEventListener('click', async event => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    tvStatus.className = 'tv-status';
-    tvStatus.textContent = 'Buscando BroadLink en la red local…';
-    try {
-        renderTvStatus(await tvApi('/api/tv/discover', { method: 'POST' }));
-    } catch (error) {
-        tvStatus.className = 'tv-status error';
-        tvStatus.textContent = error.message;
-    } finally {
-        button.disabled = false;
+    const modal = document.getElementById('tv-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        loadTvStatus();
     }
-});
+}
+window.openTvModal = openTvModal;
 
-document.querySelectorAll('[data-tv-learn]').forEach(button => {
-    button.addEventListener('click', async () => {
-        const key = button.dataset.tvLearn;
-        document.querySelectorAll('[data-tv-learn]').forEach(item => { item.disabled = true; });
-        tvOperationMessage.textContent = `Ahora apuntá el control físico al BroadLink y presioná ${key.toUpperCase()}. Tenés 20 segundos.`;
-        try {
-            const status = await tvApi('/api/tv/learn', {
-                method: 'POST',
-                body: JSON.stringify({ button: key })
-            });
-            renderTvStatus(status);
-            tvOperationMessage.textContent = `Tecla ${key.toUpperCase()} aprendida correctamente.`;
-        } catch (error) {
-            tvOperationMessage.textContent = error.message;
-        } finally {
-            document.querySelectorAll('[data-tv-learn]').forEach(item => { item.disabled = false; });
-        }
+function closeTvModal() {
+    const modal = document.getElementById('tv-modal');
+    if (modal) modal.classList.add('hidden');
+}
+window.closeTvModal = closeTvModal;
+
+const openTvBtn = document.getElementById('btn-open-tv-modal');
+if (openTvBtn) openTvBtn.addEventListener('click', openTvModal);
+
+const closeTvBtn = document.getElementById('close-tv-modal');
+if (closeTvBtn) closeTvBtn.addEventListener('click', closeTvModal);
+
+function switchTvTab(tabName, el) {
+    document.querySelectorAll('.tv-tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tv-tab-content').forEach(c => { c.style.display = 'none'; });
+    if (el) {
+        el.classList.add('active');
+    } else {
+        const btn = document.querySelector(`.tv-tab-btn[data-tab="${tabName}"]`);
+        if (btn) btn.classList.add('active');
+    }
+    const target = document.getElementById(`tab-${tabName}`);
+    if (target) {
+        target.style.display = 'block';
+    }
+}
+window.switchTvTab = switchTvTab;
+
+// Pestañas de TV Modal (Event Listeners)
+document.querySelectorAll('.tv-tab-btn').forEach(tabBtn => {
+    tabBtn.addEventListener('click', (e) => {
+        switchTvTab(tabBtn.dataset.tab, tabBtn);
     });
 });
 
-document.getElementById('btn-tv-test').addEventListener('click', async () => {
-    const button = document.getElementById('tv-test-button').value;
-    tvOperationMessage.textContent = `Enviando ${button.toUpperCase()}…`;
-    try {
-        await tvApi('/api/tv/test', { method: 'POST', body: JSON.stringify({ button }) });
-        tvOperationMessage.textContent = `Tecla ${button.toUpperCase()} enviada.`;
-    } catch (error) {
-        tvOperationMessage.textContent = error.message;
+async function discoverTvBroadlink() {
+    const discoverBtn = document.getElementById('btn-discover-tv');
+    if (discoverBtn) discoverBtn.disabled = true;
+    const msg = document.getElementById('tv-operation-message');
+    if (msg) {
+        msg.style.display = 'block';
+        msg.textContent = 'Buscando BroadLink en la red local Wi-Fi…';
     }
-});
-
-document.getElementById('btn-tv-save').addEventListener('click', async () => {
-    const settings = {
-        deviceHost: document.getElementById('tv-device-ip').value,
-        bootWaitMs: Number(document.getElementById('tv-boot-wait').value) * 1000,
-        profileLoadMs: Number(document.getElementById('tv-profile-wait').value) * 1000,
-        profileDownPresses: Number(document.getElementById('tv-profile-index').value),
-        continueWatchingDownPresses: Number(document.getElementById('tv-continue-down').value),
-        continueWatchingRightPresses: Number(document.getElementById('tv-continue-right').value),
-        keyDelayMs: Number(document.getElementById('tv-key-delay').value),
-        keyboardKeyDelayMs: Number(document.getElementById('tv-keyboard-delay').value),
-        pressNetflixAfterBoot: document.getElementById('tv-use-netflix-key').checked,
-        pressPlayAfterResult: document.getElementById('tv-confirm-play').checked
-    };
     try {
-        renderTvStatus(await tvApi('/api/tv/settings', { method: 'POST', body: JSON.stringify(settings) }));
-        tvOperationMessage.textContent = 'Calibración guardada.';
+        const status = await tvApi('/api/tv/discover', { method: 'POST' });
+        renderTvStatus(status);
+        if (msg) msg.textContent = '¡BroadLink detectado y guardado con éxito!';
     } catch (error) {
-        tvOperationMessage.textContent = error.message;
-    }
-});
-
-document.getElementById('btn-tv-run').addEventListener('click', async () => {
-    const runButton = document.getElementById('btn-tv-run');
-    runButton.disabled = true;
-    tvOperationMessage.textContent = 'Iniciando secuencia Netflix…';
-    try {
-        const result = await tvApi('/api/tv/netflix', {
-            method: 'POST',
-            body: JSON.stringify({
-                title: document.getElementById('tv-netflix-title').value,
-                powerOn: document.getElementById('tv-power-on-test').checked
-            })
-        });
-        tvOperationMessage.textContent = result.message;
-    } catch (error) {
-        tvOperationMessage.textContent = error.message;
+        if (msg) msg.textContent = `Error: ${error.message}`;
     } finally {
-        runButton.disabled = false;
+        if (discoverBtn) discoverBtn.disabled = false;
     }
+}
+window.discoverTvBroadlink = discoverTvBroadlink;
+
+const discoverBtn = document.getElementById('btn-discover-tv');
+if (discoverBtn) discoverBtn.addEventListener('click', discoverTvBroadlink);
+
+// Guardar configuración manual
+const settingsForm = document.getElementById('tv-settings-form');
+if (settingsForm) {
+    settingsForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const host = document.getElementById('tv-host')?.value?.trim();
+        const msg = document.getElementById('tv-operation-message');
+        if (msg) {
+            msg.style.display = 'block';
+            msg.textContent = 'Guardando configuración…';
+        }
+        try {
+            const status = await tvApi('/api/tv/settings', {
+                method: 'POST',
+                body: JSON.stringify({ deviceHost: host })
+            });
+            renderTvStatus(status);
+            if (msg) msg.textContent = 'Configuración guardada correctamente.';
+        } catch (error) {
+            if (msg) msg.textContent = error.message;
+        }
+    });
+}
+
+// Aprender Botones
+async function learnTvButton(key) {
+    const msg = document.getElementById('tv-operation-message');
+    document.querySelectorAll('.btn-learn').forEach(b => { b.disabled = true; });
+    if (msg) {
+        msg.style.display = 'block';
+        msg.textContent = `🔴 Apuntá el control remoto al BroadLink y presioná ${key.toUpperCase()} (tenés 20 segundos)...`;
+    }
+    try {
+        const status = await tvApi('/api/tv/learn', {
+            method: 'POST',
+            body: JSON.stringify({ button: key })
+        });
+        renderTvStatus(status);
+        if (msg) msg.textContent = `✅ ¡Tecla ${key.toUpperCase()} aprendida correctamente!`;
+    } catch (error) {
+        if (msg) msg.textContent = `❌ ${error.message}`;
+    } finally {
+        document.querySelectorAll('.btn-learn').forEach(b => { b.disabled = false; });
+    }
+}
+window.learnTvButton = learnTvButton;
+
+document.querySelectorAll('.btn-learn').forEach(button => {
+    button.addEventListener('click', () => {
+        learnTvButton(button.dataset.btn);
+    });
 });
 
-document.getElementById('btn-tv-cancel').addEventListener('click', async () => {
-    await tvApi('/api/tv/cancel', { method: 'POST' });
-    tvOperationMessage.textContent = 'Automatización cancelada.';
+// Probar Botones
+async function testTvButton(key) {
+    const msg = document.getElementById('tv-operation-message');
+    if (msg) {
+        msg.style.display = 'block';
+        msg.textContent = `Enviando señal ${key.toUpperCase()}…`;
+    }
+    try {
+        await tvApi('/api/tv/test', {
+            method: 'POST',
+            body: JSON.stringify({ button: key })
+        });
+        if (msg) msg.textContent = `Señal ${key.toUpperCase()} enviada a la TV.`;
+    } catch (error) {
+        if (msg) msg.textContent = error.message;
+    }
+}
+window.testTvButton = testTvButton;
+
+document.querySelectorAll('.btn-test-cmd').forEach(button => {
+    button.addEventListener('click', () => {
+        testTvButton(button.dataset.btn);
+    });
 });
 
 socket.on('tv_progress', progress => {
-    tvOperationMessage.textContent = progress.message;
+    const msg = document.getElementById('tv-operation-message');
+    if (msg && progress) {
+        msg.style.display = 'block';
+        msg.textContent = progress.message || '';
+    }
     jarvisBox.textContent = progress.message;
 });
 
 socket.on('action_status', status => {
     const phase = status.phase === 'failed' ? 'failed' : status.phase === 'completed' ? 'completed' : 'working';
     showActionToast(status.message || 'Procesando…', phase, phase === 'working' ? 0 : 5000);
-    if (status.message) jarvisBox.textContent = status.message;
+    if (status.message) {
+        jarvisBox.textContent = status.message;
+        if (status.speakAck) {
+            speak(status.message);
+        }
+    }
 });
 
 socket.on('response', (data) => {

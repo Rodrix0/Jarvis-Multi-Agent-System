@@ -51,7 +51,16 @@ app.use(compression());
 app.use(cors());
 app.use(express.json());
 app.use('/api/shop', shopRoutes);
-app.use(express.static(path.join(__dirname, '../frontend')));
+app.use(express.static(path.join(__dirname, '../frontend'), {
+    maxAge: 0,
+    etag: false,
+    lastModified: false,
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+    }
+}));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -332,7 +341,21 @@ app.post('/api/process_speech_local', async (req, res) => {
     });
     
     console.log(`[Jarvis Audio Python]: ${text}`);
-    io.emit('action_status', { phase: 'accepted', message: `Entendí: “${text}”. Lo estoy haciendo…`, text });
+    const ACK_PHRASES = [
+        'Enseguida, señor.',
+        'Entendido, ya me encargo.',
+        'De acuerdo, procesando la tarea.',
+        'Claro, enseguida lo hago.',
+        'Entendido, en proceso.'
+    ];
+    const ackText = ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)];
+    io.emit('action_status', { phase: 'accepted', message: ackText, text, speakAck: true });
+    
+    // Hablar inmediatamente para que el usuario sepa que Jarvis escuchó y está trabajando
+    if (!/apagate|dormite|descanso/i.test(text)) {
+        ttsService.speak(ackText).catch(err => console.warn('[TTS Ack Local Warning]', err.message));
+    }
+
     const result = await jarvisActionService.process(text, actionContext(progress => io.emit('tv_progress', progress)));
     if (result.actionId === 'voice.sleep') ttsService.stop();
     const responseText = result.message;
@@ -472,7 +495,15 @@ io.on('connection', (socket) => {
             refined: understoodVoice.refined
         });
         console.log(`[Usuario dice]: ${text}`);
-        socket.emit('action_status', { phase: 'accepted', message: `Entendí: “${text}”. Lo estoy haciendo…`, text });
+        const ACK_PHRASES = [
+            'Enseguida, señor.',
+            'Entendido, ya me encargo.',
+            'De acuerdo, procesando la tarea.',
+            'Claro, enseguida lo hago.',
+            'Entendido, en proceso.'
+        ];
+        const ackText = ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)];
+        socket.emit('action_status', { phase: 'accepted', message: ackText, text, speakAck: true });
 
         // Toda solicitud entra por el mismo registro. El bloque antiguo que queda
         // debajo se conserva temporalmente para compatibilidad, pero ya no recibe

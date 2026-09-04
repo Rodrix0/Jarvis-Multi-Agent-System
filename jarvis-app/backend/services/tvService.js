@@ -5,7 +5,8 @@ const { spawn } = require('child_process');
 const CONFIG_PATH = path.join(__dirname, '..', 'data', 'broadlink.json');
 const BRIDGE_PATH = path.join(__dirname, '..', '..', 'python_engine', 'broadlink_remote.py');
 const VENV_PYTHON = path.join(__dirname, '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe');
-const ALLOWED_BUTTONS = ['power', 'up', 'down', 'left', 'right', 'ok', 'back', 'netflix'];
+const executionManager = require('./core/executionManager');
+const ALLOWED_BUTTONS = ['power', 'up', 'down', 'left', 'right', 'ok', 'back', 'netflix', 'volup', 'voldown', 'vol_up', 'vol_down', 'mute', 'home'];
 const KEYBOARD_ROWS = ['abcdef', 'ghijkl', 'mnopqr', 'stuvwx', 'yz1234', '567890'];
 
 const DEFAULT_CONFIG = {
@@ -97,10 +98,13 @@ function runBridge(args, timeoutMs = 30000) {
         const pythonExe = fs.existsSync(VENV_PYTHON) ? VENV_PYTHON : 'python';
         const child = spawn(pythonExe, [BRIDGE_PATH, ...args], { windowsHide: true });
         activeBridgeProcess = child;
+        executionManager.registerChildProcess(child);
+
         let stdout = '';
         let stderr = '';
         const timer = setTimeout(() => {
-            child.kill();
+            child.kill('SIGKILL');
+            executionManager.unregisterChildProcess(child);
             reject(new Error('El BroadLink no respondió dentro del tiempo esperado.'));
         }, timeoutMs);
 
@@ -109,11 +113,13 @@ function runBridge(args, timeoutMs = 30000) {
         child.on('error', error => {
             clearTimeout(timer);
             activeBridgeProcess = null;
+            executionManager.unregisterChildProcess(child);
             reject(error);
         });
         child.on('close', code => {
             clearTimeout(timer);
             activeBridgeProcess = null;
+            executionManager.unregisterChildProcess(child);
             const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
             let payload = null;
             try { payload = JSON.parse(lines.at(-1) || '{}'); } catch (error) {}
@@ -149,8 +155,22 @@ async function isAvailable() {
 }
 
 async function learnButton(button) {
-    if (!ALLOWED_BUTTONS.includes(button)) throw new Error('Botón IR no permitido.');
-    await runBridge(['learn', button, '--timeout', '20'], 28000);
+    let normalizedBtn = button.replace('_', '').toLowerCase();
+    if (button === 'home') normalizedBtn = 'power';
+    if (!ALLOWED_BUTTONS.includes(button) && !ALLOWED_BUTTONS.includes(normalizedBtn)) throw new Error('Botón IR no permitido.');
+    
+    await runBridge(['learn', normalizedBtn, '--timeout', '20'], 28000);
+    
+    // Duplicar en config para compatibilidad con vol_up / volup
+    try {
+        const config = getConfig();
+        if (config.codes[normalizedBtn]) {
+            if (normalizedBtn === 'volup') config.codes['vol_up'] = config.codes['volup'];
+            if (normalizedBtn === 'voldown') config.codes['vol_down'] = config.codes['voldown'];
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+        }
+    } catch (e) {}
+
     return getPublicStatus();
 }
 
@@ -357,11 +377,107 @@ async function navigate(button, count = 1) {
 }
 
 function cancel() {
-    if (!currentJob) return false;
-    currentJob.cancelled = true;
-    currentJob.cancelWait?.();
-    if (activeBridgeProcess) activeBridgeProcess.kill();
-    return true;
+    let hadActive = false;
+    if (currentJob) {
+        currentJob.cancelled = true;
+        currentJob.cancelWait?.();
+        currentJob = null;
+        hadActive = true;
+    }
+    if (activeBridgeProcess) {
+        try {
+            activeBridgeProcess.kill('SIGKILL');
+            executionManager.unregisterChildProcess(activeBridgeProcess);
+        } catch (e) {}
+        activeBridgeProcess = null;
+        hadActive = true;
+    }
+    return hadActive;
+}
+
+const TV_STATE_PATH = path.join(__dirname, '..', 'data', 'tv_state.json');
+
+function getTvState() {
+    try {
+        if (fs.existsSync(TV_STATE_PATH)) return JSON.parse(fs.readFileSync(TV_STATE_PATH, 'utf8'));
+    } catch (e) {}
+    return { volume: 20, muted: false };
+}
+
+function saveTvState(state) {
+    try {
+        fs.mkdirSync(path.dirname(TV_STATE_PATH), { recursive: true });
+        fs.writeFileSync(TV_STATE_PATH, JSON.stringify(state, null, 2));
+    } catch (e) {}
+}
+
+async function getVolume() {
+    const state = getTvState();
+    return {
+        ok: true,
+        volume: state.volume,
+        muted: state.muted,
+        message: `El volumen de la televisión está al ${state.volume}%.`
+    };
+}
+
+async function setVolume(percent) {
+    const config = getConfig();
+    if (!config.codes['volup'] || !config.codes['voldown']) {
+        return {
+            ok: false,
+            message: 'Primero necesito aprender los botones de volumen del control remoto. Por favor enseñame el botón de subir y bajar volumen desde el panel o por comando.'
+        };
+    }
+    const target = Math.max(0, Math.min(100, Math.round(Number(percent))));
+    const state = getTvState();
+    const diff = target - state.volume;
+    if (diff !== 0) {
+        const button = diff > 0 ? 'volup' : 'voldown';
+        const count = Math.min(50, Math.abs(diff));
+        await sendButtons(repeat(button, count), 180);
+    }
+    state.volume = target;
+    saveTvState(state);
+    return {
+        ok: true,
+        volume: target,
+        message: `Ajusté el volumen de la televisión al ${target}%.`
+    };
+}
+
+async function adjustVolume(delta) {
+    const config = getConfig();
+    if (!config.codes['volup'] || !config.codes['voldown']) {
+        return {
+            ok: false,
+            message: 'Primero necesito aprender los botones de volumen del control remoto. Por favor enseñame el botón de subir y bajar volumen.'
+        };
+    }
+    const state = getTvState();
+    const count = Math.min(30, Math.abs(delta));
+    const button = delta > 0 ? 'volup' : 'voldown';
+    await sendButtons(repeat(button, count), 180);
+    state.volume = Math.max(0, Math.min(100, state.volume + delta));
+    saveTvState(state);
+    const actionWord = delta > 0 ? 'Subí' : 'Bajé';
+    return {
+        ok: true,
+        volume: state.volume,
+        message: `${actionWord} el volumen de la televisión a ${state.volume}%.`
+    };
+}
+
+function calibrateVolume(actual) {
+    const target = Math.max(0, Math.min(100, Math.round(Number(actual))));
+    const state = getTvState();
+    state.volume = target;
+    saveTvState(state);
+    return {
+        ok: true,
+        volume: target,
+        message: `Calibré el volumen de la televisión en ${target}%.`
+    };
 }
 
 module.exports = {
@@ -376,5 +492,9 @@ module.exports = {
     searchNetflix,
     navigate,
     cancel,
-    buildNetflixSearchSequence
+    buildNetflixSearchSequence,
+    getVolume,
+    setVolume,
+    adjustVolume,
+    calibrateVolume
 };

@@ -15,43 +15,110 @@ class TrashService {
         this.cleanupOldFiles();
     }
 
+    findLatestScreenshot() {
+        const desktop = path.join(os.homedir(), 'Desktop');
+        if (!fs.existsSync(desktop)) return null;
+
+        const files = fs.readdirSync(desktop)
+            .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f) || /captura|screenshot/i.test(f))
+            .map(f => {
+                const full = path.join(desktop, f);
+                try {
+                    return { full, name: f, mtime: fs.statSync(full).mtimeMs };
+                } catch (e) {
+                    return null;
+                }
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.mtime - a.mtime);
+
+        return files.length > 0 ? files[0].full : null;
+    }
+
+    resolveTargetFile(targetPath) {
+        if (!targetPath) return null;
+        const clean = String(targetPath).trim();
+
+        // 1. Caso especial: última captura o foto
+        if (/^(?:la\s+)?(?:ultima\s+|última\s+)?(?:captura|screenshot|foto|pantallazo)(?:\s+de\s+pantalla)?$/i.test(clean) || clean === 'last_screenshot') {
+            const latest = this.findLatestScreenshot();
+            if (latest) return latest;
+        }
+
+        // 2. Ruta exacta o absoluta existente
+        if (fs.existsSync(clean)) return path.resolve(clean);
+
+        // 3. Búsqueda en carpetas estándar del usuario
+        const candidateDirs = [
+            path.join(os.homedir(), 'Desktop'),
+            path.join(os.homedir(), 'Downloads'),
+            path.join(os.homedir(), 'Documents'),
+            path.join(os.homedir(), 'Pictures'),
+            process.cwd()
+        ];
+
+        for (const dir of candidateDirs) {
+            if (!fs.existsSync(dir)) continue;
+            // Coincidencia exacta
+            const exact = path.join(dir, clean);
+            if (fs.existsSync(exact)) return exact;
+
+            // Búsqueda con extensiones comunes si no tiene
+            if (!path.extname(clean)) {
+                for (const ext of ['.txt', '.png', '.jpg', '.jpeg', '.docx', '.pdf', '.xlsx']) {
+                    const withExt = path.join(dir, clean + ext);
+                    if (fs.existsSync(withExt)) return withExt;
+                }
+            }
+
+            // Búsqueda por coincidencia parcial insensible a mayúsculas
+            try {
+                const entries = fs.readdirSync(dir);
+                const match = entries.find(e => e.toLowerCase() === clean.toLowerCase() || e.toLowerCase().startsWith(clean.toLowerCase()));
+                if (match) return path.join(dir, match);
+            } catch (e) {}
+        }
+
+        return null;
+    }
+
     moveToTrash(targetPath) {
-        if (!fs.existsSync(targetPath)) {
-            return { ok: false, code: 'ERR_FILE_NOT_FOUND', message: `El archivo ${targetPath} no existe.` };
+        const resolvedPath = this.resolveTargetFile(targetPath);
+        if (!resolvedPath || !fs.existsSync(resolvedPath)) {
+            return { ok: false, code: 'ERR_FILE_NOT_FOUND', message: `No se encontró el archivo "${targetPath}" en tu Escritorio ni en tus carpetas personales.` };
         }
 
         const id = `trash-${crypto.randomUUID().slice(0, 8)}`;
-        const baseName = path.basename(targetPath);
+        const baseName = path.basename(resolvedPath);
         const trashFileName = `${id}_${baseName}`;
         const trashPath = path.join(TRASH_DIR, trashFileName);
-        const stats = fs.statSync(targetPath);
+        const stats = fs.statSync(resolvedPath);
         const deletedAt = new Date().toISOString();
 
         // Mover físicamente a ~/.jarvis_trash/
-        fs.renameSync(targetPath, trashPath);
+        fs.renameSync(resolvedPath, trashPath);
 
         // Registrar en SQLite
         try {
             databaseService.db.prepare(`
                 INSERT INTO trash_manifest (id, original_path, trash_path, deleted_at, file_size, status)
                 VALUES (?, ?, ?, ?, ?, 'in_trash')
-            `).run(id, targetPath, trashPath, deletedAt, stats.size);
+            `).run(id, resolvedPath, trashPath, deletedAt, stats.size);
         } catch (err) {
             console.error('[TrashService] Error guardando manifiesto:', err.message);
         }
 
-        console.log(`[TrashService] 🗑️ Archivo movido a papelera segura: ${baseName} (${targetPath})`);
+        console.log(`[TrashService] 🗑️ Archivo movido a papelera segura: ${baseName} (${resolvedPath})`);
         return {
             ok: true,
             trashId: id,
-            originalPath: targetPath,
+            originalPath: resolvedPath,
             trashPath,
-            message: `El archivo ${baseName} fue movido a la papelera segura de Jarvis (retención de 7 días).`
+            message: `El archivo ${baseName} fue eliminado y movido a la papelera segura de Jarvis (se puede deshacer o recuperar en 7 días).`
         };
     }
 
-    restoreFromTrash(identifier, conflictResolution = 'RENAME') { // 'REPLACE', 'RENAME', 'CANCEL'
-        // Buscar por id o por nombre de archivo original
+    restoreFromTrash(identifier, conflictResolution = 'RENAME') {
         const row = databaseService.db.prepare(`
             SELECT * FROM trash_manifest 
             WHERE (id = ? OR original_path LIKE ?) AND status = 'in_trash'
@@ -59,7 +126,7 @@ class TrashService {
         `).get(identifier, `%${identifier}%`);
 
         if (!row) {
-            return { ok: false, code: 'ERR_NOT_IN_TRASH', message: `No se encontró ${identifier} en la papelera de Jarvis.` };
+            return { ok: false, code: 'ERR_NOT_IN_TRASH', message: `No se encontró "${identifier}" en la papelera de Jarvis.` };
         }
 
         if (!fs.existsSync(row.trash_path)) {

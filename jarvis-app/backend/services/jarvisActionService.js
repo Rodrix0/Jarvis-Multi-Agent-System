@@ -87,16 +87,27 @@ function registerActions() {
         execute: async () => windowsControlService.clipboard.readClipboard()
     });
 
-    // File Trash & Rollback
+    // File & Folder Operations with Rollback
+    const fileOperationsService = require('./core/fileOperationsService');
+    actionKernel.register({
+        id: 'file.create', name: 'Crear archivo o documento', description: 'Crea un archivo (.txt, .docx) o nota en el Escritorio o carpeta.',
+        parameters: { fileName: 'Nombre del archivo', content: 'Contenido opcional', format: 'txt o docx', folderName: 'Carpeta opcional', topic: 'Tema opcional' }, permission: 'standard',
+        execute: async ({ fileName, content, format = 'txt', folderName, topic }) => fileOperationsService.createFile({ fileName, content, format, folderName, topic })
+    });
+    actionKernel.register({
+        id: 'folder.create', name: 'Crear carpeta', description: 'Crea una carpeta en el Escritorio.',
+        parameters: { folderName: 'Nombre de la carpeta' }, permission: 'standard',
+        execute: async ({ folderName }) => fileOperationsService.createFolder({ folderName })
+    });
+    actionKernel.register({
+        id: 'folder.delete', name: 'Eliminar carpeta', description: 'Mueve una carpeta a la papelera segura de Jarvis.',
+        parameters: { folderName: 'Nombre de la carpeta' }, permission: 'standard',
+        execute: async ({ folderName }) => fileOperationsService.deleteFolder(folderName)
+    });
     actionKernel.register({
         id: 'file.delete', name: 'Mover archivo a papelera segura', description: 'Mueve un archivo a la papelera segura de Jarvis.',
         parameters: { filePath: 'Ruta o nombre del archivo' }, permission: 'standard',
-        execute: async ({ filePath }) => {
-            const os = require('os');
-            const path = require('path');
-            const target = path.isAbsolute(filePath) ? filePath : path.join(os.homedir(), 'Desktop', filePath);
-            return trashService.moveToTrash(target);
-        }
+        execute: async ({ filePath }) => trashService.moveToTrash(filePath)
     });
     actionKernel.register({
         id: 'file.restore', name: 'Restaurar archivo de papelera', description: 'Restaura un archivo previamente eliminado.',
@@ -179,6 +190,46 @@ function registerActions() {
         execute: async ({ collection = 'all' }) => {
             memoryService.clear(collection);
             return { message: 'Memoria borrada.', evidence: { collection, cleared: true } };
+        }
+    });
+
+    // TV Volume and Learning Actions (BroadLink / TV)
+    actionKernel.register({
+        id: 'tv.set-volume', name: 'Ajustar volumen de la televisión',
+        description: 'Ajusta el volumen exacto de la televisión por control BroadLink del 0 al 100%.',
+        parameters: { percent: 'Porcentaje de volumen (0-100)' }, permission: 'physical-device',
+        examples: ['Poné el volumen de la tele al 30', 'Volumen de la tele al 70%'],
+        execute: async ({ percent }) => tvService.setVolume(percent)
+    });
+    actionKernel.register({
+        id: 'tv.adjust-volume', name: 'Subir/Bajar volumen de la televisión',
+        description: 'Sube o baja el volumen de la televisión por control BroadLink.',
+        parameters: { delta: 'Diferencia de volumen (-100 a 100)' }, permission: 'physical-device',
+        examples: ['Subí el volumen de la tele', 'Bajá el volumen de la tele 20'],
+        execute: async ({ delta }) => tvService.adjustVolume(delta)
+    });
+    actionKernel.register({
+        id: 'tv.get-volume', name: 'Consultar volumen de la televisión',
+        description: 'Obtiene el volumen actual estimado de la televisión.',
+        parameters: {}, permission: 'standard',
+        examples: ['¿A cuánto está el volumen de la tele?', 'Volumen de la tele'],
+        execute: async () => tvService.getVolume()
+    });
+    actionKernel.register({
+        id: 'tv.calibrate-volume', name: 'Calibrar volumen de la televisión',
+        description: 'Sincroniza el nivel actual del televisor con la memoria de Jarvis.',
+        parameters: { level: 'Nivel actual en pantalla (0-100)' }, permission: 'standard',
+        examples: ['El volumen de la tele está en 25', 'Calibrá el volumen de la tele a 15'],
+        execute: async ({ level }) => tvService.calibrateVolume(level)
+    });
+    actionKernel.register({
+        id: 'tv.learn-button', name: 'Aprender botón del control remoto',
+        description: 'Pone al BroadLink en modo aprendizaje para capturar una tecla física (volup, voldown, power, etc.).',
+        parameters: { button: 'Nombre del botón (volup, voldown, power, netflix, etc.)' }, permission: 'physical-device',
+        examples: ['Aprendé subir volumen', 'Aprendé bajar volumen'],
+        execute: async ({ button }) => {
+            await tvService.learnButton(button);
+            return { ok: true, message: `¡Excelente! Aprendí el botón ${button} del control remoto con éxito.` };
         }
     });
 
@@ -397,7 +448,11 @@ function parseDollar(text) {
 
 async function resolve(text) {
     registerActions();
-    const clean = String(text || '').trim();
+    let clean = String(text || '').trim();
+    // Normalización fonética para términos comúnmente malinterpretados por STT
+    clean = clean
+        .replace(/\b(?:un\s+)?(?:tequi\s*te|tequiste|tequi|te\s+que\s+te|tequis|tx\s*t|t\s+x\s+t)\b/gi, 'txt')
+        .replace(/\b(crear|creame|crea|hacer|haceme|hace|generar|genera)\s+(?:un\s+)?tequila\b/gi, '$1 un txt');
     const lower = normalize(clean);
 
     // 1. Wake & Sleep
@@ -435,12 +490,114 @@ async function resolve(text) {
         return { id: 'explain.query', params: { query: clean } };
     }
 
-    // 7. Papelera & Archivos (Borrar y Recuperar)
-    const delFileMatch = lower.match(/^(?:borr[aá]|elimin[aá]|mand[aá]\s+a\s+la\s+papelera)\s+(?:el\s+archivo\s+)?([a-zA-Z0-9_\-\. ]+?)(?:\s+de\s+mi\s+escritorio|\s+del\s+escritorio)?$/i);
-    if (delFileMatch && delFileMatch[1]) {
-        return { id: 'file.delete', params: { filePath: delFileMatch[1].trim() } };
+    // 7. Sistema de Archivos y Carpetas (Crear, Borrar y Restaurar)
+    
+    // 7.1 Crear carpeta con archivo Word o TXT adentro (Comando compuesto)
+    const folderAndFileMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|gener[aá]|generar)\s+(?:una\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|que\s+se\s+llame\s+|titulada|de\s+nombre\s+|de\s+)?\s*([a-zA-Z0-9_\-áéíóúÁÉÍÓÚñÑ ]+?)\s+(?:y\s+)?(?:cre[aá]|crear|creame|hac[eé]|haceme|hacer|pon[eé]|poner|met[eé]|meter|redact[aá]|redactar)?\s*(?:dentro|adentro|en\s+ella)?\s*(?:un\s+|una\s+)?(word|documento|docx|txt|archivo(?:\s+de\s+texto)?|nota)\s*(?:llamado|con\s+nombre\s+(?:de\s+)?)?\s*([^\s:]+)?\s*(?:que\s+diga|con\s+el\s+contenido\s+(?:de\s+)?|con\s+texto|sobre|acerca\s+de|diciendo|:)?\s*([\s\S]*)$/i);
+    if (folderAndFileMatch) {
+        let folderName = folderAndFileMatch[1].trim().replace(/^de\s+/i, '').replace(/[.!?]+$/, '').trim();
+        const type = (folderAndFileMatch[2] || '').toLowerCase();
+        let name = (folderAndFileMatch[3] || '').trim();
+        let contentOrTopic = (folderAndFileMatch[4] || '').trim().replace(/^(?:diga|que\s+diga|con\s+el\s+contenido\s+(?:de\s+)?|con\s+texto|sobre|acerca\s+de|diciendo|:)\s*/i, '').trim();
+        const isWord = /word|docx|documento/i.test(type);
+        const format = isWord ? 'docx' : 'txt';
+
+        if (!name || /^(?:que|con|sobre|acerca|de|diga)$/i.test(name)) {
+            name = isWord ? `Documento_${Date.now()}` : `Nota_${Date.now()}`;
+        }
+        return {
+            id: 'file.create',
+            params: {
+                folderName,
+                fileName: name,
+                content: contentOrTopic,
+                topic: contentOrTopic,
+                format
+            }
+        };
     }
-    const restoreFileMatch = lower.match(/^(?:recuper[aá]|restaur[aá])\s+(?:el\s+archivo\s+)?([a-zA-Z0-9_\-\. ]+?)(?:\s+de\s+la\s+papelera)?$/i);
+
+    // 7.2 Crear carpeta sola
+    const createFolderMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|gener[aá]|generar)\s+(?:una\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|que\s+se\s+llame\s+|titulada|de\s+nombre\s+|de\s+)?\s*([a-zA-Z0-9_\-áéíóúÁÉÍÓÚñÑ ]+)$/i);
+    if (createFolderMatch && createFolderMatch[1]) {
+        let folderName = createFolderMatch[1].trim().replace(/^de\s+/i, '').replace(/[.!?]+$/, '').trim();
+        if (folderName) {
+            return { id: 'folder.create', params: { folderName } };
+        }
+    }
+
+    // 7.3 Eliminar carpeta
+    const delFolderMatch = lower.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:la\s+|esta\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|de\s+nombre\s+|titulada|de\s+)?\s*([a-zA-Z0-9_\-\.áéíóúñ ]+)$/i);
+    if (delFolderMatch && delFolderMatch[1]) {
+        let folderName = delFolderMatch[1].trim().replace(/^de\s+/i, '').replace(/[.!?]+$/, '').trim();
+        if (folderName) {
+            return { id: 'folder.delete', params: { folderName } };
+        }
+    }
+
+    // 7.4 Creación de archivos TXT / Notas explícitos
+    const createTxtMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|escrib[ií]|escribir|gener[aá]|generar)\s+(?:un\s+|una\s+)?(?:txt|archivo\s+de\s+texto|nota|texto)\s*(?:llamad[oa]|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|titulad[oa])?\s*([^\s:]+)?\s*(?:sobre|acerca\s+de|con\s+tema|que\s+diga|con\s+el\s+contenido\s+(?:de\s+)?|con\s+texto|diciendo|:)?\s*([\s\S]*)$/i);
+    if (createTxtMatch) {
+        let possibleName = (createTxtMatch[1] || '').trim();
+        let topicOrContent = (createTxtMatch[2] || '').trim();
+        let fileName = '';
+        let content = topicOrContent;
+
+        if (possibleName && !/^(?:que|con|sobre|acerca|de)$/i.test(possibleName)) {
+            fileName = possibleName.endsWith('.txt') ? possibleName : `${possibleName}.txt`;
+        } else {
+            if (/^(?:que|con|sobre|acerca|de)$/i.test(possibleName)) {
+                content = `${possibleName} ${content}`.trim().replace(/^(?:que\s+diga|con\s+el\s+contenido\s+(?:de\s+)?|con\s+texto|sobre|acerca\s+de|diciendo|:)\s*/i, '');
+            }
+            fileName = `Nota_${Date.now()}.txt`;
+        }
+        return { id: 'file.create', params: { fileName, content, topic: content, format: 'txt' } };
+    }
+
+    // 7.5 Creación de Word (.docx) explícito
+    const createWordMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|redact[aá]|redactar|gener[aá]|generar)\s+(?:un\s+|una\s+)?(?:word|docx|documento\s+de\s+word|documento)\s*(?:llamad[oa]|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|titulad[oa])?\s*([^\s:]+)?\s*(?:sobre|acerca\s+de|con\s+tema|que\s+diga|con\s+el\s+contenido\s+(?:de\s+)?|con\s+texto|:)?\s*([\s\S]*)$/i);
+    if (createWordMatch) {
+        let possibleName = (createWordMatch[1] || '').trim();
+        let topicOrContent = (createWordMatch[2] || '').trim();
+        let fileName = '';
+        let content = topicOrContent;
+
+        if (possibleName && !/^(?:que|con|sobre|acerca|de)$/i.test(possibleName)) {
+            fileName = possibleName.endsWith('.docx') ? possibleName : `${possibleName}.docx`;
+        } else {
+            if (/^(?:que|con|sobre|acerca|de)$/i.test(possibleName)) {
+                content = `${possibleName} ${content}`.trim().replace(/^(?:que\s+diga|con\s+el\s+contenido\s+(?:de\s+)?|con\s+texto|sobre|acerca\s+de|diciendo|:)\s*/i, '');
+            }
+            fileName = `Documento_${Date.now()}.docx`;
+        }
+        return { id: 'file.create', params: { fileName, topic: content, content, format: 'docx' } };
+    }
+
+    // 7.6 Creación general de archivo
+    const createFileMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|escrib[ií]|gener[aá])\s+(?:un\s+|una\s+)?(?:archivo|documento)\s*(?:llamado|con\s+nombre|titulado)?\s*([^\s:]+\.[a-zA-Z0-9]+|[a-zA-Z0-9_\-]+)\s*(?:que\s+diga|con\s+el\s+contenido|con\s+texto|diciendo|:)?\s*([\s\S]*)$/i);
+    if (createFileMatch && createFileMatch[1]) {
+        let name = createFileMatch[1].trim();
+        let content = (createFileMatch[2] || '').trim();
+        if (!name.includes('.')) name += '.txt';
+        return { id: 'file.create', params: { fileName: name, content, format: 'txt' } };
+    }
+
+    // 7.7 Borrado inteligente de capturas / fotos / imágenes
+    if (/\b(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:la\s+|las\s+|esta\s+)?(?:ultima\s+|última\s+)?(?:captura|screenshot|foto|fotos|imagen|imagenes|pantallazo)\b/i.test(lower)) {
+        return { id: 'file.delete', params: { filePath: 'last_screenshot' } };
+    }
+
+    // 7.8 Borrado de archivos generales
+    const delFileMatch = lower.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:el\s+archivo\s+|la\s+foto\s+|la\s+imagen\s+|el\s+documento\s+|el\s+|la\s+)?([a-zA-Z0-9_\-\.áéíóúñ ]+?)(?:\s+de\s+mi\s+escritorio|\s+del\s+escritorio)?$/i);
+    if (delFileMatch && delFileMatch[1]) {
+        let target = delFileMatch[1].trim();
+        if (target) {
+            return { id: 'file.delete', params: { filePath: target } };
+        }
+    }
+
+    // 7.9 Restaurar archivos
+    const restoreFileMatch = lower.match(/^(?:recuper(?:ar|[aá]|ame)|restaur(?:ar|[aá]|ame))\s+(?:el\s+archivo\s+|la\s+carpeta\s+)?([a-zA-Z0-9_\-\.áéíóúñ ]+?)(?:\s+de\s+la\s+papelera)?$/i);
     if (restoreFileMatch && restoreFileMatch[1]) {
         return { id: 'file.restore', params: { identifier: restoreFileMatch[1].trim() } };
     }
@@ -470,6 +627,14 @@ async function resolve(text) {
 
     const tvIntent = tvVoiceService.parseTvIntent(clean);
     if (tvIntent) {
+        if (tvIntent.action === 'cancel') return { id: 'emergency.stop', params: {} };
+        if (tvIntent.action === 'set_volume') return { id: 'tv.set-volume', params: { percent: tvIntent.percent } };
+        if (tvIntent.action === 'adjust_volume') return { id: 'tv.adjust-volume', params: { delta: tvIntent.delta } };
+        if (tvIntent.action === 'get_volume') return { id: 'tv.get-volume', params: {} };
+        if (tvIntent.action === 'calibrate_volume') return { id: 'tv.calibrate-volume', params: { level: tvIntent.level } };
+        if (tvIntent.action === 'learn_button') return { id: 'tv.learn-button', params: { button: tvIntent.button } };
+        if (tvIntent.action === 'toggle_mute') return { id: 'tv.toggle-mute', params: {} };
+
         if (tvIntent.action === 'open_pc') return { id: 'system.open', params: { appName: 'Netflix' } };
         const broadLinkAvailable = await tvService.isAvailable();
         if (!broadLinkAvailable) {

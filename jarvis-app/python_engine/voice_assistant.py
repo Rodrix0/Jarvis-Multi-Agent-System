@@ -220,6 +220,17 @@ def speak(text):
     threading.Thread(target=worker, daemon=True).start()
 
 
+def trigger_immediate_emergency():
+    stop_speaking()
+    def async_stop():
+        try:
+            requests.post(f"{NODE_URL}/api/emergency-stop", json={"source": "VOICE_IMMEDIATE"}, timeout=3)
+        except Exception as e:
+            print(f"[Voz local] Error enviando emergency stop: {e}")
+    threading.Thread(target=async_stop, daemon=True).start()
+    speak("Parada de emergencia ejecutada. Cancelé todos los procesos.")
+
+
 def clear_audio_queue():
     try:
         while True:
@@ -455,48 +466,60 @@ class LocalVoiceEngine:
         print(f"[Voz local] {text!r} confianza={confidence:.2f}")
         report_status(stage="understood", transcript=text, confidence=confidence, metadata=metadata)
         clean = normalized(text)
-        if self.pending:
-            if re.search(r"\b(si|sí|correcto|exacto|confirmo)\b", clean):
-                original = self.pending
-                self.pending = None
-                result = send_to_jarvis(original, 1.0, confirmed=True)
-            elif re.search(r"\b(no|cancela|cancelar)\b", clean) and "dije" not in clean:
-                self.pending = None
-                speak("Cancelado. Volvé a decirme la orden completa.")
-                return
-            else:
-                corrected = re.sub(r"^.*?\bdije\b\s*", "", text, flags=re.I).strip() or text
-                original = self.pending
-                self.pending = None
-                try:
-                    requests.post(f"{NODE_URL}/api/memory/corrections", json={"from": original, "to": corrected}, timeout=3)
-                except Exception:
-                    pass
-                result = send_to_jarvis(corrected, 1.0, confirmed=True)
-        else:
-            result = send_to_jarvis(text, confidence)
 
-        if result.get("confirmation"):
-            self.pending = result.get("text", text)
-            speak(f"Entendí: {self.pending}. ¿Es correcto?")
+        # 0. Parada de Emergencia Inmediata (Prioridad Absoluta)
+        if re.search(r"\b(?:deten(?:er)?\s+todo|par(?:ar)?\s+todo|abortar|emergencia|cancel(?:ar)?\s+todo|detente|parate|cancela|detene|parar)\b", clean):
+            trigger_immediate_emergency()
             clear_audio_queue()
-            self.suppress_until = time.monotonic() + 0.8
+            self.suppress_until = time.monotonic() + 0.5
             return
-        response_text = result.get("response") or result.get("result", {}).get("message") or result.get("error")
-        voice_state = result.get("result", {}).get("data", {}).get("voiceState")
-        if voice_state == "dormant":
-            stop_speaking()
-            self.state = "dormant"
-            write_state(self.state)
-            self.whisper = None
-            gc.collect()
-            threading.Thread(target=unload_local_understanding, daemon=True).start()
+
+        def async_execution():
+            if self.pending:
+                if re.search(r"\b(si|sí|correcto|exacto|confirmo)\b", clean):
+                    original = self.pending
+                    self.pending = None
+                    result = send_to_jarvis(original, 1.0, confirmed=True)
+                elif re.search(r"\b(no|cancela|cancelar)\b", clean) and "dije" not in clean:
+                    self.pending = None
+                    speak("Cancelado. Volvé a decirme la orden completa.")
+                    return
+                else:
+                    corrected = re.sub(r"^.*?\bdije\b\s*", "", text, flags=re.I).strip() or text
+                    original = self.pending
+                    self.pending = None
+                    try:
+                        requests.post(f"{NODE_URL}/api/memory/corrections", json={"from": original, "to": corrected}, timeout=3)
+                    except Exception:
+                        pass
+                    result = send_to_jarvis(corrected, 1.0, confirmed=True)
+            else:
+                result = send_to_jarvis(text, confidence)
+
+            if result.get("confirmation"):
+                self.pending = result.get("text", text)
+                speak(f"Entendí: {self.pending}. ¿Es correcto?")
+                clear_audio_queue()
+                self.suppress_until = time.monotonic() + 0.8
+                return
+            response_text = result.get("response") or result.get("result", {}).get("message") or result.get("error")
+            voice_state = result.get("result", {}).get("data", {}).get("voiceState")
+            if voice_state == "dormant":
+                stop_speaking()
+                self.state = "dormant"
+                write_state(self.state)
+                self.whisper = None
+                gc.collect()
+                threading.Thread(target=unload_local_understanding, daemon=True).start()
+                clear_audio_queue()
+                report_status(stage="dormant")
+                return
+            speak(response_text)
             clear_audio_queue()
-            report_status(stage="dormant")
-            return
-        speak(response_text)
-        clear_audio_queue()
-        self.suppress_until = time.monotonic() + 0.9
+            self.suppress_until = time.monotonic() + 0.9
+
+        # Desacoplar ejecución para que el micrófono y el bucle de audio nunca se congelen
+        threading.Thread(target=async_execution, daemon=True).start()
 
     def run(self):
         global input_sample_rate

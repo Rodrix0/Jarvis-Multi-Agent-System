@@ -114,6 +114,57 @@ function parseTvIntent(text) {
         return { action: 'choose_device' };
     }
 
+    // --- 0. Volumen y Silencio de la Televisión ---
+    const tvVolSetMatch = normalized.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
+        || normalized.match(/(?:volumen|sonido|audio).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i)
+        || normalized.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia|coloca|sete(?:a|ar)).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i);
+    if (tvVolSetMatch) {
+        return { action: 'set_volume', percent: parseInt(tvVolSetMatch[1], 10) };
+    }
+
+    const tvVolDeltaMatch = normalized.match(/(?:subi|subir|aumenta|aumentar)\s+(?:el\s+)?(?:volumen|sonido|audio)\s+(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)(?:\s+(?:en\s+)?(\d{1,2}))?/i)
+        || normalized.match(/(?:baja|bajar|disminui|disminuir)\s+(?:el\s+)?(?:volumen|sonido|audio)\s+(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)(?:\s+(?:en\s+)?(\d{1,2}))?/i);
+    if (tvVolDeltaMatch) {
+        const isUp = /subi|aument/i.test(tvVolDeltaMatch[0]);
+        const deltaValue = parseInt(tvVolDeltaMatch[1] || '10', 10);
+        return { action: 'adjust_volume', delta: isUp ? deltaValue : -deltaValue };
+    }
+
+    if (/\b(?:que|cuanto|cuanta|a que|nivel de|estado del?)\s+(?:volumen|sonido|audio)\s+(?:tiene|esta|hay en)?\s*(?:la\s+)?(?:tele|television|tv)\b/i.test(normalized)
+        || /\b(?:volumen|sonido|audio)\s+(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)\b/i.test(normalized)) {
+        return { action: 'get_volume' };
+    }
+
+    // Calibración de volumen manual
+    const tvVolCalibMatch = normalized.match(/(?:el\s+)?volumen\s+(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)\s+est[aá]\s+(?:en\s+|al\s+)?(\d{1,3})/i)
+        || normalized.match(/calibr[aá]\s+(?:el\s+)?volumen\s+(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)\s+(?:a|al|en)?\s*(\d{1,3})/i);
+    if (tvVolCalibMatch) {
+        return { action: 'calibrate_volume', level: parseInt(tvVolCalibMatch[1], 10) };
+    }
+
+    // Aprendizaje de botones por voz
+    const learnMatch = normalized.match(/aprend[eé]\s+(?:el\s+bot[oó]n\s+(?:de\s+)?)?(subir\s+volumen|bajar\s+volumen|volup|voldown|power|netflix|ok|arriba|abajo|izquierda|derecha|mute|silencio)/i);
+    if (learnMatch) {
+        const key = learnMatch[1].toLowerCase();
+        let button = 'volup';
+        if (key.includes('bajar')) button = 'voldown';
+        else if (key.includes('subir')) button = 'volup';
+        else if (key.includes('power') || key.includes('prender') || key.includes('apagar')) button = 'power';
+        else if (key.includes('netflix')) button = 'netflix';
+        else if (key.includes('ok')) button = 'ok';
+        else if (key.includes('arriba')) button = 'up';
+        else if (key.includes('abajo')) button = 'down';
+        else if (key.includes('izquierda')) button = 'left';
+        else if (key.includes('derecha')) button = 'right';
+        else if (key.includes('mute') || key.includes('silencio')) button = 'mute';
+        return { action: 'learn_button', button };
+    }
+
+    if (/\b(?:mute|silenci(?:a|ar|ate)|mutear|desmutear|pon(?:e)? en silencio|sac(?:a)? el silencio)\b.*(?:tele|television|tv)/i.test(normalized)
+        || /\b(?:silenci(?:a|ar)\s+(?:la\s+)?(?:tele|television|tv))\b/i.test(normalized)) {
+        return { action: 'toggle_mute' };
+    }
+
     if (switchesAwayFromTv(normalized)) {
         deactivateSession();
         return null;
@@ -122,6 +173,15 @@ function parseTvIntent(text) {
     const mentionsTv = /\b(netflix|tele|television|tv|mi lista|mi serie|mi contenido|continuar viendo|continua viendo|segui viendo|serie que estoy viendo)\b/.test(normalized);
     const inTvContext = mentionsTv || isSessionActive();
     if (!inTvContext) return null;
+
+    const powerOn = /(prende|prenda|prender|encende|encienda|encender).*(tele|television|tv)/.test(normalized);
+
+    // Detección directa de apertura de Netflix (sin película)
+    if (/^(?:prende|prenda|prender|encende|encienda|encender)\s+(?:la\s+)?(?:tele|television|tv)\s+(?:y\s+)?(?:pone|poneme|abrir|abri|abre|entra|entrar)?\s*netflix$/i.test(normalized)
+        || /^(?:pone|poneme|abrir|abri|abre|entra|entrar)\s+netflix\s+(?:en\s+)?(?:la\s+)?(?:tele|television|tv)$/i.test(normalized)
+        || /^(?:prende|prenda|encende|encienda)\s+(?:la\s+)?(?:tele|television|tv)$/i.test(normalized)) {
+        return { action: 'netflix', title: '', useDefaultSeries: false, powerOn: powerOn || true };
+    }
 
     if (/\b(reproduce|reproduci|pone|poneme|ponelo|ponela|ponlo|selecciona|elegi|entra)(?:\s+(?:eso|esa|ese|esto|esta|seleccionado|seleccionada|ahi))?\s*$/.test(normalized)) {
         return { action: 'navigate', button: 'ok', count: 1, label: 'reproducir lo seleccionado' };
@@ -156,16 +216,16 @@ function parseTvIntent(text) {
         }
     }
 
-    const powerOn = /(prende|prenda|prender|encende|encienda|encender).*(tele|television|tv)/.test(normalized);
     if (/(?:continua|segui|sigue|siga|reproduce|pone|poneme).*(?:mi contenido|mi serie|continuar viendo|viendo|lo que estaba viendo)/.test(normalized)) {
         return { action: 'continue_watching', powerOn };
     }
 
     const explicitNamedSeries = normalized.match(/(?:serie\s+que\s+estoy\s+viendo|mi\s+lista).*?\bque\s+es\s+(.+?)(?:\s+y\s+reprodu\w*)?$/);
     if (explicitNamedSeries) {
-        const title = cleanQuery(explicitNamedSeries[1]);
+        let title = cleanQuery(explicitNamedSeries[1]);
+        if (/^(?:netflix|la tele|television|tv)$/i.test(title)) title = '';
         const playFirst = /\breprodu\w*\b/.test(normalized);
-        if (!sessionContext.netflixReady) {
+        if (!sessionContext.netflixReady || !title) {
             return { action: 'netflix', title, useDefaultSeries: false, powerOn, playFirst };
         }
         return {
@@ -177,39 +237,45 @@ function parseTvIntent(text) {
 
     const beforeNetflix = normalized.match(/(?:pone|poneme|ponelo|ponela|busca|buscame|buscar|reproduce|reproducir|quiero ver)\s+(.+?)\s+en\s+netflix/);
     const afterNetflix = normalized.match(/netflix(?:\s+y)?\s+(?:pone|poneme|ponelo|ponela|busca|buscame|buscar|reproduce|reproducir)\s+(.+)$/);
-    const namedTitle = beforeNetflix?.[1] || afterNetflix?.[1];
+    let namedTitle = beforeNetflix?.[1] || afterNetflix?.[1];
     if (namedTitle) {
+        namedTitle = cleanQuery(namedTitle);
+        if (/^(?:la tele|television|tv|netflix|abrir|entra)$/i.test(namedTitle)) namedTitle = '';
         const playFirst = /\b(pone|poneme|ponelo|ponela|reproduc\w*|quiero ver)\b/.test(normalized);
         const explicitlyOpensNetflix = /\b(abri|abrir|abre|abra|entra)\b.*\bnetflix\b/.test(normalized);
-        if (powerOn || explicitlyOpensNetflix || !sessionContext.netflixReady) {
+        if (powerOn || explicitlyOpensNetflix || !sessionContext.netflixReady || !namedTitle) {
             return {
                 action: 'netflix',
-                title: cleanQuery(namedTitle),
+                title: namedTitle,
                 useDefaultSeries: false,
                 powerOn,
                 playFirst
             };
         }
-        return { action: 'search', title: cleanQuery(namedTitle), playFirst };
+        return { action: 'search', title: namedTitle, playFirst };
     }
 
     const searchMatch = normalized.match(/(?:quiero\s+)?(?:busca|buscame|buscar)\s+(.+)$/);
     if (searchMatch) {
-        const title = cleanQuery(searchMatch[1]);
+        let title = cleanQuery(searchMatch[1]);
+        if (/^(?:netflix|la tele|television|tv)$/i.test(title)) title = '';
         const playFirst = /\breprodu\w*\b/.test(normalized);
-        if (wantsTelevision || !sessionContext.netflixReady) {
+        if (wantsTelevision || !sessionContext.netflixReady || !title) {
             return { action: 'netflix', title, useDefaultSeries: false, powerOn, playFirst };
         }
         return { action: 'search', title, playFirst };
     }
 
     const playNamed = normalized.match(/(?:reproduce|reproducir|poneme|pone|ponelo|ponela|continua|quiero ver)\s+(.+)$/);
-    if (playNamed && !/^netflix$/.test(playNamed[1])) {
-        const title = cleanQuery(playNamed[1]);
-        if (wantsTelevision || !sessionContext.netflixReady) {
-            return { action: 'netflix', title, useDefaultSeries: false, powerOn, playFirst: true };
+    if (playNamed) {
+        let title = cleanQuery(playNamed[1]);
+        if (/^(?:netflix|la tele|la tele y pone netflix|la tele y poneme netflix|television|tv)$/i.test(title)) title = '';
+        if (title) {
+            if (wantsTelevision || !sessionContext.netflixReady) {
+                return { action: 'netflix', title, useDefaultSeries: false, powerOn, playFirst: true };
+            }
+            return { action: 'search', title, playFirst: true };
         }
-        return { action: 'search', title, playFirst: true };
     }
 
     const mentionsNetflix = /\bnetflix\b/.test(normalized);

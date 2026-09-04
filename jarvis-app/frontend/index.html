@@ -111,7 +111,7 @@
                         <i class="fa-solid fa-magnifying-glass"></i>
                         <input id="capability-search" type="search" placeholder="Buscar función..." autocomplete="off">
                     </div>
-                    <button id="btn-open-tv-modal" class="action-btn tv-setup-shortcut">
+                    <button id="btn-open-tv-modal" class="action-btn tv-setup-shortcut" onclick="window.openTvModal ? window.openTvModal() : document.getElementById('tv-modal')?.classList.remove('hidden')">
                         <i class="fa-solid fa-tv"></i> Configurar TV / BroadLink
                     </button>
                 </div>
@@ -156,7 +156,7 @@
     <!-- MODAL TV Y BROADLINK -->
     <div id="tv-modal" class="modal hidden">
         <div class="modal-content tv-modal-content">
-            <span class="close-btn" id="close-tv-modal">&times;</span>
+            <span class="close-btn" id="close-tv-modal" onclick="window.closeTvModal ? window.closeTvModal() : document.getElementById('tv-modal')?.classList.add('hidden')">&times;</span>
             <h2><i class="fa-solid fa-tv"></i> Control de Televisión y Netflix</h2>
             <p class="modal-subtitle">Configura tu BroadLink y los botones aprendidos.</p>
 
@@ -168,12 +168,39 @@
             <div id="tv-operation-message" class="tv-operation-message" style="display: none;"></div>
 
             <div class="tv-tabs">
-                <button class="tv-tab-btn active" data-tab="setup">Configuración</button>
-                <button class="tv-tab-btn" data-tab="learning">Aprender Botones</button>
-                <button class="tv-tab-btn" data-tab="testing">Pruebas Rápidas</button>
+                <button type="button" class="tv-tab-btn active" data-tab="learning" onclick="switchTvTab('learning', this)">Aprender Botones</button>
+                <button type="button" class="tv-tab-btn" data-tab="testing" onclick="switchTvTab('testing', this)">Pruebas Rápidas</button>
+                <button type="button" class="tv-tab-btn" data-tab="setup" onclick="switchTvTab('setup', this)">Configuración</button>
             </div>
 
-            <div class="tv-tab-content" id="tab-setup">
+            <div class="tv-tab-content" id="tab-learning" style="display: block;">
+                <div class="learning-grid">
+                    <button type="button" class="btn-learn" data-btn="vol_up" onclick="learnTvButton('vol_up')"><i class="fa-solid fa-volume-high"></i> Vol +</button>
+                    <button type="button" class="btn-learn" data-btn="vol_down" onclick="learnTvButton('vol_down')"><i class="fa-solid fa-volume-low"></i> Vol -</button>
+                    <button type="button" class="btn-learn" data-btn="power" onclick="learnTvButton('power')"><i class="fa-solid fa-power-off"></i> Power</button>
+                    <button type="button" class="btn-learn" data-btn="home" onclick="learnTvButton('home')"><i class="fa-solid fa-house"></i> Home</button>
+                    <button type="button" class="btn-learn" data-btn="netflix" onclick="learnTvButton('netflix')"><i class="fa-solid fa-play"></i> Netflix</button>
+                    <button type="button" class="btn-learn" data-btn="up" onclick="learnTvButton('up')"><i class="fa-solid fa-arrow-up"></i> Arriba</button>
+                    <button type="button" class="btn-learn" data-btn="down" onclick="learnTvButton('down')"><i class="fa-solid fa-arrow-down"></i> Abajo</button>
+                    <button type="button" class="btn-learn" data-btn="left" onclick="learnTvButton('left')"><i class="fa-solid fa-arrow-left"></i> Izquierda</button>
+                    <button type="button" class="btn-learn" data-btn="right" onclick="learnTvButton('right')"><i class="fa-solid fa-arrow-right"></i> Derecha</button>
+                    <button type="button" class="btn-learn" data-btn="ok" onclick="learnTvButton('ok')"><i class="fa-solid fa-check"></i> OK / Enter</button>
+                    <button type="button" class="btn-learn" data-btn="back" onclick="learnTvButton('back')"><i class="fa-solid fa-rotate-left"></i> Volver</button>
+                </div>
+            </div>
+
+            <div class="tv-tab-content" id="tab-testing" style="display: none;">
+                <div class="testing-grid">
+                    <button type="button" class="btn-test-cmd" data-btn="vol_up" onclick="testTvButton('vol_up')">Test Vol +</button>
+                    <button type="button" class="btn-test-cmd" data-btn="vol_down" onclick="testTvButton('vol_down')">Test Vol -</button>
+                    <button type="button" class="btn-test-cmd" data-btn="power" onclick="testTvButton('power')">Test Power</button>
+                    <button type="button" class="btn-test-cmd" data-btn="netflix" onclick="testTvButton('netflix')">Test Netflix</button>
+                    <button type="button" class="btn-test-cmd" data-btn="home" onclick="testTvButton('home')">Test Home</button>
+                    <button type="button" class="btn-test-cmd" data-btn="ok" onclick="testTvButton('ok')">Test OK</button>
+                </div>
+            </div>
+
+            <div class="tv-tab-content" id="tab-setup" style="display: none;">
                 <form id="tv-settings-form">
                     <div class="form-group">
                         <label>IP del Dispositivo:</label>
@@ -188,35 +215,10 @@
                         <input type="text" id="tv-dev-type" placeholder="Ej: 0x272a (Opcional)">
                     </div>
                     <div class="form-row">
-                        <button type="button" id="btn-discover-tv" class="action-btn secondary"><i class="fa-solid fa-radar"></i> Auto-Detectar</button>
+                        <button type="button" id="btn-discover-tv" class="action-btn secondary" onclick="discoverTvBroadlink()"><i class="fa-solid fa-radar"></i> Auto-Detectar</button>
                         <button type="submit" class="action-btn primary"><i class="fa-solid fa-floppy-disk"></i> Guardar Configuración</button>
                     </div>
                 </form>
-            </div>
-
-            <div class="tv-tab-content" id="tab-learning" style="display: none;">
-                <div class="learning-grid">
-                    <button class="btn-learn" data-btn="power"><i class="fa-solid fa-power-off"></i> Power</button>
-                    <button class="btn-learn" data-btn="home"><i class="fa-solid fa-house"></i> Home</button>
-                    <button class="btn-learn" data-btn="netflix"><i class="fa-solid fa-play"></i> Netflix</button>
-                    <button class="btn-learn" data-btn="up"><i class="fa-solid fa-arrow-up"></i> Arriba</button>
-                    <button class="btn-learn" data-btn="down"><i class="fa-solid fa-arrow-down"></i> Abajo</button>
-                    <button class="btn-learn" data-btn="left"><i class="fa-solid fa-arrow-left"></i> Izquierda</button>
-                    <button class="btn-learn" data-btn="right"><i class="fa-solid fa-arrow-right"></i> Derecha</button>
-                    <button class="btn-learn" data-btn="ok"><i class="fa-solid fa-check"></i> OK / Enter</button>
-                    <button class="btn-learn" data-btn="back"><i class="fa-solid fa-rotate-left"></i> Volver</button>
-                    <button class="btn-learn" data-btn="vol_up"><i class="fa-solid fa-volume-high"></i> Vol +</button>
-                    <button class="btn-learn" data-btn="vol_down"><i class="fa-solid fa-volume-low"></i> Vol -</button>
-                </div>
-            </div>
-
-            <div class="tv-tab-content" id="tab-testing" style="display: none;">
-                <div class="testing-grid">
-                    <button class="btn-test-cmd" data-btn="power">Test Power</button>
-                    <button class="btn-test-cmd" data-btn="netflix">Test Netflix</button>
-                    <button class="btn-test-cmd" data-btn="home">Test Home</button>
-                    <button class="btn-test-cmd" data-btn="ok">Test OK</button>
-                </div>
             </div>
         </div>
     </div>
@@ -244,10 +246,33 @@
         </div>
     </div>
 
+    <!-- Script inline para garantizar cambio inmediato de pestañas -->
+    <script>
+        function switchTvTab(tabName, el) {
+            document.querySelectorAll('.tv-tab-btn').forEach(function(b) {
+                b.classList.remove('active');
+            });
+            document.querySelectorAll('.tv-tab-content').forEach(function(c) {
+                c.style.setProperty('display', 'none', 'important');
+            });
+            if (el) {
+                el.classList.add('active');
+            } else {
+                var btn = document.querySelector('.tv-tab-btn[data-tab="' + tabName + '"]');
+                if (btn) btn.classList.add('active');
+            }
+            var target = document.getElementById('tab-' + tabName);
+            if (target) {
+                target.style.setProperty('display', 'block', 'important');
+            }
+        }
+        window.switchTvTab = switchTvTab;
+    </script>
+
     <!-- Scripts -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="jarvis3d.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=20260904_04"></script>
 </body>
 </html>

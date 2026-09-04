@@ -124,7 +124,160 @@ async function procesarMemoriaDinamica(busqueda, modeId) {
     }
 }
 
-// --- 3. Ejecutor Central ---
+// --- 3. Buscador y Ejecutor Inteligente ---
+
+function normalizeSearchText(text) {
+    return String(text || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/['".,?!\\-_/:;()]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function collapseAlphanumeric(text) {
+    return normalizeSearchText(text).replace(/[^a-z0-9]/g, '');
+}
+
+function extractSearchTokens(text) {
+    const norm = normalizeSearchText(text);
+    const words = norm.split(/\s+/).filter(Boolean);
+    const tokens = new Set();
+    words.forEach(w => {
+        tokens.add(w);
+        const parts = w.match(/[a-z]+|[0-9]+/g);
+        if (parts && parts.length > 1) {
+            parts.forEach(p => tokens.add(p));
+        }
+    });
+    const stopWords = new Set(['el', 'la', 'los', 'las', 'un', 'una', 'del', 'de', 'carpeta', 'archivo', 'documento', 'programa', 'app', 'juego', 'mi', 'mis', 'que', 'se', 'llama', 'llamada', 'nombre']);
+    return Array.from(tokens).filter(t => t.length > 0 && !stopWords.has(t));
+}
+
+function calculateStringSimilarity(s1, s2) {
+    if (s1 === s2) return 1.0;
+    if (!s1 || !s2) return 0.0;
+    const longer = s1.length > s2.length ? s1 : s2;
+    const shorter = s1.length > s2.length ? s2 : s1;
+    const longerLength = longer.length;
+    if (longerLength === 0) return 1.0;
+    let costs = [];
+    for (let i = 0; i <= s1.length; i++) {
+        let lastValue = i;
+        for (let j = 0; j <= s2.length; j++) {
+            if (i === 0) costs[j] = j;
+            else {
+                if (j > 0) {
+                    let newValue = costs[j - 1];
+                    if (s1.charAt(i - 1) !== s2.charAt(j - 1))
+                        newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+                    costs[j - 1] = lastValue;
+                    lastValue = newValue;
+                }
+            }
+        }
+        if (i > 0) costs[s2.length] = lastValue;
+    }
+    return (longerLength - costs[s2.length]) / parseFloat(longerLength);
+}
+
+function findBestSystemMatch(rawQuery, discovered) {
+    let cleanApp = String(rawQuery || '').toLowerCase().trim();
+    let prev = '';
+    while (prev !== cleanApp) {
+        prev = cleanApp;
+        cleanApp = cleanApp
+            .replace(/^(abrir|abre|abrí|abr[ií]me|iniciar|inici[aá]|arrancar|arranc[aá]|lanza|ejecutar|ejecut[aá]|entrar a|entr[aá] a|entrar|entr[aá]|met[eé]te en|ir a|ve a|buscar|busca|buscar en|pon|pon[eé]|reproduce|abrirme|abrime|la carpeta|el archivo|el documento|el juego|la app|mi carpeta|mis|carpeta|archivo|documento|programa|juego|app|el|la|los|las|un|una|del|de)\s+/gi, '')
+            .trim();
+    }
+
+    const normQuery = normalizeSearchText(cleanApp);
+    const compactQuery = collapseAlphanumeric(cleanApp);
+    const queryTokens = extractSearchTokens(cleanApp);
+    
+    let bestCandidate = null;
+    let highestScore = 0;
+
+    for (const [name, targetPath] of Object.entries(discovered)) {
+        if (!targetPath) continue;
+        const normName = normalizeSearchText(name);
+        const compactName = collapseAlphanumeric(name);
+        const nameTokens = extractSearchTokens(name);
+        const baseFileName = path.basename(targetPath, path.extname(targetPath));
+        const normBaseFile = normalizeSearchText(baseFileName);
+        const compactBaseFile = collapseAlphanumeric(baseFileName);
+        
+        let score = 0;
+
+        const isDirectory = fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory();
+        const userWantedFolder = /\b(?:carpeta|directorio|folder)\b/i.test(rawQuery);
+
+        if (normName === normQuery || normBaseFile === normQuery) {
+            score = 100;
+        } else if (compactName === compactQuery || compactBaseFile === compactQuery) {
+            score = 98;
+        } else if (compactQuery.length >= 2 && (compactName.includes(compactQuery) || compactBaseFile.includes(compactQuery))) {
+            if (compactName.endsWith(compactQuery) || compactBaseFile.endsWith(compactQuery) || compactName.startsWith(compactQuery)) {
+                score = 92;
+            } else {
+                score = 88;
+            }
+        } else if (compactName.length >= 3 && compactQuery.includes(compactName)) {
+            score = 85;
+        } else if (queryTokens.length > 0 && queryTokens.every(qt => nameTokens.includes(qt) || normBaseFile.split(/\s+/).includes(qt))) {
+            score = 86 + Math.min(queryTokens.length * 2, 8);
+        } else if (queryTokens.length > 0) {
+            let matchedCount = 0;
+            queryTokens.forEach(qt => {
+                if (nameTokens.some(nt => nt === qt || (nt.length >= 3 && qt.length >= 3 && (nt.startsWith(qt) || qt.startsWith(nt))) || calculateStringSimilarity(nt, qt) >= 0.70)) {
+                    matchedCount++;
+                }
+            });
+            if (matchedCount > 0) {
+                const ratio = matchedCount / queryTokens.length;
+                if (ratio >= 0.5) {
+                    score = 65 + Math.round(ratio * 20);
+                }
+            }
+        }
+
+        if (score === 0 && (normQuery.length >= 4 || normName.length >= 4)) {
+            const sim = Math.max(calculateStringSimilarity(normQuery, normName), calculateStringSimilarity(compactQuery, compactName));
+            if (sim >= 0.60) {
+                score = 50 + Math.round(sim * 25);
+            }
+        }
+
+        if (score > 0) {
+            if (userWantedFolder && isDirectory) score += 15;
+            if (targetPath.toLowerCase().includes('desktop')) score += 2;
+            if (/fc26\.exe$/i.test(targetPath)) score += 5;
+            if (/anticheat|crash|report|unins|helper|installer/i.test(targetPath)) score -= 15;
+        }
+
+        if (score > highestScore) {
+            highestScore = score;
+            bestCandidate = { name, path: targetPath, score };
+        }
+    }
+
+    return highestScore >= 60 ? bestCandidate : null;
+}
+
+function buildLaunchCommand(targetPath) {
+    if (!targetPath) return '';
+    const cleanPath = targetPath.trim();
+    if (/^steam:\/\//i.test(cleanPath) || /^com\.epicgames\.launcher:\/\//i.test(cleanPath) || /^https?:\/\//i.test(cleanPath)) {
+        return `start "" "${cleanPath}"`;
+    }
+    if (cleanPath.toLowerCase().endsWith('.exe') && fs.existsSync(cleanPath)) {
+        const dir = path.dirname(cleanPath);
+        return `cmd.exe /c start "" /d "${dir}" "${cleanPath}"`;
+    }
+    return `start "" "${cleanPath}"`;
+}
+
 async function openApp(appName, modeId = 'productividad') {
     const platform = os.platform();
     let command = '';
@@ -261,57 +414,43 @@ async function openApp(appName, modeId = 'productividad') {
         }
     }
 
-    // D. Búsqueda en aplicaciones indexadas y archivos/carpetas del Escritorio
+    // D. Búsqueda inteligente (Fuzzy, Diminutivos y Rutas del Sistema)
     if (!command) {
         const discovered = appDiscoveryService.getAppDictionary();
-        const ignoreWords = ["el", "la", "los", "las", "un", "una", "del", "de", "carpeta", "archivo", "documento", "programa", "app"];
-        
-        function normalizeText(text) {
-            return String(text || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/['".,?!\-_]/g, ' ').replace(/\s+/g, ' ').trim();
+        const bestMatch = findBestSystemMatch(appName, discovered);
+
+        if (bestMatch && bestMatch.path) {
+            console.log(`\n[Jarvis HDD] 🎯 Encontré coincidencia (score ${bestMatch.score}): ${bestMatch.name} -> ${bestMatch.path}`);
+            command = buildLaunchCommand(bestMatch.path);
         }
 
-        const cleanAppQuery = normalizeText(lowerApp);
-        const userKeywords = cleanAppQuery.split(/\s+/).filter(w => w.length > 1 && !ignoreWords.includes(w));
-
-        // 1. Buscar en el diccionario indexado
-        for (const [key, appPath] of Object.entries(discovered)) {
-            const normalizedKey = normalizeText(key);
-            let isMatch = false;
-
-            if (normalizedKey === cleanAppQuery) {
-                isMatch = true;
-            } else if (cleanAppQuery.length >= 3 && (normalizedKey.includes(cleanAppQuery) || cleanAppQuery.includes(normalizedKey))) {
-                isMatch = true;
-            } else if (userKeywords.length > 0 && userKeywords.every(kw => normalizedKey.includes(kw))) {
-                isMatch = true;
-            }
-
-            if (isMatch && appPath) {
-                console.log(`\n[Jarvis HDD] 🎯 Encontré aplicación/archivo indexado: ${key} -> ${appPath}`);
-                command = platform === 'win32' ? `start "" "${appPath}"` : `open "${appPath}"`;
-                break;
-            }
-        }
-
-        // 2. Si todavía no se encontró, escanear directamente el Escritorio en tiempo real
+        // Búsqueda en tiempo real si el índice no encontró coincidencia suficiente
         if (!command && platform === 'win32') {
-            const desktopDirs = [path.join(os.homedir(), 'Desktop'), 'C:\\Users\\Public\\Desktop'];
-            for (const dDir of desktopDirs) {
-                if (command) break;
-                if (!fs.existsSync(dDir)) continue;
+            const scanRoots = [
+                path.join(os.homedir(), 'Desktop'),
+                'C:\\Users\\Public\\Desktop',
+                path.join(os.homedir(), 'Documents'),
+                path.join(os.homedir(), 'Downloads'),
+                'C:\\Program Files\\EA Games',
+                'C:\\Program Files (x86)\\Steam\\steamapps\\common'
+            ];
+
+            const liveDiscovered = {};
+            for (const root of scanRoots) {
+                if (!fs.existsSync(root)) continue;
                 try {
-                    const files = fs.readdirSync(dDir);
-                    for (const file of files) {
-                        const baseName = path.parse(file).name;
-                        const normFile = normalizeText(baseName);
-                        if (normFile === cleanAppQuery || (userKeywords.length > 0 && userKeywords.every(kw => normFile.includes(kw)))) {
-                            const fullPath = path.join(dDir, file);
-                            console.log(`\n[Jarvis Escritorio] 🎯 Encontré elemento directo en el Escritorio: ${file} -> ${fullPath}`);
-                            command = `start "" "${fullPath}"`;
-                            break;
-                        }
+                    const entries = fs.readdirSync(root, { withFileTypes: true });
+                    for (const entry of entries) {
+                        const full = path.join(root, entry.name);
+                        liveDiscovered[entry.name.toLowerCase()] = full;
                     }
                 } catch (e) {}
+            }
+
+            const liveMatch = findBestSystemMatch(appName, liveDiscovered);
+            if (liveMatch && liveMatch.path) {
+                console.log(`\n[Jarvis Live Search] 🎯 Encontré en escaneo directo: ${liveMatch.name} -> ${liveMatch.path}`);
+                command = buildLaunchCommand(liveMatch.path);
             }
         }
     }
@@ -356,18 +495,12 @@ function handleSystemCommand(text) {
     }
 
     // 2. Extracción estándar de comandos del sistema
-    const match = lowerText.match(/(?:abre|abrir|abri|abrí|abrime|abríme|abrirme|inicia|iniciar|inici[aá]|arranca|arrancar|lanza|ejecuta|ejecutar|ir a|ve a|pon|ponme)\s+(.+)/i);
+    const match = lowerText.match(/(?:abre|abrir|abri|abrí|abrime|abríme|abrirme|inicia|iniciar|inici[aá]|arranca|arrancar|arranc[aá]|lanza|lanzar|lanz[aá]|ejecuta|ejecutar|ejecut[aá]|ir a|ve a|metete a|metete en|pon|ponme|poneme|pon[eé]|coloca|colocame|jug[aá] a?|jugar a?)\s+(.+)/i);
 
     if (match) {
         let appToOpen = match[1].trim();
         if (appToOpen.endsWith('.')) {
             appToOpen = appToOpen.slice(0, -1);
-        }
-
-        const isNotApp = !/^(netflix|spotify|youtube|chrome|discord|steam|whatsapp|telegram|word|excel|powerpoint|visual studio|code|vscode|obs|lol|league|valorant|fortnite|epic games|stremio)/i.test(appToOpen);
-        
-        if (isNotApp && (lowerText.includes('quiero ver') || lowerText.includes('poneme') || lowerText.includes('reproduce'))) {
-            return { isSystemCommand: false, isTraining: false };
         }
 
         if (fs.existsSync(customCommandsFile)) {
@@ -389,6 +522,15 @@ function handleSystemCommand(text) {
                 return { isSystemCommand: true, appName: commands[cleanText], isLearned: true };
             }
         } catch (e) { }
+    }
+
+    // 3. Reconocimiento directo si el usuario nombra directamente una app/juego indexado con alta confianza
+    if (cleanText.length >= 3 && cleanText.split(/\s+/).length <= 6 && !/^(hola|como estas|que tal|quien sos|ayuda|gracias|chau|adios|buenas|que es|quien es|como se)/i.test(cleanText)) {
+        const discovered = appDiscoveryService.getAppDictionary();
+        const bestMatch = findBestSystemMatch(cleanText, discovered);
+        if (bestMatch && bestMatch.score >= 85) {
+            return { isSystemCommand: true, appName: cleanText, isLearned: false };
+        }
     }
 
     return { isSystemCommand: false, isTraining: false };

@@ -8,10 +8,12 @@ const MAX_HISTORY_BYTES = 1024 * 1024;
 
 function normalizeVoiceTranscript(text) {
     const [collapsed] = collapseRepeatedTranscript(String(text || ''));
-    const basic = collapsed
+    let basic = collapsed
         .trim()
         .replace(/\b(?:yarvis|jarbis|charvis|harvis)\b/gi, 'Jarvis')
         .replace(/\b(?:edrey|edrei|yervis)\b/gi, 'Jarvis')
+        .replace(/\b(?:un\s+)?(?:tequi\s*te|tequiste|tequi|te\s+que\s+te|tequis|tx\s*t|t\s+x\s+t)\b/gi, 'txt')
+        .replace(/\b(crear|creame|crea|hacer|haceme|hace|generar|genera)\s+(?:un\s+)?tequila\b/gi, '$1 un txt')
         .replace(/\s+/g, ' ');
     return memoryService.applyCorrections(repairApplicationCommand(basic));
 }

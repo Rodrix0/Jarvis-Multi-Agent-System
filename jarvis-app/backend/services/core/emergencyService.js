@@ -13,6 +13,12 @@ class EmergencyService {
         // 1. Abortar inmediatamente todas las tareas y matar procesos hijos
         executionManager.abortAll();
 
+        // 2. Cancelar operaciones y procesos de TV
+        try {
+            const tvService = require('../tvService');
+            tvService.cancel();
+        } catch (e) {}
+
         const signalSentTime = process.hrtime.bigint();
         const cancelSignalLatencyMs = Number(signalSentTime - startTime) / 1e6;
 
