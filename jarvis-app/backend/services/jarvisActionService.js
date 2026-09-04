@@ -234,6 +234,21 @@ function registerActions() {
     });
 
     actionKernel.register({
+        id: 'tv.enter-netflix', name: 'Ingresar a perfil en Netflix',
+        description: 'Presiona OK para ingresar al perfil de Rodri en Netflix.',
+        parameters: {}, permission: 'physical-device',
+        examples: ['Ingresá a Netflix', 'Entrá a mi cuenta de Netflix'],
+        execute: async () => tvService.enterNetflixProfile()
+    });
+    actionKernel.register({
+        id: 'tv.open-search', name: 'Abrir buscador de Netflix',
+        description: 'Navega hacia el buscador de Netflix y abre el teclado en pantalla.',
+        parameters: {}, permission: 'physical-device',
+        examples: ['Andá a la búsqueda', 'Abrí el buscador de Netflix'],
+        execute: async () => tvService.openNetflixSearch()
+    });
+
+    actionKernel.register({
         id: 'tv.control', name: 'Controlar TV y Netflix',
         description: 'Ejecuta únicamente una intención validada por el controlador de TV.',
         parameters: { intent: 'Intención estructurada de TV' }, permission: 'physical-device',
@@ -634,6 +649,8 @@ async function resolve(text) {
         if (tvIntent.action === 'calibrate_volume') return { id: 'tv.calibrate-volume', params: { level: tvIntent.level } };
         if (tvIntent.action === 'learn_button') return { id: 'tv.learn-button', params: { button: tvIntent.button } };
         if (tvIntent.action === 'toggle_mute') return { id: 'tv.toggle-mute', params: {} };
+        if (tvIntent.action === 'enter_netflix') return { id: 'tv.enter-netflix', params: {} };
+        if (tvIntent.action === 'open_search') return { id: 'tv.open-search', params: {} };
 
         if (tvIntent.action === 'open_pc') return { id: 'system.open', params: { appName: 'Netflix' } };
         const broadLinkAvailable = await tvService.isAvailable();

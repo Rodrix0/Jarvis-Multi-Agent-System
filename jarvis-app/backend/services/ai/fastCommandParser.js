@@ -17,20 +17,43 @@ class FastCommandParser {
             return { match: true, action: 'emergency.stop', params: {} };
         }
 
-        // 1. Volumen de TV (Smart TV Wi-Fi)
+        // 1. Volumen de TV (BroadLink IR / Smart TV)
         const isTvAudio = /\b(?:tele|television|tv)\b/i.test(clean);
-        if (isTvAudio) {
-            const tvVolMatch = clean.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
-                || clean.match(/(?:volumen|sonido|audio).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i)
+
+        // 1.0 Calibración de volumen de la tele ("el volumen actual es 20", "calibra el volumen de la tele a 20", "este es el volumen actualmente: 20")
+        const calibMatch = clean.match(/(?:calibr(?:a|ar)|sincroniz(?:a|ar))\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)?\s*(?:a|al|en)?\s*(\d{1,3})/i)
+            || clean.match(/(?:este\s+es\s+el\s+|el\s+)?volumen\s+(?:actual\s+)?(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)?\s*(?:actual\s+|actualmente\s+)?(?:es\s+de|es|esta\s+en)\s*(\d{1,3})/i)
+            || clean.match(/(?:este\s+es\s+el\s+volumen\s+(?:actual\s+|actualmente\s+)?)(?:de\s+)?(\d{1,3})/i)
+            || clean.match(/(?:la\s+tele|television|tv)\s+(?:esta\s+en|tiene|quedo\s+en)\s+(?:volumen\s+)?(\d{1,3})/i);
+        if (calibMatch) {
+            return { match: true, action: 'tv.calibrate-volume', params: { level: parseInt(calibMatch[1], 10) } };
+        }
+
+        // 1.1 Delta relativo de TV ("subile un 20%", "subi 10 puntos", "bajale 15%", "subile 20 a la tele", "bajale un 20%")
+        const isHasta = /\bhasta\b/i.test(clean);
+        const tvDeltaMatch = clean.match(/(?:subi|subile|subir|aumenta|aumentale|aumentar)\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)?\s*(?:un\s+|en\s+)?(\d{1,2})\s*(?:%|por ciento|puntos)?/i)
+            || clean.match(/(?:baja|bajale|bajar|disminui|disminuile|disminuir)\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)?\s*(?:un\s+|en\s+)?(\d{1,2})\s*(?:%|por ciento|puntos)?/i);
+        if (tvDeltaMatch && !isHasta && (isTvAudio || /\b(subile|bajale|aumentale|disminuile|un \d|puntos)\b/i.test(clean))) {
+            const isUp = /subi|aument/i.test(tvDeltaMatch[0]);
+            const val = parseInt(tvDeltaMatch[1], 10);
+            return { match: true, action: 'tv.adjust-volume', params: { delta: isUp ? val : -val } };
+        }
+
+        // 1.2 Consulta de volumen de TV
+        if (/\b(?:que|cuanto|cuanta|a que|a cuanto|nivel de|estado del?)\s+(?:esta\s+el\s+)?(?:volumen|sonido|audio)\b/i.test(clean) || clean === 'volumen de la tele' || clean === 'volumen tele') {
+            return { match: true, action: 'tv.get-volume', params: {} };
+        }
+
+        // 1.3 Target absoluto de TV ("subile hasta el 70%", "pone el volumen de la tele al 50%", "volumen de la tele al 30%")
+        if (isTvAudio || isHasta) {
+            const tvTargetMatch = clean.match(/(?:hasta\s+(?:el\s+)?|a|al|en)\s*(\d{1,3})\s*(?:%|por ciento)?/i)
+                || clean.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
                 || clean.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia|coloca|sete(?:a|ar)).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i);
-            if (tvVolMatch) {
-                return { match: true, action: 'tv.set-volume', params: { percent: parseInt(tvVolMatch[1], 10) } };
+            if (tvTargetMatch) {
+                return { match: true, action: 'tv.set-volume', params: { percent: parseInt(tvTargetMatch[1], 10) } };
             }
             if (/\b(?:mute|silenci(?:a|ar|ate)|mutear|desmutear|pon(?:e)? en silencio|sac(?:a)? el silencio)\b/i.test(clean)) {
                 return { match: true, action: 'tv.toggle-mute', params: {} };
-            }
-            if (/\b(?:que|cuanto|cuanta|a que|nivel de|estado del?)\s+(?:volumen|sonido|audio)\b/i.test(clean) || clean === 'volumen de la tele' || clean === 'volumen tele') {
-                return { match: true, action: 'tv.get-volume', params: {} };
             }
         }
 

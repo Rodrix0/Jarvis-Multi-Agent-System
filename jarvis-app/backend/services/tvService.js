@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'data', 'broadlink.json');
+const TV_STATE_PATH = path.join(__dirname, '..', 'data', 'tv_state.json');
 const BRIDGE_PATH = path.join(__dirname, '..', '..', 'python_engine', 'broadlink_remote.py');
 const VENV_PYTHON = path.join(__dirname, '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe');
 const executionManager = require('./core/executionManager');
@@ -193,7 +194,8 @@ function normalizeSearchTitle(title) {
         .toLowerCase()
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-z0-9]/g, '');
+        .replace(/[^a-z0-9]/g, '')
+        .slice(0, 10);
 }
 
 function keyboardPosition(character) {
@@ -209,31 +211,31 @@ function buildNetflixSearchSequence(title, selectFirstResult = true) {
     if (!normalizedTitle) throw new Error('El título no contiene caracteres compatibles con el teclado de Netflix.');
 
     const sequence = [];
-
-    // RESET: Forzar cursor a posición 'a' (0,0) mandando suficientes up y left
-    // Esto garantiza que partimos de una posición conocida sin importar dónde
-    // esté el cursor al abrir el buscador.
-    for (let i = 0; i < 6; i++) sequence.push('up');
-    for (let i = 0; i < 6; i++) sequence.push('left');
-
+    // En la app de Netflix en pantalla de búsqueda, el teclado abre directamente enfocado en la 'a' (fila 0, col 0).
+    // NO enviar 'left' desde aquí porque saldría del teclado hacia las categorías laterales.
     let cursor = { row: 0, column: 0 };
     for (const character of normalizedTitle) {
         const target = keyboardPosition(character);
         if (!target) continue;
-        // Navegar al caracter
-        sequence.push(...repeat(target.row > cursor.row ? 'down' : 'up', Math.abs(target.row - cursor.row)));
-        sequence.push(...repeat(target.column > cursor.column ? 'right' : 'left', Math.abs(target.column - cursor.column)));
+
+        const rowDiff = target.row - cursor.row;
+        const colDiff = target.column - cursor.column;
+
+        if (rowDiff > 0) sequence.push(...repeat('down', rowDiff));
+        if (rowDiff < 0) sequence.push(...repeat('up', -rowDiff));
+        if (colDiff > 0) sequence.push(...repeat('right', colDiff));
+        if (colDiff < 0) sequence.push(...repeat('left', -colDiff));
+
         // Presionar OK para seleccionar la letra
         sequence.push('ok');
-        // Pausa extra: insertar un 'ok' dummy que luego filtramos, 
-        // o mejor, usamos un marcador. En su lugar, simplemente dejamos
-        // que el delay natural entre botones haga su trabajo.
         cursor = target;
     }
 
-    // Subir a la primera fila y cruzar al panel de resultados
-    sequence.push(...repeat('up', cursor.row));
-    sequence.push(...repeat('right', KEYBOARD_ROWS[0].length - cursor.column));
+    // Subir a la primera fila y cruzar al panel de resultados situado a la derecha
+    if (cursor.row > 0) sequence.push(...repeat('up', cursor.row));
+    const exitRight = KEYBOARD_ROWS[0].length - cursor.column;
+    if (exitRight > 0) sequence.push(...repeat('right', exitRight));
+
     if (selectFirstResult) sequence.push('ok');
     return sequence;
 }
@@ -265,13 +267,56 @@ function assertConfigured(config, { powerOn, needsSearch }) {
     if (missing.length) throw new Error(`Enseñale estas teclas al BroadLink: ${missing.join(', ')}.`);
 }
 
+async function enterNetflixProfile(onProgress = () => {}) {
+    if (currentJob) throw new Error('Ya hay una automatización de TV en curso.');
+    const config = getConfig();
+    assertConfigured(config, { powerOn: false, needsSearch: false });
+    const job = { cancelled: false };
+    currentJob = job;
+    const progress = (stage, message) => onProgress({ stage, message });
+    try {
+        progress('profile', 'Ingresando al perfil de Rodri en Netflix…');
+        // El perfil de Rodri (avatar de Luffy) está en la primera posición y seleccionado
+        await sendButtons(['ok'], config.netflix.keyDelayMs || 350);
+        await sleep(config.netflix.profileLoadMs || 6000, job);
+        progress('ready', 'Perfil seleccionado con éxito.');
+        return { ok: true, message: 'Listo, ingresé a tu perfil Rodri en Netflix.' };
+    } finally {
+        currentJob = null;
+    }
+}
+
+async function openNetflixSearch(onProgress = () => {}) {
+    if (currentJob) throw new Error('Ya hay una automatización de TV en curso.');
+    const config = getConfig();
+    assertConfigured(config, { powerOn: false, needsSearch: true });
+    const job = { cancelled: false };
+    currentJob = job;
+    const progress = (stage, message) => onProgress({ stage, message });
+    try {
+        progress('search_nav', 'Abriendo la barra lateral de Netflix…');
+        // 1. Ir a la izquierda para abrir menú (cae sobre Inicio)
+        await sendButtons(['left'], config.netflix.keyDelayMs || 350);
+        await sleep(600, job);
+        // 2. Subir uno para colocarse sobre Búsqueda (Lupa)
+        progress('search_nav', 'Seleccionando Búsqueda…');
+        await sendButtons(['up'], config.netflix.keyDelayMs || 350);
+        await sleep(400, job);
+        // 3. Presionar OK para abrir el buscador con teclado
+        progress('search_open', 'Accediendo al buscador…');
+        await sendButtons(['ok'], config.netflix.keyDelayMs || 350);
+        await sleep(config.netflix.searchLoadMs || 1500, job);
+        progress('search_ready', 'Buscador abierto y teclado listo.');
+        return { ok: true, message: 'Listo, abrí el buscador de Netflix. ¿Qué serie o película querés ver?' };
+    } finally {
+        currentJob = null;
+    }
+}
+
 async function playNetflix(options = {}, onProgress = () => {}) {
     if (currentJob) throw new Error('Ya hay una automatización de TV en curso.');
     const config = getConfig();
-    // POWER es una tecla de alternancia: un valor ausente jamás debe enviarla.
-    // Solo una orden explícita de encendido puede establecer exactamente `true`.
     const powerOn = options.powerOn === true;
-    const selectProfile = options.selectProfile ?? (powerOn || config.netflix.pressNetflixAfterBoot);
     let title = String(options.title || '').trim();
     assertConfigured(config, { powerOn, needsSearch: Boolean(title) });
 
@@ -281,51 +326,43 @@ async function playNetflix(options = {}, onProgress = () => {}) {
     try {
         if (powerOn) {
             progress('power', 'Encendiendo la televisión…');
-            await sendButtons(['power'], config.netflix.keyDelayMs);
+            await sendButtons(['power'], config.netflix.keyDelayMs || 350);
             progress('boot', `Esperando ${Math.round(config.netflix.bootWaitMs / 1000)} segundos a que inicie la TV…`);
             await sleep(config.netflix.bootWaitMs, job);
         }
 
         if (config.netflix.pressNetflixAfterBoot) {
             progress('netflix', 'Abriendo Netflix…');
-            await sendButtons(['netflix'], config.netflix.keyDelayMs);
+            await sendButtons(['netflix'], config.netflix.keyDelayMs || 350);
             await sleep(config.netflix.appWaitMs, job);
         }
 
-        if (selectProfile) {
-            progress('profile', 'Seleccionando el perfil de Rodri…');
-            await sendButtons([
-                ...repeat('down', config.netflix.profileDownPresses),
-                'ok'
-            ], config.netflix.keyDelayMs);
-            await sleep(config.netflix.profileLoadMs, job);
-        }
-
-        if (options.continueWatching === true) {
-            progress('continue', 'Abriendo el primer título de Continuar viendo…');
-            await sendButtons([
-                ...repeat('down', config.netflix.continueWatchingDownPresses),
-                ...repeat('right', config.netflix.continueWatchingRightPresses),
-                'ok'
-            ], config.netflix.keyDelayMs);
-            return { title: '', message: 'Listo, continuando el primer contenido de la fila.' };
-        }
-
+        // Si no hay título, el objetivo es entrar al perfil
         if (!title) {
-            progress('ready', 'Netflix está listo.');
-            return { title: '', message: 'La televisión quedó encendida con Netflix listo.' };
+            progress('profile', 'Ingresando al perfil de Rodri…');
+            await sendButtons(['ok'], config.netflix.keyDelayMs || 350);
+            await sleep(config.netflix.profileLoadMs || 6000, job);
+            progress('ready', 'Netflix listo en el perfil de Rodri.');
+            return { title: '', message: 'Listo, ingresé a tu perfil Rodri en Netflix.' };
         }
 
-        progress('search', `Buscando “${title}” en Netflix…`);
-        await sendButtons(['left', 'up', 'ok'], config.netflix.keyDelayMs);
-        await sleep(config.netflix.searchLoadMs, job);
+        // Si hay título, navegar a la búsqueda y escribir
+        progress('search_nav', `Abriendo buscador para “${title}”…`);
+        await sendButtons(['left'], config.netflix.keyDelayMs || 350);
+        await sleep(600, job);
+        await sendButtons(['up'], config.netflix.keyDelayMs || 350);
+        await sleep(400, job);
+        await sendButtons(['ok'], config.netflix.keyDelayMs || 350);
+        await sleep(config.netflix.searchLoadMs || 1500, job);
+
+        progress('search_type', `Escribiendo “${title}” en el teclado…`);
         const playFirst = options.playFirst !== false;
-        await sendButtons(buildNetflixSearchSequence(title, playFirst), config.netflix.keyboardKeyDelayMs);
-        await sleep(config.netflix.resultLoadMs, job);
+        await sendButtons(buildNetflixSearchSequence(title, playFirst), config.netflix.keyDelayMs || 350);
+        await sleep(config.netflix.resultLoadMs || 2500, job);
 
         if (playFirst && config.netflix.pressPlayAfterResult) {
             progress('play', `Reproduciendo “${title}”…`);
-            await sendButtons(['ok'], config.netflix.keyDelayMs);
+            await sendButtons(['ok'], config.netflix.keyDelayMs || 350);
         }
         return playFirst
             ? { title, message: `Listo, puse ${title} en Netflix.` }
@@ -346,22 +383,34 @@ async function searchNetflix(title, options = {}, onProgress = () => {}) {
     currentJob = job;
     const progress = (stage, message) => onProgress({ stage, message });
     try {
-        progress('search', `Buscando “${query}” en Netflix…`);
-        await sendButtons(['left', 'up', 'ok'], config.netflix.keyDelayMs);
-        await sleep(config.netflix.searchLoadMs, job);
-        await sendButtons(
-            buildNetflixSearchSequence(query, options.playFirst === true),
-            config.netflix.keyboardKeyDelayMs
-        );
-        await sleep(config.netflix.resultLoadMs, job);
+        if (options.skipOpenSearch !== true) {
+            progress('search_nav', `Dirigiéndome al buscador de Netflix…`);
+            // 1. Ir a la izquierda
+            await sendButtons(['left'], config.netflix.keyDelayMs || 350);
+            await sleep(600, job);
+            // 2. Subir a Búsqueda
+            await sendButtons(['up'], config.netflix.keyDelayMs || 350);
+            await sleep(400, job);
+            // 3. Entrar a Búsqueda
+            await sendButtons(['ok'], config.netflix.keyDelayMs || 350);
+            await sleep(config.netflix.searchLoadMs || 1500, job);
+        }
 
-        if (options.playFirst === true && config.netflix.pressPlayAfterResult) {
+        progress('search_type', `Escribiendo “${query}” en el teclado…`);
+        const playFirst = options.playFirst !== false;
+        await sendButtons(
+            buildNetflixSearchSequence(query, playFirst),
+            config.netflix.keyDelayMs || 350
+        );
+        await sleep(config.netflix.resultLoadMs || 2500, job);
+
+        if (playFirst && config.netflix.pressPlayAfterResult) {
             progress('play', `Reproduciendo el primer resultado de “${query}”…`);
-            await sendButtons(['ok'], config.netflix.keyDelayMs);
+            await sendButtons(['ok'], config.netflix.keyDelayMs || 350);
             return { message: `Listo, reproduciendo el primer resultado de ${query}.` };
         }
 
-        return { message: `Te muestro los resultados de ${query}. Podés decir derecha, izquierda, bajá o reproducí eso.` };
+        return { message: `Te muestro los resultados de ${query} en Netflix.` };
     } finally {
         currentJob = null;
     }
@@ -395,7 +444,21 @@ function cancel() {
     return hadActive;
 }
 
-const TV_STATE_PATH = path.join(__dirname, '..', 'data', 'tv_state.json');
+function repeat(button, count) {
+    return Array.from({ length: Math.max(0, count) }, () => button);
+}
+
+function getVolButton(config, isUp) {
+    if (isUp) {
+        if (config.codes['volup']) return 'volup';
+        if (config.codes['vol_up']) return 'vol_up';
+        return null;
+    } else {
+        if (config.codes['voldown']) return 'voldown';
+        if (config.codes['vol_down']) return 'vol_down';
+        return null;
+    }
+}
 
 function getTvState() {
     try {
@@ -423,7 +486,9 @@ async function getVolume() {
 
 async function setVolume(percent) {
     const config = getConfig();
-    if (!config.codes['volup'] || !config.codes['voldown']) {
+    const upBtn = getVolButton(config, true);
+    const downBtn = getVolButton(config, false);
+    if (!upBtn || !downBtn) {
         return {
             ok: false,
             message: 'Primero necesito aprender los botones de volumen del control remoto. Por favor enseñame el botón de subir y bajar volumen desde el panel o por comando.'
@@ -433,7 +498,7 @@ async function setVolume(percent) {
     const state = getTvState();
     const diff = target - state.volume;
     if (diff !== 0) {
-        const button = diff > 0 ? 'volup' : 'voldown';
+        const button = diff > 0 ? upBtn : downBtn;
         const count = Math.min(50, Math.abs(diff));
         await sendButtons(repeat(button, count), 180);
     }
@@ -448,7 +513,9 @@ async function setVolume(percent) {
 
 async function adjustVolume(delta) {
     const config = getConfig();
-    if (!config.codes['volup'] || !config.codes['voldown']) {
+    const upBtn = getVolButton(config, true);
+    const downBtn = getVolButton(config, false);
+    if (!upBtn || !downBtn) {
         return {
             ok: false,
             message: 'Primero necesito aprender los botones de volumen del control remoto. Por favor enseñame el botón de subir y bajar volumen.'
@@ -456,7 +523,7 @@ async function adjustVolume(delta) {
     }
     const state = getTvState();
     const count = Math.min(30, Math.abs(delta));
-    const button = delta > 0 ? 'volup' : 'voldown';
+    const button = delta > 0 ? upBtn : downBtn;
     await sendButtons(repeat(button, count), 180);
     state.volume = Math.max(0, Math.min(100, state.volume + delta));
     saveTvState(state);
@@ -496,5 +563,7 @@ module.exports = {
     getVolume,
     setVolume,
     adjustVolume,
-    calibrateVolume
+    calibrateVolume,
+    enterNetflixProfile,
+    openNetflixSearch
 };

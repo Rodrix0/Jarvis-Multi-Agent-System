@@ -102,44 +102,57 @@ function parseTvIntent(text) {
         awaitingDestinationUntil = 0;
         return { action: 'open_pc' };
     }
-    if (/^(?:jarvis\s+)?(?:abri|abre|abra|pone|poneme)\s+netflix$/.test(normalized)) {
-        awaitingDestinationUntil = Date.now() + 20000;
-        return { action: 'choose_device' };
+
+    // Apertura directa de cuenta / perfil Rodri en Netflix
+    if (/\b(?:ingresa|ingresar|entra|entrar|accede|acceder|selecciona|elegir?)\s+(?:a\s+)?(?:mi\s+cuenta|mi\s+perfil|perfil(?:\s+de)?\s+rodri)\b/i.test(normalized)
+        || /^(?:jarvis\s+)?(?:ingresa|entra|abrir?|pone)\s+(?:a\s+)?netflix(?:\s+(?:en|a)\s+(?:la\s+)?tele)?$/i.test(normalized)) {
+        return { action: 'enter_netflix' };
     }
+
+    // Navegar directamente a la búsqueda de Netflix
+    if (/\b(?:ir\s+a\s+(?:la\s+)?b[uú]squeda|anda\s+a\s+(?:la\s+)?b[uú]squeda|abrir?\s+(?:el\s+)?buscador|abrir?\s+(?:la\s+)?b[uú]squeda|pone\s+el\s+buscador)\b/i.test(normalized)) {
+        return { action: 'open_search' };
+    }
+
     if (/^(?:jarvis\s+)?netflix$/.test(normalized)) {
-        if (isSessionActive()) {
-            return { action: 'netflix', title: '', useDefaultSeries: false, powerOn: false };
-        }
-        awaitingDestinationUntil = Date.now() + 20000;
-        return { action: 'choose_device' };
+        return { action: 'enter_netflix' };
     }
 
     // --- 0. Volumen y Silencio de la Televisión ---
-    const tvVolSetMatch = normalized.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
-        || normalized.match(/(?:volumen|sonido|audio).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i)
-        || normalized.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia|coloca|sete(?:a|ar)).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i);
-    if (tvVolSetMatch) {
-        return { action: 'set_volume', percent: parseInt(tvVolSetMatch[1], 10) };
+    const isTvAudio = /\b(?:tele|television|tv)\b/i.test(normalized);
+
+    // 0.0 Calibración explícita
+    const tvVolCalibMatch = normalized.match(/(?:calibr(?:a|ar)|sincroniz(?:a|ar))\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)?\s*(?:a|al|en)?\s*(\d{1,3})/i)
+        || normalized.match(/(?:este\s+es\s+el\s+|el\s+)?volumen\s+(?:actual\s+)?(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)?\s*(?:actual\s+|actualmente\s+)?(?:es\s+de|es|esta\s+en)\s*(\d{1,3})/i)
+        || normalized.match(/(?:este\s+es\s+el\s+volumen\s+(?:actual\s+|actualmente\s+)?)(?:de\s+)?(\d{1,3})/i)
+        || normalized.match(/(?:la\s+tele|television|tv)\s+(?:esta\s+en|tiene|quedo\s+en)\s+(?:volumen\s+)?(\d{1,3})/i);
+    if (tvVolCalibMatch) {
+        return { action: 'calibrate_volume', level: parseInt(tvVolCalibMatch[1], 10) };
     }
 
-    const tvVolDeltaMatch = normalized.match(/(?:subi|subir|aumenta|aumentar)\s+(?:el\s+)?(?:volumen|sonido|audio)\s+(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)(?:\s+(?:en\s+)?(\d{1,2}))?/i)
-        || normalized.match(/(?:baja|bajar|disminui|disminuir)\s+(?:el\s+)?(?:volumen|sonido|audio)\s+(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)(?:\s+(?:en\s+)?(\d{1,2}))?/i);
-    if (tvVolDeltaMatch) {
+    // 0.1 Delta relativo
+    const isHasta = /\bhasta\b/i.test(normalized);
+    const tvVolDeltaMatch = normalized.match(/(?:subi|subile|subir|aumenta|aumentale|aumentar)\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)?\s*(?:un\s+|en\s+)?(\d{1,2})\s*(?:%|por ciento|puntos)?/i)
+        || normalized.match(/(?:baja|bajale|bajar|disminui|disminuile|disminuir)\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)?\s*(?:un\s+|en\s+)?(\d{1,2})\s*(?:%|por ciento|puntos)?/i);
+    if (tvVolDeltaMatch && !isHasta && (isTvAudio || /\b(subile|bajale|aumentale|disminuile|un \d|puntos)\b/i.test(normalized))) {
         const isUp = /subi|aument/i.test(tvVolDeltaMatch[0]);
         const deltaValue = parseInt(tvVolDeltaMatch[1] || '10', 10);
         return { action: 'adjust_volume', delta: isUp ? deltaValue : -deltaValue };
     }
 
-    if (/\b(?:que|cuanto|cuanta|a que|nivel de|estado del?)\s+(?:volumen|sonido|audio)\s+(?:tiene|esta|hay en)?\s*(?:la\s+)?(?:tele|television|tv)\b/i.test(normalized)
-        || /\b(?:volumen|sonido|audio)\s+(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)\b/i.test(normalized)) {
+    // 0.2 Consulta de volumen
+    if (/\b(?:que|cuanto|cuanta|a que|a cuanto|nivel de|estado del?)\s+(?:esta\s+el\s+)?(?:volumen|sonido|audio)\b/i.test(normalized) || normalized === 'volumen de la tele' || normalized === 'volumen tele') {
         return { action: 'get_volume' };
     }
 
-    // Calibración de volumen manual
-    const tvVolCalibMatch = normalized.match(/(?:el\s+)?volumen\s+(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)\s+est[aá]\s+(?:en\s+|al\s+)?(\d{1,3})/i)
-        || normalized.match(/calibr[aá]\s+(?:el\s+)?volumen\s+(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)\s+(?:a|al|en)?\s*(\d{1,3})/i);
-    if (tvVolCalibMatch) {
-        return { action: 'calibrate_volume', level: parseInt(tvVolCalibMatch[1], 10) };
+    // 0.3 Target absoluto
+    if (isTvAudio || isHasta) {
+        const tvVolSetMatch = normalized.match(/(?:hasta\s+(?:el\s+)?|a|al|en)\s*(\d{1,3})\s*(?:%|por ciento)?/i)
+            || normalized.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
+            || normalized.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia|coloca|sete(?:a|ar)).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i);
+        if (tvVolSetMatch) {
+            return { action: 'set_volume', percent: parseInt(tvVolSetMatch[1], 10) };
+        }
     }
 
     // Aprendizaje de botones por voz

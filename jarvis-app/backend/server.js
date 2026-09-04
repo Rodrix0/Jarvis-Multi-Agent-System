@@ -425,6 +425,18 @@ async function executeTvIntent(intent, onProgress) {
         tvVoiceService.rememberIntent(intent);
         return result.message;
     }
+    if (intent.action === 'enter_netflix' || intent.action === 'select_profile') {
+        tvVoiceService.activateSession();
+        const result = await tvService.enterNetflixProfile(onProgress);
+        tvVoiceService.rememberIntent(intent);
+        return result.message;
+    }
+    if (intent.action === 'open_search') {
+        tvVoiceService.activateSession();
+        const result = await tvService.openNetflixSearch(onProgress);
+        tvVoiceService.rememberIntent(intent);
+        return result.message;
+    }
     if (intent.action === 'search') {
         const result = await tvService.searchNetflix(intent.title, { playFirst: intent.playFirst }, onProgress);
         tvVoiceService.rememberIntent(intent);
