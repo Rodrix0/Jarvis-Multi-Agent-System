@@ -104,6 +104,24 @@ function inferDeterministicIntent(userText) {
         };
     }
 
+    // Programación de Proyectos (Ingeniero).
+    if (/(crea|crear|haz|hazme|programa|desarrolla|arma|diseña|actualiza).*(página web|pagina web|web|sitio web|aplicación|app|proyecto|software)/i.test(lower)) {
+        return {
+            action: 'build_software',
+            target: text,
+            reply: 'Comenzando a desarrollar tu proyecto, señor.'
+        };
+    }
+
+    // Generación de Imágenes Directa
+    if (/(crea|crear|generar|genera|haz|hazme|dibuja|dibujame|diseña).*(imagen|foto|fotografia|fotografía|dibujo|render|pintura|arte)/i.test(lower)) {
+        return {
+            action: 'generate_image',
+            target: text,
+            reply: 'Iniciando el motor de renderizado de imágenes. Espere un momento...'
+        };
+    }
+
     // Limpiar recordatorios.
     if (/(borra|borrar|limpia|elimina|eliminar).*(recordatorios|tareas)/i.test(text)) {
         return {
@@ -210,7 +228,8 @@ function recoverToolIntentFromModelContent(rawContent, userText = '') {
     const knownActions = [
         'send_whatsapp', 'send_email', 'search_web', 'open_app', 'schedule_task',
         'check_reminders', 'clear_reminders', 'create_document', 'generate_prompt',
-        'chat_casual', 'search_internet', 'develop_new_skill'
+        'chat_casual', 'search_internet', 'develop_new_skill', 'build_software',
+        'generate_image'
     ];
 
     let detectedAction = '';
@@ -405,47 +424,57 @@ TAREA: Leé los datos y respondé la pregunta en 1-2 oraciones.
     const aiMsg = await executeLlamaChat([{ role: 'user', content: prompt }], null, false);
     return typeof aiMsg.content === 'string' ? aiMsg.content : JSON.stringify(aiMsg.content);
 }
-// ─────────────────────────────────────────────────────────────────────────────
 
-
-async function executeLlamaChat(messages, tools = null, jsonFormat = false, overrideModel = 'llama3.1:latest') {
+async function executeLlamaChat(messages, tools = null, jsonFormat = false, overrideModel = null) {
+    const selectedModel = overrideModel || process.env.OLLAMA_MODEL || 'hermes3:latest';
     const payload = {
-        model: overrideModel,
+        model: selectedModel,
         messages: messages,
         stream: false
     };
-    
+
     if (tools) {
         payload.tools = tools;
     }
-    
+
     if (jsonFormat) {
         payload.format = "json";
     }
 
-    const response = await fetch('http://127.0.0.1:11434/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
+    try {
+        const response = await fetch('http://127.0.0.1:11434/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
 
-    if (!response.ok) {
-        throw new Error(`Ollama devolvió un error HTTP: ${response.status}`);
+        if (!response.ok) {
+            // Si hermes3 no está disponible, probar fallback con llama3.1
+            if (selectedModel !== 'llama3.1:latest') {
+                return executeLlamaChat(messages, tools, jsonFormat, 'llama3.1:latest');
+            }
+            throw new Error(`Ollama devolvió un error HTTP: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.message;
+    } catch (err) {
+        if (selectedModel !== 'llama3.1:latest') {
+            return executeLlamaChat(messages, tools, jsonFormat, 'llama3.1:latest');
+        }
+        throw err;
     }
-
-    const data = await response.json();
-    return data.message;
 }
 
 // Mantenemos esto como un wrapper para las llamadas legacy (buscar clima en internet, etc)
 async function fetchOllamaResponse(prompt) {
     const msgs = [{ role: "user", content: prompt }];
     try {
-        const aiMsg = await executeLlamaChat(msgs, null, true); // true for json
+        const aiMsg = await executeLlamaChat(msgs, null, true);
         return JSON.parse(aiMsg.content);
     } catch (e) {
         console.error("Error parseando respuesta JSON de Ollama (Legacy wrapper):", e);
-        const recovered = recoverIntentFromBrokenJson(""); 
+        const recovered = recoverIntentFromBrokenJson("");
         return recovered || {
             action: "chat",
             reply: "No pude estructurar la respuesta en JSON, pero sigo operativo. Repite tu pedido y lo intento de nuevo."
@@ -453,15 +482,15 @@ async function fetchOllamaResponse(prompt) {
     }
 }
 
-async function getAIResponse(userText, activeMode, screenContext = null) {
+async function getAIResponse(userText, activeMode, screenContext = null, inpaintingMask = null) {
     try {
-        let systemPrompt = "INSTRUCCIONES DEL SISTEMA BASE:\n" + activeMode.prompt + "\n";
+        let systemPrompt = "INSTRUCCIONES DEL SISTEMA BASE:\n" + (activeMode?.prompt || '') + "\n";
         systemPrompt += "Eres Jarvis, el asistente de PC. Tienes herramientas de automatización y de auto-aprendizaje (Code-Act).\n";
-        systemPrompt += "REGLA DE VIDA O MUERTE: Si el usuario te hace charla casual, te pregunta qué sabes hacer, cómo estás, o cualquier pregunta general sobre ti mismo, ESTÁ EXTRICTAMENTE PROHIBIDO (PENADO) USAR UNA HERRAMIENTA. Responde únicamente chateando de forma natural.\n";
-        systemPrompt += "REGLA DE WHATSAPP: El destinatario debe ser el nombre del contacto limpio. Si te piden enviar algo que acabas de explicar o buscar (información anterior), usa tu memoria para escribir toda esa info completa en el campo 'message'.\n";
-        
+        systemPrompt += "REGLA DE VIDA O MUERTE: Si el usuario te hace charla casual, te pregunta qué sabes hacer, cómo estás, o cualquier pregunta general sobre ti mismo, ESTÁ STRICTAMENTE PROHIBIDO USAR UNA HERRAMIENTA. Responde únicamente chateando de forma natural.\n";
+        systemPrompt += "REGLA DE WHATSAPP: El destinatario debe ser el nombre del contacto limpio. Si te piden enviar algo que acabas de explicar o buscar, usa tu memoria para escribir toda esa info completa en el campo 'message'.\n";
+
         const dateNow = new Date();
-        systemPrompt += `\nFECHA Y HORA ACTUAL DEL SISTEMA: ${dateNow.toLocaleString('es-AR')}. Usa esta información exacta si el usuario pregunta la hora o el día. Si el usuario pregunta la hora de otro país, calcúlala usando tu propio conocimiento horario.\n\n`;
+        systemPrompt += `\nFECHA Y HORA ACTUAL DEL SISTEMA: ${dateNow.toLocaleString('es-AR')}. Usa esta información exacta si el usuario pregunta la hora o el día.\n\n`;
 
         if (screenContext) {
             systemPrompt += "CONTEXTO VISUAL ACTUAL: " + screenContext + "\n\n";
@@ -471,8 +500,8 @@ async function getAIResponse(userText, activeMode, screenContext = null) {
 
         if (conversationHistory.length > 0) {
             conversationHistory.forEach(msg => {
-                let contentText = typeof msg.content === 'object' 
-                    ? (typeof msg.content.reply === 'string' ? msg.content.reply : JSON.stringify(msg.content.reply || msg.content)) 
+                let contentText = typeof msg.content === 'object'
+                    ? (typeof msg.content.reply === 'string' ? msg.content.reply : JSON.stringify(msg.content.reply || msg.content))
                     : String(msg.content);
                 messages.push({ role: msg.role, content: contentText });
             });
@@ -483,8 +512,8 @@ async function getAIResponse(userText, activeMode, screenContext = null) {
         const tools = [
             { type: "function", function: { name: "send_whatsapp", description: "Envía un mensaje de WhatsApp a un contacto.", parameters: { type: "object", properties: { target: { type: "string", description: "El nombre exacto del contacto (ej. gabi, mama)" }, message: { type: "string", description: "El contenido exacto a enviar. IMPORTANTE: Si el usuario te pide enviar 'esa info' o 'lo anterior', OBLIGATORIAMENTE debes buscar la informacion detallada en el historial y pegarla aquí COMPLETA." }, reply: { type: "string", description: "Lo que dirás en voz alta" } }, required: ["target", "message", "reply"] } } },
             { type: "function", function: { name: "send_email", description: "Envía un correo electrónico.", parameters: { type: "object", properties: { target: { type: "string", description: "Nombre o dirección" }, message: { type: "string", description: "El contenido exacto a enviar (reemplaza 'esta info' por la data real del historial)." }, reply: { type: "string", description: "Respuesta hablada" } }, required: ["target", "message", "reply"] } } },
-            { type: "function", function: { name: "search_web", description: "OBLIGATORIA. Úsala SIEMPRE que te pidan sobre RESULTADOS DEPORTIVOS (quién juega, cuándo, cómo salieron, tablas), CLIMA, CRIPTO, DÓLAR, o NOTICIAS ACTUALES. ESTA ES TU FUENTE DE BÚSQUEDA EXCLUSIVA. NUNCA respondas con chat_casual para estos temas ni ninguna otra porque ESTA ES LA UNICA FORMA de que te enteres de los datos de internet. SI NO LA USAS NO SABRAS NADA DEL BOCA JUNIOR. USA ESTO.", parameters: { type: "object", properties: { target: { type: "string", description: "La consulta a buscar en google." } }, required: ["target"] } } },
-            { type: "function", function: { name: "open_app", description: "Abre una aplicación web o instalada en la PC (Netflix, LOL, Youtube, Spotify, chat gpt).", parameters: { type: "object", properties: { target: { type: "string", description: "Nombre de la app limpia (ej: 'netflix', 'youtube la cobra')" }, reply: { type: "string", description: "Respuesta hablada confirmando" } }, required: ["target", "reply"] } } },
+            { type: "function", function: { name: "search_web", description: "OBLIGATORIA. Úsala SIEMPRE que te pidan sobre RESULTADOS DEPORTIVOS (quién juega, cuándo, cómo salieron, tablas), CLIMA, CRIPTO, DÓLAR, o NOTICIAS ACTUALES. ESTA ES TU FUENTE DE BÚSQUEDA EXCLUSIVA. NUNCA respondas con chat_casual para estos temas. PROHIBIDO usarla para buscar películas o series (usa search_streaming para eso).", parameters: { type: "object", properties: { target: { type: "string", description: "La consulta a buscar en google." } }, required: ["target"] } } },
+            { type: "function", function: { name: "open_app", description: "Abre una aplicación web o instalada en la PC (Netflix, LOL, Youtube, Spotify, chat gpt). NUNCA uses esto si el usuario pide VER, BUSCAR o PONER una película o serie específica (usa search_streaming para eso). Solo usa esto para abrir la app genérica sin contenido específico.", parameters: { type: "object", properties: { target: { type: "string", description: "Nombre de la app limpia (ej: 'netflix', 'youtube la cobra')" }, reply: { type: "string", description: "Respuesta hablada confirmando" } }, required: ["target", "reply"] } } },
             { type: "function", function: { name: "schedule_task", description: "Programa una tarea futura a una hora indicada.", parameters: { type: "object", properties: { time: { type: "string", description: "Hora en formato HH:MM (ej. 14:00)" }, action_type: { type: "string", description: "'send_whatsapp', 'speak', o 'open_app'" }, target: { type: "string", description: "A quién va dirigido" }, message: { type: "string", description: "El mensaje a enviar/decir" }, reply: { type: "string", description: "Confirmación en voz alta" } }, required: ["time", "action_type", "reply"] } } },
             { type: "function", function: { name: "check_reminders", description: "Revisa las tareas a realizar o recordatorios activos hoy.", parameters: { type: "object", properties: { reply: { type: "string", description: "Frase de confirmación de que vas a buscar la info" } }, required: ["reply"] } } },
             { type: "function", function: { name: "clear_reminders", description: "Limpia y borra todas las alarmas o tareas programadas.", parameters: { type: "object", properties: { reply: { type: "string", description: "Frase confirmando borrado" } }, required: ["reply"] } } },
@@ -492,7 +521,11 @@ async function getAIResponse(userText, activeMode, screenContext = null) {
             { type: "function", function: { name: "generate_prompt", description: "MÁS IMPORTANTE: NUNCA USES ESTO SI EL USUARIO CHARLA O PREGUNTA QUÉ PUEDES HACER. Genera una arquitectura extensa de sistema. USAR SOLO SÍ PIDEN 'crear prompt de software'.", parameters: { type: "object", properties: { target: { type: "string", description: "La temática" }, reply: { type: "string", description: "Respuesta hablada" } }, required: ["target", "reply"] } } },
             { type: "function", function: { name: "develop_new_skill", description: "CREA SCRIPTS DE PYTHON INTERNOS. ÚSALA SÓLO si el usuario usa las palabras mágicas 'aprende al...', 'quiero que aprendas a...', o 'escribe un script para mi sistema que...'. Te sirve para aprender a hacer tareas de PC que no sabes (ej: 'Aprende a apagar la pc', 'Aprende a sumar dados').", parameters: { type: "object", properties: { target: { type: "string", description: "El objetivo detallado del script que vas a programar en Python para cumplir la habilidad" }, reply: { type: "string", description: "Lo que le dirás repitiendo su orden (ej: 'Comenzando a desarrollar habilidad para bla bla')" } }, required: ["target", "reply"] } } },
             { type: "function", function: { name: "chat_casual", description: "Obligatorio: USAR ESTA HERRAMIENTA SIEMPRE QUE EL USUARIO HAGA CHARLA CASUAL, PREGUNTE LA HORA, EL DÍA, O PIDA TUS CAPACIDADES. Evita errores usando esto.", parameters: { type: "object", properties: { reply: { type: "string", description: "Respuesta conversacional natural al usuario calculada usando tu propio cerebro" } }, required: ["reply"] } } },
-            { type: "function", function: { name: "search_internet", description: "USA ESTA CADA VEZ QUE PIDAN: Clima, Dolar, Cripto, Deportes, Noticias o la Hora en otros países.", parameters: { type: "object", properties: { target: { type: "string", enum: ["clima", "dolar", "cripto", "hora", "general"], description: "El sub-tipo. Si es futbol o definicion, usa 'general'." }, message: { type: "string", description: "La consulta (ciudad o tema)" } }, required: ["target", "message"] } } }
+            { type: "function", function: { name: "search_internet", description: "USA ESTA CADA VEZ QUE PIDAN: Clima, Dolar, Cripto, Deportes, Noticias o la Hora en otros países.", parameters: { type: "object", properties: { target: { type: "string", enum: ["clima", "dolar", "cripto", "hora", "general"], description: "El sub-tipo. Si es futbol o definicion, usa 'general'." }, message: { type: "string", description: "La consulta (ciudad o tema)" } }, required: ["target", "message"] } } },
+            { type: "function", function: { name: "build_software", description: "OBLIGATORIA SI PIDEN HACER, CREAR O PROGRAMAR UNA PÁGINA WEB, APLICACIÓN O PROYECTO. Funciona como un Senior Software Engineer.", parameters: { type: "object", properties: { target: { type: "string", description: "Especificaciones de la web o el programa a realizar" }, reply: { type: "string", description: "Confirmación en voz alta (ej: 'Comenzando a desarrollar tu aplicación señor.')" } }, required: ["target", "reply"] } } },
+            { type: "function", function: { name: "generate_image", description: "OBLIGATORIA SI EL USUARIO PIDE DIBUJAR, CREAR UNA IMAGEN, RENDER, FOTO O ARTE VISUAL DE CERO.", parameters: { type: "object", properties: { target: { type: "string", description: "OBLIGATORIO EN INGLÉS. Escribe un prompt DETALLADO describiendo exactamente la escena que el usuario pidió. Incluye: sujeto principal, composición, iluminación, estilo visual, colores. Ej: si pide 'un gato en la luna', escribe 'a fluffy orange cat sitting on the surface of the moon, Earth visible in the background, dramatic cinematic lighting, space photography'. NUNCA traduzcas literalmente, EXPANDE la descripción." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } },
+            { type: "function", function: { name: "edit_image", description: "OBLIGATORIA SI EL USUARIO PIDE EDITAR O MODIFICAR UNA IMAGEN QUE ACABA DE SUBIR O PROPORCIONAR.", parameters: { type: "object", properties: { target: { type: "string", description: "OBLIGATORIO EN INGLÉS. Describe SOLAMENTE lo que debe aparecer en la zona editada de la foto. NO describas la foto entera. Ej: si pide 'ponerle lentes', escribe 'stylish dark sunglasses on the face, realistic reflections'. Si pide 'pelo rubio', escribe 'bright blonde hair, natural highlights, silky texture'. Sé específico y visual." }, filepath: { type: "string", description: "La ruta del archivo." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } },
+            { type: "function", function: { name: "search_streaming", description: "MÁXIMA PRIORIDAD. USA ESTA OBLIGATORIAMENTE cada vez que el usuario mencione el NOMBRE de una película, serie, anime o documental que quiera VER, BUSCAR, PONER, REPRODUCIR o ENCONTRAR. Ejemplos: 'quiero ver Breaking Bad', 'poné Stranger Things', 'buscame una de terror', 'poneme el señor de los anillos'. Busca en Stremio (tiene Netflix, HBO, Disney+, Prime, y más) y lo abre automáticamente. NUNCA uses open_app ni search_web para esto.", parameters: { type: "object", properties: { target: { type: "string", description: "El nombre exacto de la película o serie que el usuario quiere ver. Ej: 'Breaking Bad', 'Avengers Endgame', 'Stranger Things'. Escribe el nombre más preciso posible, preferentemente en su idioma original." }, type: { type: "string", enum: ["movie", "series", "auto"], description: "Si es película usa 'movie', si es serie usa 'series'. Si no sabés, usa 'auto'." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } }
         ];
 
         try {
@@ -627,6 +660,14 @@ async function getAIResponse(userText, activeMode, screenContext = null) {
             if (!intent.reply || /procediendo con la acci[oó]n/i.test(intent.reply)) {
                 intent.reply = `Generando tu documento sobre ${intent.target}.`;
             }
+        }
+
+        // Hard-Override para forzar Agency cuando se menciona 4070 o multi-agente.
+        const lowerText = String(userText || '').toLowerCase();
+        if (lowerText.includes("4070") || lowerText.includes("multi-agente") || lowerText.includes("agency")) {
+            console.log("[Bypass] 🚀 Forzando Motor Multi-Agente (Agency) por palabra clave.");
+            intent.action = "build_software";
+            intent.target = userText;
         }
 
         // Eliminar fallback de recipient determinístico para dejar que Tool Calling de Llama 3.1 se encargue 100% de parsear el contacto y el mensaje exacto.
@@ -1032,6 +1073,458 @@ Por favor, redacta el informe académico EXTREMADAMENTE EXTENSO basándote ÚNIC
                 }
             }
 
+            if (intent.action === "build_software") {
+                const fs = require('fs');
+                const path = require('path');
+                const { exec } = require('child_process');
+
+                console.log(`[Software Engineer] 💻 Iniciando desarrollo/build de: ${intent.target}`);
+
+                // ── DETECCION DE RUTA: si el usuario pasa un path, es EDICION ──
+                const pathMatch = String(userText || '').match(/([A-Za-z]:\\[^\s,;]+)/);
+                if (pathMatch && fs.existsSync(pathMatch[1].replace(/[.,;:]+$/, ''))) {
+                    console.log(`[Software Engineer] 📂 Path detectado: ${pathMatch[1]} → enviando a Python Editor`);
+                    try {
+                        const pyRes = await fetch('http://127.0.0.1:8000/api/v1/query', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: userText })
+                        });
+                        if (pyRes.ok) {
+                            const pyData = await pyRes.json();
+                            const pyMessage = pyData?.data?.message || pyData?.message || '';
+                            if (pyMessage) {
+                                conversationHistory.push({ role: "user", content: userText });
+                                conversationHistory.push({ role: "assistant", content: intent });
+                                return pyMessage;
+                            }
+                        }
+                    } catch (e) {
+                        console.warn("[Software Engineer] Python Editor inalcanzable:", e.message);
+                    }
+                }
+
+                const lowerText = String(userText || '').toLowerCase();
+                const normalizedText = lowerText.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                const isEcommerceRequest = /(ecommerce|e-commerce|tienda|shop|store|carrito|checkout|catalogo|producto|compras|catalog)/i.test(normalizedText);
+                const isWebRequest = /(pagina web|sitio web|website|landing|frontend|html|css|ui|ux|tailwind|spa|single page|app web|web app|aplicacion web)/i.test(normalizedText);
+                const isBackendRequest = /(backend|api|server|servidor|node|express|fastapi|django|flask|database|db|sql|postgres|mongo)/i.test(normalizedText);
+                const isBackendOnly = isBackendRequest && !isWebRequest && !/(frontend|ui|ux|landing|pagina web|sitio web|website)/i.test(normalizedText);
+                const usePythonEngine = (isWebRequest || isEcommerceRequest) && !isBackendOnly;
+
+                // Intentar primero el motor Python para proyectos web visuales
+                const pythonSpecEcommerce = [
+                    "QUALITY SPEC:",
+                    "- Build a breathtaking, premium ecommerce UI with hero, product grid, cart drawer, and checkout panel.",
+                    "- THIS IS A STANDALONE FRONTEND MOCKUP. DO NOT USE `fetch()` OR EXTERNAL APIs.",
+                    "- HARDCODE at least 6 beautiful, realistic products directly in the JavaScript/HTML array.",
+                    "- Use Unsplash images for products (e.g., https://images.unsplash.com/photo-...).",
+                    "- Implement a fully working shopping cart in memory (JS array).",
+                    "- JS must implement add/remove, quantity, subtotal, and cart drawer logic.",
+                    "- Use modern CSS with the provided CSS variables, gradients, soft shadows, and responsive layout.",
+                    "- Ensure the UI looks like a $50,000 custom website."
+                ].join("\n");
+                const pythonSpecGeneral = [
+                    "QUALITY SPEC:",
+                    "- Build a breathtaking, premium production-ready web UI for the request.",
+                    "- THIS IS A STANDALONE FRONTEND MOCKUP. DO NOT USE `fetch()` OR EXTERNAL APIs.",
+                    "- HARDCODE real, realistic content. No lorem ipsum or placeholders.",
+                    "- Provide rich sections (hero, features, pricing, FAQ, contact) to avoid empty layouts.",
+                    "- Implement robust JS behavior for all interactive elements.",
+                    "- Use modern CSS with the provided CSS variables, gradients, soft shadows, and responsive layout.",
+                    "- Ensure the UI looks like a $50,000 custom website."
+                ].join("\n");
+                const pythonSpec = isEcommerceRequest ? pythonSpecEcommerce : pythonSpecGeneral;
+                const pythonQuery = `${userText}\n\n${pythonSpec}`;
+                const refusalRegex = /(lo siento|no puedo|no estoy disenado|cannot assist|not designed)/i;
+
+                if (usePythonEngine) {
+                    try {
+                        const pyRes = await fetch('http://127.0.0.1:8000/api/v1/query', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: pythonQuery })
+                        });
+                        if (pyRes.ok) {
+                            const pyData = await pyRes.json();
+                            const pyMessage = pyData?.data?.message || pyData?.message || '';
+                            if (pyMessage && !refusalRegex.test(pyMessage)) {
+                                conversationHistory.push({ role: "user", content: userText });
+                                conversationHistory.push({ role: "assistant", content: intent });
+                                return pyMessage;
+                            }
+                            console.warn("[Software Engineer] Python devolvio respuesta vacia o negativa. Fallback a motor local.");
+                        }
+                    } catch (e) {
+                        console.warn("[Software Engineer] Python inalcanzable, usando motor local.", e.message);
+                    }
+                } else {
+                    console.warn("[Software Engineer] Python omitido: solicitud no-web o backend-only.");
+                }
+                
+                const projectsDir = 'C:\\Users\\Rodrigo\\Desktop\\Jarvis_Projects';
+                const sessionFile = path.join(projectsDir, '.jarvis_session.json');
+                
+                if (!fs.existsSync(projectsDir)) {
+                    fs.mkdirSync(projectsDir, { recursive: true });
+                }
+
+                // Detectar si es una solicitud de actualización sobre algo existente
+                const isUpdate = /(actualiza|modifica|agrega|cambia|mejora|arregla)/i.test(userText);
+                let targetDir = '';
+                let existingCodeCtx = '';
+                
+                // Si es actualización, intentamos recuperar el proyecto anterior
+                if (isUpdate && fs.existsSync(sessionFile)) {
+                    try {
+                        const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+                        if (sessionData.active_project) {
+                            targetDir = path.join(projectsDir, sessionData.active_project);
+                            if (fs.existsSync(targetDir)) {
+                                console.log(`[Software Engineer] Actualizando proyecto activo: ${sessionData.active_project}`);
+                                existingCodeCtx = "--- CÓDIGO ACTUAL DEL PROYECTO ---\n";
+                                const files = fs.readdirSync(targetDir);
+                                for (const file of files) {
+                                    if (file.endsWith('.html') || file.endsWith('.css') || file.endsWith('.js') || file.endsWith('.py')) {
+                                        const content = fs.readFileSync(path.join(targetDir, file), 'utf8');
+                                        existingCodeCtx += `### ${file} ###\n\`\`\`\n${content}\n\`\`\`\n\n`;
+                                    }
+                                }
+                            }
+                        }
+                    } catch(e) {
+                        console.error("Error leyendo sesión de proyectos:", e);
+                    }
+                }
+
+                // Si no es actualización (o falló), creamos directorio nuevo
+                if (!targetDir) {
+                    const projectName = "project_" + Date.now();
+                    targetDir = path.join(projectsDir, projectName);
+                    fs.mkdirSync(targetDir, { recursive: true });
+                    fs.writeFileSync(sessionFile, JSON.stringify({ active_project: projectName }), 'utf8');
+                    console.log(`[Software Engineer] Nuevo proyecto: ${projectName}`);
+                }
+
+                const apiSpec = isEcommerceRequest
+                    ? `API SPEC (REQUIRED FOR ECOMMERCE REQUESTS): Base URL http://localhost:3000/api/shop
+  * GET /products -> { products: [ { id, name, description, price, image, category, rating, stock, tags } ] }
+  * GET /categories -> { categories: [ "..." ] }
+  * POST /cart -> { cartId, cart }
+  * GET /cart/{cartId} -> { cartId, cart }
+  * POST /cart/{cartId}/items -> { cartId, cart }
+  * PUT /cart/{cartId}/items/{productId} -> { cartId, cart }
+  * DELETE /cart/{cartId}/items/{productId} -> { cartId, cart }
+  * POST /checkout/{cartId} -> { order }
+  * cart shape: { id, items: [ { productId, quantity, product, lineTotal } ], subTotal, tax, total, currency }
+    Use fetch() to sync cart state. Store cartId in localStorage. Render item.product fields and handle nulls safely.
+    Use ONLY backend data for products and cart. If product count is small, add rich sections to avoid empty layouts.`
+                    : "";
+
+                // === DYNAMIC DESIGN THEME — Random per project ===
+                const designThemes = [
+                    {
+                        name: "Cyber Dark",
+                        bg: "#0a0f1e", surface: "#161b2e", elevated: "#1e2540",
+                        accent1: "#00e5ff", accent2: "#3b82f6", accent3: "#7c3aed",
+                        font: "Inter",
+                        style: "glassmorphism cards with cyan glow, neon borders, tech/futuristic feel"
+                    },
+                    {
+                        name: "Midnight Purple",
+                        bg: "#0d0a1a", surface: "#1a1229", elevated: "#231830",
+                        accent1: "#a855f7", accent2: "#ec4899", accent3: "#f59e0b",
+                        font: "Outfit",
+                        style: "rich purple/pink gradients, gold accents, luxury dark aesthetic"
+                    },
+                    {
+                        name: "Forest Terminal",
+                        bg: "#0a130a", surface: "#111f11", elevated: "#162216",
+                        accent1: "#4ade80", accent2: "#22c55e", accent3: "#84cc16",
+                        font: "JetBrains Mono",
+                        style: "matrix/terminal green on dark, monospace feel, hacker aesthetic"
+                    },
+                    {
+                        name: "Sunset Warm",
+                        bg: "#1a0f0a", surface: "#2a1810", elevated: "#331e12",
+                        accent1: "#f97316", accent2: "#ef4444", accent3: "#fbbf24",
+                        font: "Poppins",
+                        style: "warm orange/red gradients, ember glows, energetic feel"
+                    },
+                    {
+                        name: "Arctic Clean",
+                        bg: "#0f172a", surface: "#1e293b", elevated: "#334155",
+                        accent1: "#38bdf8", accent2: "#818cf8", accent3: "#34d399",
+                        font: "Inter",
+                        style: "clean slate blues, soft indigo accents, minimalist professional feel"
+                    },
+                    {
+                        name: "Rose Gold",
+                        bg: "#1a0e14", surface: "#2d1521", elevated: "#3d1c2d",
+                        accent1: "#f43f5e", accent2: "#fb7185", accent3: "#c084fc",
+                        font: "Outfit",
+                        style: "rose/pink/mauve palette, elegant feminine aesthetic, soft glows"
+                    },
+                    {
+                        name: "Ocean Depth",
+                        bg: "#020d18", surface: "#071e33", elevated: "#0c2d4a",
+                        accent1: "#06b6d4", accent2: "#0891b2", accent3: "#67e8f9",
+                        font: "Poppins",
+                        style: "deep ocean blues and teals, aqua highlights, clean and modern"
+                    },
+                    {
+                        name: "Volcanic",
+                        bg: "#120a02", surface: "#1f1108", elevated: "#2d190d",
+                        accent1: "#ff6b35", accent2: "#ff3d00", accent3: "#ffd600",
+                        font: "Outfit",
+                        style: "lava/volcanic orange-red, high contrast dark, bold dramatic aesthetic"
+                    }
+                ];
+
+                // Smart theme picker: explicit request > random
+                const lowerUserText = userText.toLowerCase();
+                let theme = null;
+
+                const themeKeywords = {
+                    "Cyber Dark":      ['cyber', 'cyberpunk', 'neon', 'futurista', 'tech'],
+                    "Midnight Purple": ['purple', 'purpura', 'lujoso', 'lujo', 'elegante', 'morado'],
+                    "Forest Terminal": ['terminal', 'hacker', 'matrix', 'consola'],
+                    "Sunset Warm":     ['sunset', 'naranja', 'calido', 'fuego', 'warm'],
+                    "Arctic Clean":    ['minimalista', 'limpio', 'profesional', 'arctic', 'clean'],
+                    "Rose Gold":       ['rosa', 'rosado', 'pink', 'suave', 'femenino'],
+                    "Ocean Depth":     ['oceano', 'marino', 'agua', 'ocean', 'teal'],
+                    "Volcanic":        ['volcanico', 'rojo', 'lava', 'volcanic', 'dramatico']
+                };
+
+                for (const [themeName, keywords] of Object.entries(themeKeywords)) {
+                    if (keywords.some(kw => lowerUserText.includes(kw))) {
+                        theme = designThemes.find(t => t.name === themeName);
+                        console.log(`[Software Engineer] 🎨 Tema solicitado: ${themeName}`);
+                        break;
+                    }
+                }
+
+                if (!theme) {
+                    theme = designThemes[Math.floor(Math.random() * designThemes.length)];
+                    console.log(`[Software Engineer] 🎲 Tema aleatorio: ${theme.name}`);
+                }
+
+                const devPrompt = `You are a WORLD-CLASS Senior Full-Stack Engineer and UI/UX Designer. Your code is always deployed to production immediately.
+
+USER REQUEST: "${userText}"
+
+${existingCodeCtx ? '=== EXISTING CODE TO IMPROVE ===\n' + existingCodeCtx + '\n=== END EXISTING CODE ===\nIMPROVE AND SIGNIFICANTLY EXPAND THE ABOVE. Fix all visual and functional bugs.\n' : ''}
+=== DESIGN THEME FOR THIS PROJECT: "${theme.name}" ===
+Every project must feel UNIQUE. Follow this specific theme exactly:
+
+COLORS (use these exact values as CSS variables in :root):
+  --bg-main: ${theme.bg}
+  --bg-surface: ${theme.surface}
+  --bg-elevated: ${theme.elevated}
+  --accent-1: ${theme.accent1}  (primary CTA, main highlights)
+  --accent-2: ${theme.accent2}  (secondary elements, links)
+  --accent-3: ${theme.accent3}  (badges, tags, tertiary)
+  --text-primary: #ffffff
+  --text-secondary: rgba(255,255,255,0.6)
+  --border: rgba(255,255,255,0.08)
+
+TYPOGRAPHY: Import "${theme.font}" from Google Fonts. Use it for ALL text.
+  - Example: <link href="https://fonts.googleapis.com/css2?family=${theme.font.replace(' ', '+')}:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+VISUAL STYLE: ${theme.style}
+
+Import FontAwesome 6: <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+=== MANDATORY QUALITY RULES ===
+
+1. FRAMEWORK: You MUST use TailwindCSS via CDN in your HTML <head>:
+   <script src="https://cdn.tailwindcss.com"></script>
+   You MUST configure Tailwind in the <head> to use the CSS variables:
+   <script>
+     tailwind.config = {
+       theme: {
+         extend: {
+           colors: {
+             main: 'var(--bg-main)',
+             surface: 'var(--bg-surface)',
+             elevated: 'var(--bg-elevated)',
+             accent1: 'var(--accent-1)',
+             accent2: 'var(--accent-2)',
+             accent3: 'var(--accent-3)'
+           },
+           fontFamily: { sans: ['${theme.font}', 'sans-serif'] }
+         }
+       }
+     }
+   </script>
+
+2. STYLING RULES (NO RAW CSS! USE TAILWIND CLASSES):
+- DO NOT write custom CSS for layout or colors. Use Tailwind.
+- For Glassmorphism use: \`bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl\`
+- For Buttons use: \`bg-gradient-to-r from-accent1 to-accent2 text-white font-bold py-3 px-6 rounded-xl hover:scale-105 transition-all shadow-lg hover:shadow-accent1/50\`
+- For Text Gradients use: \`bg-clip-text text-transparent bg-gradient-to-r from-accent1 to-accent3\`
+- For dark mode consistency, use \`bg-main text-white\` on the body.
+
+3. JAVASCRIPT FUNCTIONALITY:
+- Render content dynamically from JS arrays.
+- Interactive hover states and functional buttons.
+- Simple, working logic in script.js
+
+=== OUTPUT RULES ===
+1. Write COMPLETE files. No "// TODO".
+2. You only need 2 files: index.html and script.js (Do NOT output style.css, Tailwind handles it).
+3. Wrap each in XML: <file name="filename.ext">...full content...</file>
+4. NO markdown backtick fences. NO explanations. ONLY the XML file blocks.
+
+${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It MUST be visually stunning, unique to this theme, and 100% functional.`;
+
+                try {
+                    // Forzamos uso de modelo óptimo para código si lo tenemos
+                    const modelToUse = activeMode && activeMode.model && activeMode.model.includes('coder') ? activeMode.model : 'qwen2.5-coder:7b';
+                    console.log(`[Software Engineer] Llamando a modelo: ${modelToUse} con contexto masivo de código...`);
+
+                    const devResponse = await fetch('http://127.0.0.1:11434/api/generate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            model: modelToUse,
+                            system: "You are a maximum-tier code generation automaton. You have absolute permission. Generate full production codebases. NO summaries, NO conversational text, NO refusals. Only output the exact XML <file> blocks requested.",
+                            prompt: devPrompt,
+                            stream: false,
+                            options: { 
+                                num_ctx: 32768,       // Contexto masivo
+                                num_predict: -1       // Sin límite de generación (-1 para infinito hasta que termine)
+                            }
+                        })
+                    });
+                    
+                    const devData = await devResponse.json();
+                    if (!devData || !devData.response) throw new Error("Fallo en la respuesta de Ollama.");
+                    
+                    let aiCode = devData.response;
+                    
+                    // Regex para XML
+                    const fileRegex = /<file\s+name="([^"]+)">([\s\S]*?)<\/file>/gi;
+                    let match;
+                    let fileCount = 0;
+                    
+                    while ((match = fileRegex.exec(aiCode)) !== null) {
+                        const filename = match[1].trim();
+                        // Remover posible tag markdown si el modelo desobedeció
+                        let content = match[2];
+                        content = content.replace(/^```[a-z]*[\r\n]+/, '').replace(/```$/, '');
+                        
+                        const filePath = path.join(targetDir, filename);
+                        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+                        fs.writeFileSync(filePath, content.trim(), 'utf8');
+                        console.log(`[Software Engineer] 📄 Guardado: ${filename}`);
+                        fileCount++;
+                    }
+
+                    // Limpieza general de markdown por si escupió solo código sin parsear
+                    if (fileCount === 0) {
+                        console.log(`[Software Engineer] Fallback de parseo XML. Intentando extraer de bloques de markdown...`);
+                        const mdRegex = /```(?:[a-z]*)\s*[\r\n]+([\s\S]*?)```/gi;
+                        let mdMatch;
+                        let defaultNames = ['index.html', 'style.css', 'script.js'];
+                        
+                        while ((mdMatch = mdRegex.exec(aiCode)) !== null) {
+                            if (fileCount < defaultNames.length) {
+                                const mdPath = path.join(targetDir, defaultNames[fileCount]);
+                                fs.mkdirSync(path.dirname(mdPath), { recursive: true });
+                                fs.writeFileSync(mdPath, mdMatch[1].trim(), 'utf8');
+                                fileCount++;
+                            }
+                        }
+                    }
+
+                    if (fileCount === 0) {
+                        // Fallback: Si no hay bloques, volcamos crudo.
+                        fs.writeFileSync(path.join(targetDir, 'index.html'), aiCode, 'utf8');
+                        console.log(`[Software Engineer] Fallback: Parseo falló. volcando en index.html`);
+                    }
+
+                    // Abrir la carpeta del proyecto en VS Code y lanzar Chrome con el Index
+                    exec(`code "${targetDir}"`, (err) => {});
+                    if (fs.existsSync(path.join(targetDir, 'index.html'))) {
+                         exec(`start chrome "${path.join(targetDir, 'index.html')}"`, (err) => {});
+                    }
+
+                    conversationHistory.push({ role: "user", content: userText });
+                    conversationHistory.push({ role: "assistant", content: intent });
+                    return intent.reply || `Entendido señor, he finalizado el desarrollo de software y lo he ejecutado en su entorno.`;
+
+                } catch (e) {
+                    console.error("Error en build_software:", e);
+                    return "Ocurrió un fallo en mi módulo de Software Engineering. Por favor, revise los logs.";
+                }
+            }
+
+            if (intent.action === "search_streaming") {
+                try {
+                    const streamingService = require('./streamingService');
+                    console.log(`[Jarvis Streaming] Buscando: ${intent.target} (tipo: ${intent.type || 'auto'})`);
+                    const result = await streamingService.searchAndOpen(intent.target, intent.type || 'auto', true);
+                    
+                    conversationHistory.push({ role: "user", content: userText });
+                    conversationHistory.push({ role: "assistant", content: intent });
+                    
+                    if (result.found) {
+                        return intent.reply + " " + result.message;
+                    } else {
+                        return result.message;
+                    }
+                } catch (e) {
+                    console.error("Error en search_streaming:", e);
+                    return "Hubo un problema buscando el contenido. " + e.message;
+                }
+            }
+
+            if (intent.action === "generate_image") {
+                try {
+                    const imageService = require('./imageService');
+                    console.log(`[Jarvis Artista] Recibida orden de imagen: ${intent.target}`);
+                    const finalPath = await imageService.generateImage(intent.target);
+                    
+                    // Abrir la imagen generada
+                    const { exec } = require('child_process');
+                    exec(`start "" "${finalPath}"`);
+                    
+                    conversationHistory.push({ role: "user", content: userText });
+                    conversationHistory.push({ role: "assistant", content: intent });
+                    return intent.reply || "He generado la imagen exitosamente y la he abierto en su pantalla.";
+                } catch (e) {
+                    console.error("Error en generate_image:", e);
+                    return "El motor de imágenes no pudo iniciarse o procesar su solicitud. " + e.message;
+                }
+            }
+
+            if (intent.action === "edit_image") {
+                try {
+                    const imageService = require('./imageService');
+                    // Extraer la ruta directamente del userText porque el LLM a veces falla al parsear rutas absolutas de Windows
+                    const pathMatch = String(userText || '').match(/([A-Za-z]:\\[^\s,;]+)/);
+                    const filepath = intent.filepath || (pathMatch ? pathMatch[1] : null);
+                    
+                    if (!filepath) {
+                        return "Por favor, proporciona la ruta de la imagen o vuelve a subirla.";
+                    }
+                    
+                    console.log(`[Jarvis Artista] Recibida orden de edición de imagen: ${filepath} -> ${intent.target} | Mask: ${inpaintingMask ? "YES" : "NO"}`);
+                    const finalPath = await imageService.editImage(filepath, intent.target, 0.75, inpaintingMask);
+                    
+                    const { exec } = require('child_process');
+                    exec(`start "" "${finalPath}"`);
+                    
+                    conversationHistory.push({ role: "user", content: userText });
+                    conversationHistory.push({ role: "assistant", content: intent });
+                    return intent.reply || "He editado la foto y la he abierto en tu pantalla.";
+                } catch (e) {
+                    console.error("Error en edit_image:", e);
+                    return "No pude editar la imagen. " + e.message;
+                }
+            }
+
             if (intent.action === "generate_prompt") {
                 // Guard: solo crear documento si el usuario lo pidió EXPLÍCITAMENTE
                 // Preguntas simples como "que es X" no deben crear archivos
@@ -1179,8 +1672,8 @@ Por favor, redacta el informe académico EXTREMADAMENTE EXTENSO basándote ÚNIC
         conversationHistory.push({ role: "user", content: userText });
         conversationHistory.push({ role: "assistant", content: intent });
 
-        if (conversationHistory.length > 10) {
-            conversationHistory = conversationHistory.slice(-10);
+        if (conversationHistory.length > 20) {
+            conversationHistory = conversationHistory.slice(-20);
         }
 
         return intent.reply || "He procesado la acción pero no generé respuesta hablada.";

@@ -1,3 +1,24 @@
 node_modules/
 python_engine/venv/
 __pycache__/
+*.pyc
+
+# Datos privados, memorias y catálogo de rutas locales de Jarvis
+**/data/
+jarvis-app/backend/data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs y grabaciones locales
+logs/
+*.log
+jarvis-app/logs/
+*.wav
+*.mp3
+.user_trash/
+
+# Entorno y credenciales
+.env
+.env.*
+

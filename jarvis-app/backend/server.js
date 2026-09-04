@@ -5,39 +5,105 @@ const cors = require('cors');
 const path = require('path');
 const compression = require('compression');
 const helmet = require('helmet');
+const multer = require('multer');
+const fs = require('fs');
 require('dotenv').config();
 
 const modeService = require('./services/modeService');
 const systemService = require('./services/systemService');
 const aiService = require('./services/aiService');
-const backgroundTuner = require('./services/backgroundTuner');
 const observerService = require('./services/observerService');
 const appDiscoveryService = require('./services/appDiscoveryService');
-const hotkeyService = require('./services/hotkeyService');
 const reminderService = require('./services/reminderService');
 const powerService = require('./services/powerService');
+const tvService = require('./services/tvService');
+const tvVoiceService = require('./services/tvVoiceService');
+const voiceInputService = require('./services/voiceInputService');
+const voiceUnderstandingService = require('./services/voiceUnderstandingService');
+const voiceSettingsService = require('./services/voiceSettingsService');
+const memoryService = require('./services/memoryService');
+const jarvisActionService = require('./services/jarvisActionService');
+const ttsService = require('./services/ttsService');
+const voiceLearningService = require('./services/voiceLearningService');
+const shopRoutes = require('./routes/shopRoutes');
+
+// --- JARVIS OS V6 ENTERPRISE SERVICES ---
+const eventBus = require('./services/core/eventBusService');
+const databaseService = require('./services/persistence/databaseService');
+const emergencyService = require('./services/core/emergencyService');
+const healthService = require('./services/core/healthService');
+const undoManager = require('./services/core/undoManager');
+const explanationService = require('./services/core/explanationService');
+const trashService = require('./services/core/trashService');
+const goalManagerService = require('./services/goals/goalManagerService');
+const agendaService = require('./services/agenda/agendaService');
+const schedulerService = require('./services/agenda/schedulerService');
+const notificationService = require('./services/core/notificationService');
+const windowsControlService = require('./services/windowsControlService');
+eventBus.setDatabaseService(databaseService);
 
 const app = express();
+let localVoiceStatus = { online: false, engine: 'Vosk + WebRTC VAD + faster-whisper', fullyLocal: true };
+let lastLocalSpeech = { text: '', at: 0 };
 
-// Optimizaciones de Seguridad y Rendimiento
-app.use(helmet({ contentSecurityPolicy: false })); // Protege cabeceras HTTP sin romper la carga local de scripts
-app.use(compression()); // Comprime las respuestas HTTP enviadas al cliente para mayor eficiencia
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(compression());
+app.use(cors());
+app.use(express.json());
+app.use('/api/shop', shopRoutes);
+app.use(express.static(path.join(__dirname, '../frontend'), {
+    maxAge: 0,
+    etag: false,
+    lastModified: false,
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+    }
+}));
 
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: '*' },
-    perMessageDeflate: true, // Habilitar compresión en Socket.io
+    perMessageDeflate: true
+});
+notificationService.setSocketIO(io);
+
+// Reenviar eventos de Jarvis OS al HUD
+eventBus.subscribe('*', (ev) => {
+    io.emit('jarvis_event', ev);
 });
 
-app.use(cors());
-app.use(express.json());
+// --- ENDPOINTS JARVIS OS V6 ---
+app.post('/api/emergency-stop', (req, res) => {
+    const result = emergencyService.triggerEmergencyStop(req.body.source || 'REST_API');
+    res.json(result);
+});
 
-// Servir frontend si se corre el server directo (opcional para facilidad)
-app.use(express.static(path.join(__dirname, '../frontend')));
+app.get('/api/health', async (req, res) => {
+    const health = await healthService.getSystemHealth();
+    res.json(health);
+});
 
-// --- NUEVO: RUTA PARA SUBIR ARCHIVOS (RAG) ---
-const multer = require('multer');
-const fs = require('fs');
+app.post('/api/undo', async (req, res) => {
+    const result = await undoManager.undoLast(req.body.scope || 'GLOBAL', req.body.filter);
+    res.json(result);
+});
+
+app.post('/api/explain', async (req, res) => {
+    const explanation = await explanationService.explainDecision(req.body.query);
+    res.json({ explanation });
+});
+
+app.get('/api/goals', (req, res) => res.json(goalManagerService.listGoals(req.query.status)));
+app.post('/api/goals', (req, res) => res.json(goalManagerService.createGoal(req.body)));
+
+app.get('/api/agenda', (req, res) => res.json(agendaService.listReminders(req.query.status)));
+app.post('/api/agenda', (req, res) => res.json(agendaService.addReminder(req.body)));
+app.delete('/api/agenda/:id', (req, res) => res.json(agendaService.deleteReminder(req.params.id)));
+
+app.get('/api/trash', (req, res) => res.json(trashService.listTrash()));
+app.post('/api/trash/restore', (req, res) => res.json(trashService.restoreFromTrash(req.body.identifier, req.body.conflictResolution)));
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -57,16 +123,164 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: "No se subió ningún archivo." });
     }
-    // Return absolute path
     const absolutePath = req.file.path;
     console.log(`[Servidor] 💾 Archivo recibido y guardado en: ${absolutePath}`);
     res.json({ filepath: absolutePath });
+});
+
+// --- SPOTIFY WEB API ROUTES ---
+const spotifyService = require('./services/spotifyService');
+
+app.get('/api/spotify/login', (req, res) => {
+    const authUrl = spotifyService.getAuthURL();
+    res.redirect(authUrl);
+});
+
+app.get('/api/spotify/callback', async (req, res) => {
+    const { code, error } = req.query;
+    if (error) {
+        return res.send(`<h1>Error de Spotify</h1><p>${error}</p>`);
+    }
+    try {
+        await spotifyService.exchangeCodeForTokens(code);
+        res.send(`
+            <html>
+            <body style="background:#121212;color:#1DB954;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;flex-direction:column;">
+                <h1 style="font-size:3rem;">✅ Spotify Conectado</h1>
+                <p style="color:#fff;font-size:1.2rem;">Jarvis ahora puede controlar tu música. Puedes cerrar esta ventana.</p>
+            </body>
+            </html>
+        `);
+    } catch (e) {
+        res.status(500).send(`<h1>Error</h1><p>${e.message}</p>`);
+    }
+});
+
+// Verificar si Spotify está conectado
+app.get('/api/spotify/status', (req, res) => {
+    res.json({ connected: spotifyService.isAuthenticated() });
 });
 // ----------------------------------------------
 
 // API Rest para Modos (usado por el cliente cuando quiere crear nuevos modos usando la interfaz)
 app.get('/api/modes', (req, res) => {
     res.json(modeService.getAllModes());
+});
+
+app.get('/api/capabilities', async (req, res) => {
+    res.json(await jarvisActionService.describe({}));
+});
+
+app.get('/api/actions', async (req, res) => res.json(await jarvisActionService.describe({})));
+app.post('/api/actions/execute', async (req, res) => {
+    const result = await jarvisActionService.execute(req.body.id, req.body.params || {}, actionContext());
+    res.status(result.ok || result.status === 'awaiting_confirmation' ? 200 : 400).json(result);
+});
+app.post('/api/actions/confirm', async (req, res) => res.json(await jarvisActionService.confirm(req.body.token, actionContext())));
+app.post('/api/actions/cancel', (req, res) => res.json({ ok: jarvisActionService.cancelConfirmation(req.body.token) }));
+
+app.get('/api/memory', (req, res) => res.json(memoryService.snapshot()));
+app.post('/api/memory/preferences', (req, res) => {
+    try { res.json(memoryService.addPreference(req.body.key, req.body.value, 'panel')); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post('/api/memory/corrections', (req, res) => {
+    try { memoryService.addCorrection(req.body.from, req.body.to); res.json({ ok: true }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.patch('/api/memory/:collection/:id', (req, res) => {
+    try { res.json(memoryService.updateItem(req.params.collection, req.params.id, req.body)); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.delete('/api/memory/:collection/:id', (req, res) => {
+    try { res.json({ ok: memoryService.removeItem(req.params.collection, req.params.id) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.get('/api/voice/settings', (req, res) => res.json(voiceSettingsService.get()));
+app.get('/api/voice/learning', (req, res) => res.json(voiceLearningService.snapshot()));
+app.post('/api/voice/settings', (req, res) => {
+    try { res.json(voiceSettingsService.save(req.body)); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.get('/api/voice/local/status', (req, res) => res.json(localVoiceStatus));
+app.post('/api/voice/local/status', (req, res) => {
+    localVoiceStatus = { ...localVoiceStatus, ...req.body, lastSeenAt: new Date().toISOString() };
+    io.emit('local_voice_status', localVoiceStatus);
+    res.json({ ok: true });
+});
+app.post('/api/voice/local/state', (req, res) => {
+    const state = req.body.state === 'awake' ? 'awake' : 'dormant';
+    if (state === 'dormant') ttsService.stop();
+    const statePath = path.join(__dirname, 'data', 'local_voice_state.json');
+    fs.writeFileSync(statePath, JSON.stringify({ state, updatedAt: Date.now() }, null, 2));
+    localVoiceStatus = { ...localVoiceStatus, state, lastSeenAt: new Date().toISOString() };
+    io.emit('local_voice_status', localVoiceStatus);
+    res.json({ ok: true, state });
+});
+
+app.get('/api/tv/status', (req, res) => {
+    res.json(tvService.getPublicStatus());
+});
+
+app.post('/api/tv/settings', (req, res) => {
+    try {
+        res.json(tvService.saveSettings(req.body));
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/discover', async (req, res) => {
+    try {
+        res.json(await tvService.discover());
+    } catch (error) {
+        res.status(503).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/learn', async (req, res) => {
+    try {
+        res.json(await tvService.learnButton(String(req.body.button || '').toLowerCase()));
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/test', async (req, res) => {
+    try {
+        const button = String(req.body.button || '').toLowerCase();
+        await tvService.sendButtons([button], 300);
+        res.json({ ok: true, button });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/netflix', async (req, res) => {
+    try {
+        const result = await tvService.playNetflix(req.body, progress => io.emit('tv_progress', progress));
+        res.json({ ok: true, ...result });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/tv/cancel', (req, res) => {
+    res.json({ ok: tvService.cancel() });
+});
+
+app.post('/api/tts/speak', async (req, res) => {
+    try {
+        await ttsService.speak(req.body.text, req.body.voice);
+        res.json({ ok: true });
+    } catch (error) {
+        res.status(503).json({ error: error.message });
+    }
+});
+
+app.post('/api/tts/stop', (req, res) => {
+    res.json({ ok: true, stopped: ttsService.stop() });
 });
 
 app.post('/api/modes', (req, res) => {
@@ -92,6 +306,146 @@ app.post('/api/speak', (req, res) => {
     }
 });
 
+// Endpoint principal para el cliente de Audio Python (Fondo)
+app.post('/api/process_speech_local', async (req, res) => {
+    const selectedVoice = voiceInputService.chooseTranscript(req.body);
+    const duplicateKey = voiceInputService.normalizeVoiceTranscript(selectedVoice.text).toLowerCase();
+    if (duplicateKey && duplicateKey === lastLocalSpeech.text && Date.now() - lastLocalSpeech.at < 1500) {
+        return res.json({ response: '', result: { ok: true, status: 'ignored_duplicate', verified: true } });
+    }
+    lastLocalSpeech = { text: duplicateKey, at: Date.now() };
+    if (selectedVoice.text) {
+        io.emit('action_status', { phase: 'heard', message: `Escuché: “${selectedVoice.text}”. Verificando…`, text: selectedVoice.text });
+    }
+    const understoodVoice = await voiceUnderstandingService.understand({
+        text: selectedVoice.text,
+        alternatives: selectedVoice.alternatives,
+        tvContext: tvVoiceService.getSessionContext(),
+        allowLocal: voiceSettingsService.get().localContextEnabled,
+        confidence: selectedVoice.confidence,
+        provider: 'local-whisper'
+    });
+    const text = voiceInputService.normalizeVoiceTranscript(understoodVoice.text);
+    if (!text) return res.status(400).json({ error: "Text missing" });
+    if (selectedVoice.uncertain && !req.body.confirmed) {
+        return res.status(409).json({ status: 'voice_confirmation_required', ...selectedVoice, text, provider: understoodVoice.provider });
+    }
+    voiceInputService.recordTranscript({
+        source: 'local-audio',
+        understood: text,
+        confidence: selectedVoice.confidence,
+        alternatives: selectedVoice.alternatives,
+        original: selectedVoice.text,
+        provider: understoodVoice.provider,
+        refined: understoodVoice.refined
+    });
+    
+    console.log(`[Jarvis Audio Python]: ${text}`);
+    const ACK_PHRASES = [
+        'Enseguida, señor.',
+        'Entendido, ya me encargo.',
+        'De acuerdo, procesando la tarea.',
+        'Claro, enseguida lo hago.',
+        'Entendido, en proceso.'
+    ];
+    const ackText = ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)];
+    io.emit('action_status', { phase: 'accepted', message: ackText, text, speakAck: true });
+    
+    // Hablar inmediatamente para que el usuario sepa que Jarvis escuchó y está trabajando
+    if (!/apagate|dormite|descanso/i.test(text)) {
+        ttsService.speak(ackText).catch(err => console.warn('[TTS Ack Local Warning]', err.message));
+    }
+
+    const result = await jarvisActionService.process(text, actionContext(progress => io.emit('tv_progress', progress)));
+    if (result.actionId === 'voice.sleep') ttsService.stop();
+    const responseText = result.message;
+    
+    // Sincronizar la respuesta con cualquier UI web abierta
+    io.emit('response', { text: responseText, action: result.actionId, actionPayload: result.data || null, suppressTts: true, verified: result.verified, status: result.status });
+    
+    // Responder a Python para que lo hable por TTS
+    res.json({ response: responseText, result });
+});
+
+function actionContext(onTvProgress) {
+    return { executeTvIntent, onTvProgress, inpaintingMask: null };
+}
+
+async function resolveTvIntent(text) {
+    const directIntent = tvVoiceService.parseTvIntent(text);
+    if (directIntent) return directIntent;
+    if (!tvVoiceService.isSessionActive() || tvVoiceService.switchesAwayFromTv(text)) return null;
+    // En contexto TV, una frase no reconocida nunca debe convertirse por IA en
+    // movimientos físicos. Pedimos reformular y preservamos el estado actual.
+    return { action: 'clarify' };
+}
+
+async function executeTvIntent(intent, onProgress) {
+    if (intent.action === 'cancel') {
+        tvVoiceService.deactivateSession();
+        return tvService.cancel() ? 'Cancelé la automatización de la televisión.' : 'Cerré el modo de control de TV.';
+    }
+    if (intent.action === 'navigate') {
+        tvVoiceService.activateSession();
+        await tvService.navigate(intent.button, intent.count);
+        tvVoiceService.rememberIntent(intent);
+        return intent.count > 1
+            ? `Moví ${intent.label} ${intent.count} veces.`
+            : `Listo, ${intent.label}.`;
+    }
+    if (intent.action === 'select') {
+        tvVoiceService.activateSession();
+        const offset = Math.max(0, intent.index - 1);
+        await tvService.sendButtons([...Array(offset).fill('right'), 'ok'], 350);
+        tvVoiceService.rememberIntent(intent);
+        return `Seleccioné la opción ${intent.index}.`;
+    }
+    if (intent.action === 'clarify') {
+        return 'Sigo en Netflix, pero no entendí qué querés hacer. Podés decirme el título, una dirección o cuál opción elegís.';
+    }
+    if (intent.action === 'choose_device') {
+        if (!await tvService.isAvailable()) {
+            tvVoiceService.clearDestinationPrompt();
+            await systemService.openApp('netflix', modeService.getActiveMode().id);
+            return 'El control de la TV no está disponible, así que abrí Netflix en la computadora.';
+        }
+        return '¿Querés abrir Netflix en la tele o en la computadora?';
+    }
+    if (intent.action === 'open_pc') {
+        tvVoiceService.clearDestinationPrompt();
+        tvVoiceService.deactivateSession();
+        await systemService.openApp('netflix', modeService.getActiveMode().id);
+        return 'Abriendo Netflix en la computadora.';
+    }
+    if (intent.action === 'continue_watching') {
+        const result = await tvService.playNetflix({
+            powerOn: intent.powerOn,
+            continueWatching: true
+        }, onProgress);
+        tvVoiceService.rememberIntent(intent);
+        return result.message;
+    }
+    if (intent.action === 'enter_netflix' || intent.action === 'select_profile') {
+        tvVoiceService.activateSession();
+        const result = await tvService.enterNetflixProfile(onProgress);
+        tvVoiceService.rememberIntent(intent);
+        return result.message;
+    }
+    if (intent.action === 'open_search') {
+        tvVoiceService.activateSession();
+        const result = await tvService.openNetflixSearch(onProgress);
+        tvVoiceService.rememberIntent(intent);
+        return result.message;
+    }
+    if (intent.action === 'search') {
+        const result = await tvService.searchNetflix(intent.title, { playFirst: intent.playFirst }, onProgress);
+        tvVoiceService.rememberIntent(intent);
+        return result.message;
+    }
+    const result = await tvService.playNetflix(intent, onProgress);
+    tvVoiceService.rememberIntent(intent);
+    return result.message;
+}
 
 // Real-time voice processing y Eventos del Socket
 io.on('connection', (socket) => {
@@ -105,15 +459,247 @@ io.on('connection', (socket) => {
 
     // Evento de procesamiento de voz (cuando Jarvis escucha al usuario)
     socket.on('process_speech', async (data) => {
-        const text = data.text;
-        const lowerText = text.toLowerCase();
+        const selectedVoice = voiceInputService.chooseTranscript(data);
+        socket.emit('voice_status', {
+            engine: 'Navegador · reconocimiento general',
+            confidence: selectedVoice.confidence,
+            agreement: selectedVoice.agreement,
+            audioLevel: selectedVoice.audioLevel,
+            uncertain: selectedVoice.uncertain
+        });
+        if (data.source === 'voice' && selectedVoice.uncertain && !data.confirmed) {
+            socket.emit('voice_confirmation_required', {
+                text: selectedVoice.text,
+                alternatives: selectedVoice.alternatives,
+                reason: selectedVoice.uncertaintyReason,
+                confidence: selectedVoice.confidence,
+                agreement: selectedVoice.agreement
+            });
+            return;
+        }
+        const understoodVoice = data.source === 'voice'
+            ? await voiceUnderstandingService.understand({
+                text: selectedVoice.text,
+                alternatives: selectedVoice.alternatives,
+                tvContext: tvVoiceService.getSessionContext(),
+                allowLocal: voiceSettingsService.get().localContextEnabled,
+                confidence: selectedVoice.confidence,
+                provider: 'browser'
+            })
+            : { text: selectedVoice.text, provider: 'direct', refined: false };
+        socket.emit('voice_status', {
+            engine: understoodVoice.provider === 'ollama-local' ? 'Ollama · comprensión local' : 'Navegador · reconocimiento general',
+            confidence: selectedVoice.confidence,
+            agreement: selectedVoice.agreement,
+            audioLevel: selectedVoice.audioLevel,
+            uncertain: false,
+            refined: understoodVoice.refined === true
+        });
+        let text = voiceInputService.normalizeVoiceTranscript(understoodVoice.text);
+        if (!text) return;
+        voiceInputService.recordTranscript({
+            source: data.source || 'web',
+            understood: text,
+            confidence: selectedVoice.confidence,
+            alternatives: selectedVoice.alternatives,
+            original: selectedVoice.text,
+            provider: understoodVoice.provider,
+            refined: understoodVoice.refined
+        });
         console.log(`[Usuario dice]: ${text}`);
+        const ACK_PHRASES = [
+            'Enseguida, señor.',
+            'Entendido, ya me encargo.',
+            'De acuerdo, procesando la tarea.',
+            'Claro, enseguida lo hago.',
+            'Entendido, en proceso.'
+        ];
+        const ackText = ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)];
+        socket.emit('action_status', { phase: 'accepted', message: ackText, text, speakAck: true });
+
+        // Toda solicitud entra por el mismo registro. El bloque antiguo que queda
+        // debajo se conserva temporalmente para compatibilidad, pero ya no recibe
+        // comandos nuevos.
+        try {
+            const result = await jarvisActionService.process(text, {
+                ...actionContext(progress => socket.emit('tv_progress', progress)),
+                inpaintingMask: data.inpaintingMask
+            });
+            if (result.actionId === 'voice.sleep') ttsService.stop();
+            socket.emit('action_result', result);
+            socket.emit('response', {
+                text: result.message,
+                action: result.actionId,
+                actionPayload: result.data || null,
+                verified: result.verified,
+                status: result.status,
+                confirmationToken: result.confirmationToken
+            });
+            return;
+        } catch (error) {
+            console.error('[Núcleo de acciones]', error);
+            socket.emit('response', { text: `No pude completar la acción: ${error.message}`, action: null });
+            return;
+        }
+
+        const lowerText = text.toLowerCase();
 
         let responseText = "";
         let action = null;
         let actionPayload = null;
 
         try {
+            const tvIntent = await resolveTvIntent(text);
+            if (tvIntent) {
+                if (tvIntent.action === 'netflix') {
+                    const targetText = tvIntent.useDefaultSeries
+                        ? 'tu serie configurada'
+                        : (tvIntent.title || 'Netflix');
+                    socket.emit('response', {
+                        text: tvIntent.powerOn
+                            ? `Encendiendo la televisión. En aproximadamente un minuto pondré ${targetText}.`
+                            : `Controlando la televisión para poner ${targetText}.`,
+                        action: null,
+                        actionPayload: null
+                    });
+                }
+
+                responseText = await executeTvIntent(tvIntent, progress => socket.emit('tv_progress', progress));
+                socket.emit('response', { text: responseText, action: null, actionPayload: null });
+                return;
+            }
+
+            // --- CATCH DESCARGAS STREMIO (links locales 127.0.0.1:11470) ---
+            const stremioMatch = text.match(/(http:\/\/127\.0\.0\.1:11470\/[^\s]+)/i);
+            if (stremioMatch) {
+                const stremioUrl = stremioMatch[1];
+                console.log(`[Jarvis Streaming] Descargando desde Stremio: ${stremioUrl}`);
+                
+                socket.emit('response', { 
+                    text: `Iniciando descarga desde Stremio. Esto puede tardar dependiendo del tamaño. Te aviso cuando termine.`, 
+                    action: null 
+                });
+
+                const http = require('http');
+                const fs = require('fs');
+                const path = require('path');
+                const downloadDir = path.join(require('os').homedir(), 'Downloads', 'Jarvis_Pelis');
+                if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
+
+                const filename = `stremio_${Date.now()}.mp4`;
+                const filepath = path.join(downloadDir, filename);
+                const file = fs.createWriteStream(filepath);
+
+                http.get(stremioUrl, (res) => {
+                    const totalBytes = parseInt(res.headers['content-length'] || '0');
+                    let downloadedBytes = 0;
+                    let lastReportMB = 0;
+
+                    console.log(`[Jarvis Streaming] Conexion OK. Content-Length: ${totalBytes || 'desconocido'}. Descargando...`);
+
+                    res.on('data', (chunk) => {
+                        downloadedBytes += chunk.length;
+                        const mbDown = Math.floor(downloadedBytes / 1048576);
+                        
+                        // Reportar cada 50MB descargados
+                        if (mbDown >= lastReportMB + 50) {
+                            lastReportMB = mbDown;
+                            if (totalBytes > 0) {
+                                const mbTotal = (totalBytes / 1048576).toFixed(0);
+                                const percent = Math.floor((downloadedBytes / totalBytes) * 100);
+                                console.log(`[Jarvis Streaming] Progreso: ${percent}% (${mbDown}MB / ${mbTotal}MB)`);
+                                socket.emit('response', { 
+                                    text: `Descargando... ${percent}% (${mbDown}MB / ${mbTotal}MB)`, 
+                                    action: null 
+                                });
+                            } else {
+                                console.log(`[Jarvis Streaming] Progreso: ${mbDown}MB descargados...`);
+                                socket.emit('response', { 
+                                    text: `Descargando... ${mbDown}MB descargados`, 
+                                    action: null 
+                                });
+                            }
+                        }
+                    });
+
+                    res.pipe(file);
+                    file.on('finish', () => {
+                        file.close();
+                        const sizeMB = (downloadedBytes / 1048576).toFixed(1);
+                        console.log(`[Jarvis Streaming] Descarga completa: ${filepath} (${sizeMB}MB)`);
+                        socket.emit('response', { 
+                            text: `Descarga completa! ${sizeMB}MB guardados en Jarvis_Pelis.`, 
+                            action: 'DOWNLOAD_COMPLETE' 
+                        });
+                        require('child_process').exec(`explorer "${downloadDir}"`);
+                    });
+                }).on('error', (err) => {
+                    fs.unlink(filepath, () => {});
+                    console.error('[Jarvis Streaming] Error descargando:', err.message);
+                    socket.emit('response', { 
+                        text: `Error al descargar: ${err.message}. Asegurate de que Stremio este abierto.`, 
+                        action: null 
+                    });
+                });
+
+                return;
+            }
+
+            // --- CATCH DESCARGAS MULTIMEDIA (yt-dlp) ---
+            const downloadKeywords = ['descarga', 'descargar', 'baja', 'bajar', 'guarda', 'guardar'];
+            const urlMatch = text.match(/(https?:\/\/[^\s]+)/);
+            
+            const isJustUrl = urlMatch && text.trim() === urlMatch[1];
+            
+            if (urlMatch && (downloadKeywords.some(w => lowerText.includes(w)) || isJustUrl)) {
+                const url = urlMatch[1];
+                const isAudio = /(musica|música|audio|cancion|canción|mp3)/i.test(lowerText);
+                
+                // Avisamos rápido que empezó
+                socket.emit('response', { 
+                    text: `Iniciando la descarga del ${isAudio ? 'audio' : 'video'}. Te avisaré en cuanto termine.`, 
+                    action: null 
+                });
+
+                // Lo mandamos al background
+                const downloadService = require('./services/downloadService');
+                downloadService.downloadMedia(url, isAudio)
+                    .then((dir) => {
+                        socket.emit('response', { 
+                            text: `He terminado de descargar el archivo. Lo guardé en tu carpeta de Descargas de Jarvis.`, 
+                            action: 'DOWNLOAD_COMPLETE'
+                        });
+                        // Abrir la carpeta
+                        require('child_process').exec(`explorer "${dir}"`);
+                    })
+                    .catch((err) => {
+                        socket.emit('response', { 
+                            text: `Hubo un error al intentar descargar el enlace. Asegurate de que sea un link válido.`, 
+                            action: null 
+                        });
+                    });
+                
+                return; // Cortar acá para no seguir procesando como IA
+            }
+            // -------------------------------------------
+
+            // --- CATCH STREAMING: "busca en pelis [titulo]" ---
+            const streamingMatch = lowerText.match(/busca(?:me)? en pelis?\s+(.+)/i);
+            if (streamingMatch) {
+                const title = streamingMatch[1].trim();
+                console.log(`[Jarvis Streaming] Buscando: "${title}"`);
+                
+                const searchUrl = `stremio:///search?search=${encodeURIComponent(title)}`;
+                require('child_process').exec(`start "" "${searchUrl}"`);
+                
+                socket.emit('response', { 
+                    text: `Buscando "${title}" en Stremio. Selecciona el que quieras ver.`, 
+                    action: null 
+                });
+                return;
+            }
+            // -------------------------------------------
+
             // 0. Toggle de Observador/Estudio Activo
             const turnOnWords = ['activar observador', 'activa observador', 'activa el observador', 'modo observador', 'modo observación', 'modo observacion', 'estudio activo', 'inicia observador', 'enciende el observador'];
             const turnOffWords = ['desactivar observador', 'desactiva observador', 'apaga observador', 'apaga el observador', 'apaga observacion', 'apaga observación', 'desactiva estudio activo'];
@@ -152,6 +738,7 @@ io.on('connection', (socket) => {
                 const secPath = require('path').join(__dirname, 'data', 'security.json');
                 let sec = {"pin": selectedPin, "enabled": true};
                 fs.writeFileSync(secPath, JSON.stringify(sec, null, 4));
+                powerService.setSecurityEnabled(true);
 
                 responseText = `Iniciando proceso de entrenamiento biométrico en una ventana externa. Tu PIN temporal de respaldo es ${selectedPin}. Por favor, sigue las instrucciones en pantalla. El escudo quedará activado al finalizar.`;
             }
@@ -163,6 +750,7 @@ io.on('connection', (socket) => {
                     sec.enabled = false;
                     fs.writeFileSync(secPath, JSON.stringify(sec, null, 4));
                 }
+                powerService.setSecurityEnabled(false);
                 responseText = "Escudo biométrico de Windows desactivado. Tu computadora no será bloqueada al entrar en suspensión.";
                 action = "SECURITY_DISABLED";
             }
@@ -175,6 +763,7 @@ io.on('connection', (socket) => {
                     sec.enabled = true;
                 }
                 fs.writeFileSync(secPath, JSON.stringify(sec, null, 4));
+                powerService.setSecurityEnabled(true);
                 responseText = "Escudo Biométrico encendido y armado. Defenderé tu sistema en cuanto lo ordenes.";
                 action = "SECURITY_ENABLED";
             }
@@ -212,71 +801,34 @@ io.on('connection', (socket) => {
                     }
                 }
 
-                // === MODO PROGRAMADOR ===
-                else {
-                const esModoActivado = activeMode && activeMode.id === 'programador';
-                const esCodigo = lowerText.includes("quiero que programes") ||
-                                 lowerText.includes("programá esto") ||
-                                 lowerText.includes("codeame") ||
-                                 lowerText.includes("pagina web") ||
-                                 lowerText.includes("página web") ||
-                                 lowerText.includes("sitio web") ||
-                                 lowerText.includes("web de") ||
-                                 lowerText.includes("proyecto web") ||
-                                 lowerText.includes("crea una web") ||
-                                 lowerText.includes("hazme una web") ||
-                                 (lowerText.includes("crea") && lowerText.includes("web")) ||
-                                 (lowerText.includes("haz") && lowerText.includes("pagina")) ||
-                                 (lowerText.includes("crear") && lowerText.includes("html")) ||
-                                 text.length > 300;
-                const esCarga = /carg[aá] el proyecto|cargar proyecto|continu[aá] con|segu[ií] con|trabajá sobre/.test(lowerText);
-                const esEdicion = /modificá|modifica|cambiá|cambia |agregá|agrega |quitá|quita |sacá|saca |eliminá|elimina|elimines|elimin[aá]|actualizá|actualiza|seguí trabajando|sigue trabajando|editá|edita |mejorá|mejora|arreglá|arregla|reemplaz[aá]|borrá|borra |añad[ií]|añade/.test(lowerText);
-                const esModoPrograma = esModoActivado || esCodigo || esCarga || esEdicion;
+                // === MODO PROGRAMADOR AHORA MANEJADO POR AI SERVICE ===
+                // El chequeo y ruteo a Python fue desactivado ya que la herramienta nativa build_software en aiService maneja el código.
 
-
-                if (esModoPrograma) {
-                    console.log(`[Jarvis Server] 🚨 MODO DESARROLLADOR: delegando a Python.`);
-                    try {
-                        const pyRes = await fetch('http://127.0.0.1:8000/api/v1/query', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ query: text })
-                        });
-                        const pyData = await pyRes.json();
-                        responseText = pyData?.data?.message || "Señor, el motor de desarrollo procesó su solicitud.";
-                    } catch (e) {
-                        console.error("[Jarvis Server] Python engine inalcanzable:", e.message);
-                        responseText = "Señor, no pude conectarme con el motor de desarrollo Python. ¿Está corriendo Uvicorn?";
-                    }
-                }
                 // 2. Comandos de sistema (Abrir apps y Entrenamientos)
-                else {
-                    const sysCommand = systemService.handleSystemCommand(text);
-                    
-                    if (sysCommand.isTraining) {
-                        systemService.saveCustomCommand(sysCommand.trigger, sysCommand.appName);
-                        responseText = `Entendido. A partir de ahora, cuando me digas "${sysCommand.trigger}", abriré ${sysCommand.appName}.`;
-                        action = "TRAINING_SAVED";
-                    }
-                    else if (sysCommand.isSystemCommand) {
-                        responseText = sysCommand.isLearned
-                            ? `Comando aprendido detectado. Ejecutando ${sysCommand.appName}, señor.`
-                            : `Abriendo ${sysCommand.appName}.`;
+                const sysCommand = systemService.handleSystemCommand(text);
+                
+                if (sysCommand.isTraining) {
+                    systemService.saveCustomCommand(sysCommand.trigger, sysCommand.appName);
+                    responseText = `Entendido. A partir de ahora, cuando me digas "${sysCommand.trigger}", abriré ${sysCommand.appName}.`;
+                    action = "TRAINING_SAVED";
+                }
+                else if (sysCommand.isSystemCommand) {
+                    responseText = sysCommand.isLearned
+                        ? `Comando aprendido detectado. Ejecutando ${sysCommand.appName}, señor.`
+                        : `Abriendo ${sysCommand.appName}.`;
 
-                        const activeMode = modeService.getActiveMode();
-                        const success = await systemService.openApp(sysCommand.appName, activeMode.id);
-                        if (!success) {
-                            responseText = `Hubo un inconveniente al intentar abrir la aplicación ${sysCommand.appName}.`;
-                        }
-                    }
-                    // 3. Respuesta de IA (Cerebro Híbrido) - Delega todo lo demás a Ollama
-                    else {
-                        const activeMode = modeService.getActiveMode();
-                        const screenContext = observerService.getScreenContext();
-                        responseText = await aiService.getAIResponse(text, activeMode, screenContext);
+                    const activeMode = modeService.getActiveMode();
+                    const success = await systemService.openApp(sysCommand.appName, activeMode.id);
+                    if (!success) {
+                        responseText = `Hubo un inconveniente al intentar abrir la aplicación ${sysCommand.appName}.`;
                     }
                 }
-                } // fin else (interceptor programador)
+                // 3. Respuesta de IA (Cerebro Híbrido) - Delega todo lo demás a Ollama
+                else {
+                    const activeMode = modeService.getActiveMode();
+                    const screenContext = observerService.getScreenContext();
+                    responseText = await aiService.getAIResponse(text, activeMode, screenContext, data.inpaintingMask);
+                }
             }
 
         } catch (error) {
@@ -307,12 +859,8 @@ server.listen(PORT, () => {
     console.log(`  => Server running on http://localhost:${PORT}`);
     console.log(`===========================================\n`);
     
-    // Iniciar el estudio automático en segundo plano
-    backgroundTuner.startBackgroundStudying();
     // Iniciar el indexador de accesos directos
     appDiscoveryService.triggerBackgroundScan();
-    // Conectar el gancho USB/Teclado físico
-    hotkeyService.initHotkeyService(io);
     // Iniciar modulo Cronos para tareas y recordatorios
     reminderService.startScheduler(io);
     // Iniciar escucha de eventos de energia OS (Para Lockscreen)

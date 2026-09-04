@@ -11,16 +11,19 @@ if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
 }
 
-function triggerBackgroundScan() {
-    console.log("\n[App Discovery] 🔍 Iniciando rastreo silencioso de aplicaciones instaladas...");
-    // Aumentamos el buffer por si hay muchísimos archivos
+function triggerBackgroundScan(force = false) {
+    const cacheMaxAgeMs = 12 * 60 * 60 * 1000; // 12 horas
+    if (!force && fs.existsSync(appsPath) && Date.now() - fs.statSync(appsPath).mtimeMs < cacheMaxAgeMs) {
+        console.log('[App Discovery] Usando índice de aplicaciones en caché.');
+        return;
+    }
+    console.log("\n[App Discovery] 🔍 Iniciando rastreo silencioso de aplicaciones y elementos del Escritorio...");
     execFile('powershell', ['-ExecutionPolicy', 'Bypass', '-File', psScript], { maxBuffer: 1024 * 5000 }, (error, stdout) => {
         if (error) {
             console.error("[App Discovery] Error escaneando apps:", error);
             return;
         }
         try {
-            // Manegar caracteres de salida y limpiar posibles logs extra de PWSH
             const startIndex = stdout.indexOf('{');
             const rawJson = startIndex !== -1 ? stdout.substring(startIndex) : "{}";
             

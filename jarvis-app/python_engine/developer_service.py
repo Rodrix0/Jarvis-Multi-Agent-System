@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-import os, json, subprocess, httpx, re
+import os, json, subprocess, httpx, re, threading, http.server, socketserver, webbrowser, time
 
 # ── MODELOS ──────────────────────────────────────────────────────────────────
 CODER_MODEL = "qwen2.5-coder:7b"   # especialista en codigo
 GENERAL_MODEL = "llama3.1:latest"  # chat general
+from agency import run_agency
 
 WORKSPACE = os.path.join(os.path.expanduser("~"), "Desktop", "Jarvis_Projects")
 if not os.path.exists(WORKSPACE):
@@ -71,6 +72,29 @@ DESIGNS_CATALOG = {
     "ai":              "ai-labs",
     "devops":          "devops-graphite",
 }
+
+
+def start_local_server(project_path, port=8080):
+  """Start a local HTTP server in a background thread. Handles port-in-use gracefully."""
+  class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+      return
+
+  def serve():
+    try:
+      os.chdir(project_path)
+      socketserver.TCPServer.allow_reuse_address = True
+      with socketserver.TCPServer(("", port), QuietHandler) as httpd:
+        print(f"[Jarvis Server] Hosting at http://localhost:{port}")
+        httpd.serve_forever()
+    except OSError:
+      print(f"[Jarvis Server] Puerto {port} ya en uso — refrescando navegador.")
+
+  thread = threading.Thread(target=serve, daemon=True)
+  thread.start()
+  time.sleep(0.5)
+  webbrowser.open(f"http://localhost:{port}")
+
 
 def install_design(design_id: str, project_path: str) -> str:
     """Instala un DESIGN.md en la carpeta del proyecto via npx designdotmd add."""
@@ -986,41 +1010,93 @@ class JarvisDeveloper:
         if self.active_project:
             print(f"[Jarvis Developer] Session recuperada: '{self.active_project}'")
 
+    async def edit_with_context(self, path: str, instruction: str) -> str:
+        """
+        Carga archivos de una ruta (carpeta o archivo), los pasa al Editor agent,
+        guarda los cambios y abre en VS Code.
+        """
+        from agency import load_project_files, run_editor
+
+        # Normalizar path
+        path = path.strip().strip('"\'')
+        if not os.path.exists(path):
+            return f"Senor, no encontre la ruta: {path}"
+
+        # Cargar archivos
+        print(f"[Editor] Cargando archivos de: {path}")
+        files_context = load_project_files(path)
+
+        if not files_context:
+            return f"No encontre archivos editables en: {path}"
+
+        file_list = ", ".join(files_context.keys())
+        print(f"[Editor] {len(files_context)} archivos cargados: {file_list[:200]}")
+
+        # Ejecutar Editor agent
+        edited = await run_editor(instruction, files_context, path)
+
+        if not edited:
+            return "El editor no pudo determinar que archivos modificar. Reformula el pedido."
+
+        # Guardar archivos editados
+        base_path = path if os.path.isdir(path) else os.path.dirname(path)
+        saved = []
+        for filename, content in edited.items():
+            out_path = os.path.join(base_path, filename)
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            saved.append(filename)
+            print(f"[Editor] Guardado: {filename} ({len(content)} chars)")
+
+        # Abrir en VS Code
+        try:
+            subprocess.Popen(f'code "{base_path}"', shell=True)
+        except Exception:
+            pass
+
+        # Si hay index.html, abrir en navegador
+        index = os.path.join(base_path, "index.html")
+        if os.path.exists(index):
+            start_local_server(base_path, port=8080)
+
+        archivos_str = ", ".join(saved)
+        return (f"Senor, edite {len(saved)} archivo(s): {archivos_str}. "
+                f"Cambios guardados en {base_path}.")
+
     async def execute_full_project(self, big_prompt: str):
-        print("[Jarvis Architect] Generando proyecto con IA generativa...")
+        from agency import run_agency
+        print("[Jarvis Architect] Iniciando pipeline multi-agente...")
 
         # ── 1. Auto-elegir DESIGN.md ──────────────────────────────────────
         design_id = resolve_design_id(big_prompt)
         if not design_id:
-            # qwen elige el mejor diseño del catálogo según el proyecto
             catalog_sample = ", ".join(list(DESIGNS_CATALOG.keys())[:30])
             pick_prompt = (
-                f"Proyecto: {big_prompt[:300]}\n"
-                f"Elige el ID de diseño MAS APROPIADO de esta lista: {catalog_sample}\n"
-                f"Responde SOLO el id, sin explicar. Ejemplo: matcha"
+                f"Project: {big_prompt[:300]}\n"
+                f"Choose the MOST APPROPRIATE design id from: {catalog_sample}\n"
+                f"Reply with ONLY the id. Example: matcha"
             )
             try:
                 async with httpx.AsyncClient(timeout=30) as client:
                     r = await client.post("http://127.0.0.1:11434/api/generate",
                         json={"model": CODER_MODEL, "prompt": pick_prompt,
                               "stream": False, "options": {"temperature": 0.2, "num_predict": 20}})
-                    design_id = r.json().get("response", "").strip().lower().split()[0]
-                    if design_id not in DESIGNS_CATALOG.values():
-                        design_id = resolve_design_id(design_id) or "matcha"
+                    candidate = r.json().get("response", "").strip().lower().split()[0]
+                    design_id = candidate if candidate in DESIGNS_CATALOG.values() else (
+                        resolve_design_id(candidate) or "matcha"
+                    )
             except Exception:
                 design_id = "matcha"
         print(f"[Jarvis Designer] Diseno elegido: {design_id}")
 
         # ── 2. Nombre del proyecto ────────────────────────────────────────
-        name_prompt = (
-            f"Proyecto: {big_prompt[:200]}\n"
-            f"Responde SOLO el nombre del proyecto en formato snake_case, sin espacios. Ejemplo: cafeteria_moderna"
-        )
         p_name = "proyecto_web"
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 r = await client.post("http://127.0.0.1:11434/api/generate",
-                    json={"model": CODER_MODEL, "prompt": name_prompt,
+                    json={"model": CODER_MODEL,
+                          "prompt": f"Project: {big_prompt[:200]}\nReply ONLY with a snake_case project name. Example: cafeteria_moderna",
                           "stream": False, "options": {"temperature": 0.1, "num_predict": 15}})
                 raw_name = r.json().get("response", "").strip().lower()
                 p_name = re.sub(r'[^a-z0-9_]', '_', raw_name.split()[0])[:30] or "proyecto_web"
@@ -1035,66 +1111,46 @@ class JarvisDeveloper:
 
         install_design(design_id, p_path)
         design_content = read_design_md(p_path)
-        design_hint = f"\n\n## DESIGN SPECIFICATION (DESIGN.md):\n{design_content}" if design_content else ""
 
-        # ── 4. qwen genera el HTML completo ──────────────────────────────
-        html_prompt = f"""You are an expert Senior Frontend Developer. Generate a COMPLETE, SINGLE-FILE HTML page.
+        # ── 4. Pipeline multi-agente (Architect -> Stylist -> Photographer -> Coder -> TS Coder -> Scripter) ──
+        result = await run_agency(big_prompt, p_path, design_content)
 
-PROJECT BRIEF: {big_prompt}
-{design_hint}
+        # ── 5. Guardar archivos generados ─────────────────────────────────
+        files = result.get("files", {})
+        if not files or not files.get("index.html") or len(files.get("index.html", "")) < 300:
+            print("[Jarvis] Pipeline sin HTML valido -- fallback minimo.")
+            files = {"index.html": f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<title>{p_name.replace('_',' ').title()}</title>
+<style>body{{background:#0d1117;color:#e6edf3;font-family:monospace;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}}
+h1{{color:#3fb950;}}</style></head>
+<body><h1>{p_name.replace('_',' ').title()}</h1><p>Jarvis -- pipeline fallback</p></body></html>"""}
 
-MANDATORY RULES:
-1. Return ONLY valid HTML starting with <!DOCTYPE html>. No markdown fences, no explanation.
-2. All CSS must be inline in a <style> tag. Use the colors/fonts from DESIGN.md if provided.
-3. All JS must be inline in a <script> tag at bottom.
-4. Use ONLY ASCII-safe HTML entities for special characters: &aacute; &eacute; &iacute; &oacute; &uacute; &ntilde; &iexcl; &iquest; &#8212;
-5. The page must be BEAUTIFUL, modern, responsive with micro-animations.
-6. Include real, useful sections for the project type (hero, services/menu, contact, etc).
-7. NO placeholder content - generate realistic data for this specific project.
-8. Use Google Fonts via <link> tag matching the design typography.
-9. Make it production-ready quality, not a demo.
+        for fname, content in files.items():
+            fpath = os.path.join(p_path, fname)
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(f"[Jarvis] Guardado: {fname} ({len(content)} chars)")
 
-OUTPUT: Valid HTML only."""
+        # Guardar prompts de imagenes para futura generacion con Stable Diffusion
+        image_prompts = result.get("image_prompts", [])
+        if image_prompts:
+            prompts_path = os.path.join(p_path, "image_prompts.json")
+            with open(prompts_path, "w", encoding="utf-8") as f:
+                json.dump(image_prompts, f, indent=2, ensure_ascii=False)
+            print(f"[Jarvis] Guardado: image_prompts.json ({len(image_prompts)} conceptos)")
 
-        html = ""
-        try:
-            print("[Jarvis Coder] qwen2.5-coder generando HTML completo...")
-            async with httpx.AsyncClient(timeout=240) as client:
-                res = await client.post("http://127.0.0.1:11434/api/generate",
-                    json={"model": CODER_MODEL,
-                          "prompt": html_prompt,
-                          "stream": False,
-                          "options": {"temperature": 0.3, "num_predict": 6000}})
-                raw = res.json().get("response", "").strip()
-                # Limpiar fence de markdown si qwen lo incluyo
-                raw = re.sub(r'^```(?:html)?\s*', '', raw, flags=re.IGNORECASE)
-                raw = re.sub(r'\s*```\s*$', '', raw).strip()
-                if "<html" in raw.lower():
-                    html = raw
-        except Exception as e:
-            print(f"[Jarvis Coder] Error LLM: {e}")
-
-        if not html or len(html) < 200:
-            print("[Jarvis Coder] LLM no genero HTML valido, usando fallback minimo.")
-            html = f"""<!DOCTYPE html>
-<html lang="es"><head><meta charset="UTF-8"><title>{p_name.replace('_',' ').title()}</title>
-<style>body{{background:#0d1117;color:#e6edf3;font-family:monospace;display:flex;
-align-items:center;justify-content:center;height:100vh;margin:0;}}
-h1{{font-size:2rem;color:#3fb950;}}</style></head>
-<body><h1>{p_name.replace('_',' ').title()}</h1><p>Proyecto generado por Jarvis.</p></body></html>"""
-
-        # ── 5. Guardar y abrir ────────────────────────────────────────────
-        index_path = os.path.join(p_path, "index.html")
-        with open(index_path, "w", encoding="utf-8") as f:
-            f.write(html)
-
-        os.system(f'start "" "{index_path}"')
+        # ── 6. Servir en navegador y abrir VS Code ───────────────────────
+        start_local_server(p_path, port=8080)
         try:
             subprocess.Popen(f'code "{p_path}"', shell=True)
         except Exception:
             pass
 
-        return f"Senor, '{p_name.replace('_',' ').title()}' generado con diseno '{design_id}'. Navegador y VS Code abiertos."
+        n_files = len(files)
+        return (f"Senor, '{p_name.replace('_',' ').title()}' generado via pipeline "
+                f"5-agentes con diseno '{design_id}'. {n_files} archivos creados. Navegador y VS Code abiertos.")
 
     def _deploy_to_windows(self, data, palette_override=None):
         p_name = data.get("project_name", "proyecto_web").replace(" ", "_")

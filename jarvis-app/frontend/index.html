@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
@@ -22,17 +22,25 @@
 </head>
 <body>
     <div id="particles-js"></div> 
-
     <div class="hud-container">
         <!-- HEADER -->
         <header class="hud-header">
             <div class="logo">
                 <i class="fa-solid fa-microchip"></i> JARVIS <span>OS</span>
             </div>
-            <div style="display: flex; align-items: center; gap: 15px;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <button id="btn-emergency-stop" class="voice-test-btn" type="button" style="background: rgba(255, 51, 102, 0.2); border-color: #ff3366; color: #ff3366; font-weight: bold;" title="Parada de Emergencia Global (Ctrl+Alt+J)">
+                    <i class="fa-solid fa-triangle-exclamation"></i> DETENER TODO
+                </button>
                 <select id="voice-select" class="voice-select-box">
                     <option value="">Cargando voces...</option>
                 </select>
+                <button id="btn-test-voice" class="voice-test-btn" type="button" title="Probar salida de voz">
+                    <i class="fa-solid fa-volume-high"></i> Probar voz
+                </button>
+                <button id="btn-open-brain-modal" class="voice-test-btn" type="button" title="Voz, memoria y acciones">
+                    <i class="fa-solid fa-brain"></i> Voz y memoria
+                </button>
                 <div class="system-status">
                     <span class="status-dot"></span> Online
                 </div>
@@ -41,12 +49,11 @@
 
         <!-- MAIN LAYOUT -->
         <main class="main-layout">
-            
             <!-- LEFT PANEL: MODES -->
             <aside class="side-panel modes-panel">
                 <h3><i class="fa-solid fa-layer-group"></i> Modos de Operación</h3>
                 <ul id="modes-list" class="mode-list">
-                    <!-- DinÃ¡mico -->
+                    <!-- Dinámico -->
                 </ul>
                 <button id="btn-open-mode-modal" class="action-btn mt-10">
                     <i class="fa-solid fa-plus"></i> Crear Nuevo Modo
@@ -55,16 +62,11 @@
 
             <!-- CENTER PANEL: AI INTERFACE -->
             <section class="center-panel">
-                
-                <div class="visualizer-container">
-                    <div id="listening-ring" class="ring idle">
-                        <div class="core">
-                            <i id="mic-icon" class="fa-solid fa-microphone-lines"></i>
-                        </div>
-                    </div>
+                <div class="visualizer-container" id="visualizer-container" style="position: relative; height: 350px;">
+                    <!-- El canvas 3D se inyectará aquí -->
                 </div>
 
-                <div class="transcript-box" >
+                <div class="transcript-box">
                     <div id="user-transcript" class="user-text">Esperando interacción...</div>
                     <div id="jarvis-response" class="jarvis-text">Sistema Jarvis. Inicia el sistema para interactuar.</div>
                     
@@ -73,17 +75,17 @@
                     </div>
                 </div>
 
-                <!-- PANEL DE ARCHIVOS Y LINKS (NUEVO) -->
+                <!-- PANEL DE ARCHIVOS Y LINKS -->
                 <div class="controls-wrapper">
                     <div class="context-input-container">
                         <div class="context-group">
                             <i class="fa-solid fa-link"></i>
                             <input type="url" id="context-url" placeholder="Pegar URL web aquí para extraer texto...">
                         </div>
-                        <div class="context-group file-dropzone" id="dropzone" title="Arrastra tu(s) PDF(s) aquí o haz clic para subir">
+                        <div class="context-group file-dropzone" id="dropzone" title="Arrastra tu(s) PDF(s) o Imágenes aquí o haz clic para subir">
                             <i class="fa-solid fa-cloud-arrow-up"></i>
-                            <span id="dropzone-text">Arrastra múltiples archivos aquí (.pdf) o haz clic</span>
-                            <input type="file" id="context-file" accept=".pdf,.txt,.docx" style="display:none" multiple>
+                            <span id="dropzone-text">Arrastra archivos aquí (.pdf, .jpg, .png) o haz clic</span>
+                            <input type="file" id="context-file" accept=".pdf,.txt,.docx,.jpg,.jpeg,.png" style="display:none" multiple>
                             <input type="hidden" id="context-file-path">
                         </div>
                         <div class="context-group input-text">
@@ -98,37 +100,179 @@
                         </button>
                     </div>
                 </div>
-
             </section>
+
+            <!-- RIGHT PANEL: CAPABILITIES AND COMMANDS -->
+            <aside class="capabilities-panel" aria-label="Funciones y comandos de Jarvis">
+                <div class="capabilities-header">
+                    <h3><i class="fa-solid fa-terminal"></i> Funciones y comandos</h3>
+                    <p>Elegí una función para preparar su comando.</p>
+                    <div class="capability-search-wrap">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input id="capability-search" type="search" placeholder="Buscar función..." autocomplete="off">
+                    </div>
+                    <button id="btn-open-tv-modal" class="action-btn tv-setup-shortcut" onclick="window.openTvModal ? window.openTvModal() : document.getElementById('tv-modal')?.classList.remove('hidden')">
+                        <i class="fa-solid fa-tv"></i> Configurar TV / BroadLink
+                    </button>
+                </div>
+                <ul id="capabilities-list" class="capabilities-list" role="list">
+                    <!-- Dinámico -->
+                </ul>
+            </aside>
         </main>
     </div>
 
-    <!-- MODAL: CREAR MODO -->
+    <!-- MODAL CREAR MODO -->
     <div id="mode-modal" class="modal hidden">
-        <div class="modal-content glass-panel">
-            <span id="close-modal" class="close">&times;</span>
-            <h2>Nuevo Modo de IA</h2>
+        <div class="modal-content">
+            <span class="close-btn" id="close-modal">&times;</span>
+            <h2>Nuevo Modo Operativo</h2>
             <form id="mode-form">
                 <div class="form-group">
-                    <label for="mode-name">Nombre del Modo:</label>
-                    <input type="text" id="mode-name" required placeholder="Ej: Modo Hacker">
+                    <label>Nombre del Modo:</label>
+                    <input type="text" id="mode-name" required placeholder="Ej: Modo Estudio">
                 </div>
                 <div class="form-group">
-                    <label for="mode-desc">Descripción (Propósito del modo):</label>
-                    <textarea id="mode-desc" required placeholder="Ej: Respuestas con tono sarcástico y enfocado en ciberseguridad..."></textarea>
+                    <label>Prompt del Sistema (Instrucciones):</label>
+                    <textarea id="mode-prompt" required rows="3" placeholder="Ej: Sé conciso, enfócate en matemáticas..."></textarea>
                 </div>
-                <button type="submit" class="action-btn w-100">Guardar en Base de Datos</button>
+                <div class="form-group">
+                    <label>Apps Asociadas (Separadas por coma):</label>
+                    <input type="text" id="mode-apps" placeholder="Ej: chrome, notion, spotify">
+                </div>
+                <div class="form-group">
+                    <label>Disposición de Pantalla:</label>
+                    <select id="mode-layout">
+                        <option value="single">Pantalla Completa</option>
+                        <option value="split_horizontal">Dividida Horizontal</option>
+                        <option value="split_vertical">Dividida Vertical</option>
+                    </select>
+                </div>
+                <button type="submit" class="action-btn">Guardar Modo</button>
             </form>
         </div>
     </div>
 
-    <!-- Socket.io -->
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="app.js"></script>
+    <!-- MODAL TV Y BROADLINK -->
+    <div id="tv-modal" class="modal hidden">
+        <div class="modal-content tv-modal-content">
+            <span class="close-btn" id="close-tv-modal" onclick="window.closeTvModal ? window.closeTvModal() : document.getElementById('tv-modal')?.classList.add('hidden')">&times;</span>
+            <h2><i class="fa-solid fa-tv"></i> Control de Televisión y Netflix</h2>
+            <p class="modal-subtitle">Configura tu BroadLink y los botones aprendidos.</p>
+
+            <div id="tv-status" class="tv-status-card">
+                <div class="tv-status-badge">Estado: Comprobando...</div>
+                <div class="tv-status-details"></div>
+            </div>
+
+            <div id="tv-operation-message" class="tv-operation-message" style="display: none;"></div>
+
+            <div class="tv-tabs">
+                <button type="button" class="tv-tab-btn active" data-tab="learning" onclick="switchTvTab('learning', this)">Aprender Botones</button>
+                <button type="button" class="tv-tab-btn" data-tab="testing" onclick="switchTvTab('testing', this)">Pruebas Rápidas</button>
+                <button type="button" class="tv-tab-btn" data-tab="setup" onclick="switchTvTab('setup', this)">Configuración</button>
+            </div>
+
+            <div class="tv-tab-content" id="tab-learning" style="display: block;">
+                <div class="learning-grid">
+                    <button type="button" class="btn-learn" data-btn="vol_up" onclick="learnTvButton('vol_up')"><i class="fa-solid fa-volume-high"></i> Vol +</button>
+                    <button type="button" class="btn-learn" data-btn="vol_down" onclick="learnTvButton('vol_down')"><i class="fa-solid fa-volume-low"></i> Vol -</button>
+                    <button type="button" class="btn-learn" data-btn="power" onclick="learnTvButton('power')"><i class="fa-solid fa-power-off"></i> Power</button>
+                    <button type="button" class="btn-learn" data-btn="home" onclick="learnTvButton('home')"><i class="fa-solid fa-house"></i> Home</button>
+                    <button type="button" class="btn-learn" data-btn="netflix" onclick="learnTvButton('netflix')"><i class="fa-solid fa-play"></i> Netflix</button>
+                    <button type="button" class="btn-learn" data-btn="up" onclick="learnTvButton('up')"><i class="fa-solid fa-arrow-up"></i> Arriba</button>
+                    <button type="button" class="btn-learn" data-btn="down" onclick="learnTvButton('down')"><i class="fa-solid fa-arrow-down"></i> Abajo</button>
+                    <button type="button" class="btn-learn" data-btn="left" onclick="learnTvButton('left')"><i class="fa-solid fa-arrow-left"></i> Izquierda</button>
+                    <button type="button" class="btn-learn" data-btn="right" onclick="learnTvButton('right')"><i class="fa-solid fa-arrow-right"></i> Derecha</button>
+                    <button type="button" class="btn-learn" data-btn="ok" onclick="learnTvButton('ok')"><i class="fa-solid fa-check"></i> OK / Enter</button>
+                    <button type="button" class="btn-learn" data-btn="back" onclick="learnTvButton('back')"><i class="fa-solid fa-rotate-left"></i> Volver</button>
+                </div>
+            </div>
+
+            <div class="tv-tab-content" id="tab-testing" style="display: none;">
+                <div class="testing-grid">
+                    <button type="button" class="btn-test-cmd" data-btn="vol_up" onclick="testTvButton('vol_up')">Test Vol +</button>
+                    <button type="button" class="btn-test-cmd" data-btn="vol_down" onclick="testTvButton('vol_down')">Test Vol -</button>
+                    <button type="button" class="btn-test-cmd" data-btn="power" onclick="testTvButton('power')">Test Power</button>
+                    <button type="button" class="btn-test-cmd" data-btn="netflix" onclick="testTvButton('netflix')">Test Netflix</button>
+                    <button type="button" class="btn-test-cmd" data-btn="home" onclick="testTvButton('home')">Test Home</button>
+                    <button type="button" class="btn-test-cmd" data-btn="ok" onclick="testTvButton('ok')">Test OK</button>
+                </div>
+            </div>
+
+            <div class="tv-tab-content" id="tab-setup" style="display: none;">
+                <form id="tv-settings-form">
+                    <div class="form-group">
+                        <label>IP del Dispositivo:</label>
+                        <input type="text" id="tv-host" placeholder="Ej: 192.168.1.100">
+                    </div>
+                    <div class="form-group">
+                        <label>MAC Address:</label>
+                        <input type="text" id="tv-mac" placeholder="Ej: 34:ea:34:xx:xx:xx">
+                    </div>
+                    <div class="form-group">
+                        <label>Tipo de Dispositivo (Hex):</label>
+                        <input type="text" id="tv-dev-type" placeholder="Ej: 0x272a (Opcional)">
+                    </div>
+                    <div class="form-row">
+                        <button type="button" id="btn-discover-tv" class="action-btn secondary" onclick="discoverTvBroadlink()"><i class="fa-solid fa-radar"></i> Auto-Detectar</button>
+                        <button type="submit" class="action-btn primary"><i class="fa-solid fa-floppy-disk"></i> Guardar Configuración</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL DE VOZ Y MEMORIA -->
+    <div id="brain-modal" class="modal hidden">
+        <div class="modal-content brain-modal-content">
+            <span class="close-btn" id="close-brain-modal">&times;</span>
+            <h2><i class="fa-solid fa-brain"></i> Configuración de Voz y Memoria</h2>
+            <div class="brain-tabs">
+                <button class="brain-tab-btn active" data-tab="voice">Ajustes de Voz</button>
+                <button class="brain-tab-btn" data-tab="memory">Memoria y Preferencias</button>
+            </div>
+            <div class="brain-tab-content" id="tab-voice">
+                <p>Configuración del reconocimiento de voz continuo y anti-eco.</p>
+                <div class="form-group">
+                    <label>Umbral de Confianza:</label>
+                    <input type="range" id="voice-conf-range" min="0" max="100" value="70">
+                </div>
+            </div>
+            <div class="brain-tab-content" id="tab-memory" style="display: none;">
+                <p>Recuerdos persistentes almacenados en la base de datos de Jarvis.</p>
+                <ul id="memory-items-list" style="list-style: none; padding: 0;"></ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script inline para garantizar cambio inmediato de pestañas -->
+    <script>
+        function switchTvTab(tabName, el) {
+            document.querySelectorAll('.tv-tab-btn').forEach(function(b) {
+                b.classList.remove('active');
+            });
+            document.querySelectorAll('.tv-tab-content').forEach(function(c) {
+                c.style.setProperty('display', 'none', 'important');
+            });
+            if (el) {
+                el.classList.add('active');
+            } else {
+                var btn = document.querySelector('.tv-tab-btn[data-tab="' + tabName + '"]');
+                if (btn) btn.classList.add('active');
+            }
+            var target = document.getElementById('tab-' + tabName);
+            if (target) {
+                target.style.setProperty('display', 'block', 'important');
+            }
+        }
+        window.switchTvTab = switchTvTab;
+    </script>
+
+    <!-- Scripts -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="jarvis3d.js"></script>
+    <script src="app.js?v=20260904_04"></script>
 </body>
 </html>
-
-
-
-
-
