@@ -424,47 +424,57 @@ TAREA: Leé los datos y respondé la pregunta en 1-2 oraciones.
     const aiMsg = await executeLlamaChat([{ role: 'user', content: prompt }], null, false);
     return typeof aiMsg.content === 'string' ? aiMsg.content : JSON.stringify(aiMsg.content);
 }
-// ─────────────────────────────────────────────────────────────────────────────
 
-
-async function executeLlamaChat(messages, tools = null, jsonFormat = false, overrideModel = 'llama3.1:latest') {
+async function executeLlamaChat(messages, tools = null, jsonFormat = false, overrideModel = null) {
+    const selectedModel = overrideModel || process.env.OLLAMA_MODEL || 'hermes3:latest';
     const payload = {
-        model: overrideModel,
+        model: selectedModel,
         messages: messages,
         stream: false
     };
-    
+
     if (tools) {
         payload.tools = tools;
     }
-    
+
     if (jsonFormat) {
         payload.format = "json";
     }
 
-    const response = await fetch('http://127.0.0.1:11434/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
+    try {
+        const response = await fetch('http://127.0.0.1:11434/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
 
-    if (!response.ok) {
-        throw new Error(`Ollama devolvió un error HTTP: ${response.status}`);
+        if (!response.ok) {
+            // Si hermes3 no está disponible, probar fallback con llama3.1
+            if (selectedModel !== 'llama3.1:latest') {
+                return executeLlamaChat(messages, tools, jsonFormat, 'llama3.1:latest');
+            }
+            throw new Error(`Ollama devolvió un error HTTP: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.message;
+    } catch (err) {
+        if (selectedModel !== 'llama3.1:latest') {
+            return executeLlamaChat(messages, tools, jsonFormat, 'llama3.1:latest');
+        }
+        throw err;
     }
-
-    const data = await response.json();
-    return data.message;
 }
 
 // Mantenemos esto como un wrapper para las llamadas legacy (buscar clima en internet, etc)
 async function fetchOllamaResponse(prompt) {
     const msgs = [{ role: "user", content: prompt }];
     try {
-        const aiMsg = await executeLlamaChat(msgs, null, true); // true for json
+        const aiMsg = await executeLlamaChat(msgs, null, true);
         return JSON.parse(aiMsg.content);
     } catch (e) {
         console.error("Error parseando respuesta JSON de Ollama (Legacy wrapper):", e);
-        const recovered = recoverIntentFromBrokenJson(""); 
+        const recovered = recoverIntentFromBrokenJson("");
         return recovered || {
             action: "chat",
             reply: "No pude estructurar la respuesta en JSON, pero sigo operativo. Repite tu pedido y lo intento de nuevo."
@@ -474,44 +484,13 @@ async function fetchOllamaResponse(prompt) {
 
 async function getAIResponse(userText, activeMode, screenContext = null, inpaintingMask = null) {
     try {
-        // ── EARLY PATH DETECTION: si el usuario pasa una ruta, es EDICION directa ──
-        const fs = require('fs');
-        const earlyPathMatch = String(userText || '').match(/([A-Za-z]:\\[^\s,;]+)/);
-        if (earlyPathMatch) {
-            const detectedPath = earlyPathMatch[1].replace(/[.,;:]+$/, '');
-            if (fs.existsSync(detectedPath)) {
-                // Si es una imagen, no la mandamos al Python Editor (RAG), dejamos que la IA la vea para edit_image
-                const isImage = /\.(jpg|jpeg|png|webp|gif)$/i.test(detectedPath);
-                if (!isImage) {
-                    console.log(`[Jarvis] 📂 Path detectado: ${detectedPath} → Python Editor`);
-                try {
-                    const pyRes = await fetch('http://127.0.0.1:8000/api/v1/query', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ query: userText })
-                    });
-                    if (pyRes.ok) {
-                        const pyData = await pyRes.json();
-                        const pyMessage = pyData?.data?.message || pyData?.message || '';
-                        if (pyMessage) {
-                            conversationHistory.push({ role: "user", content: userText });
-                            conversationHistory.push({ role: "assistant", content: { reply: pyMessage } });
-                            return pyMessage;
-                        }
-                    }
-                } catch (e) {
-                    console.warn("[Jarvis] Python Editor inalcanzable:", e.message);
-                }
-                }
-            }
-        }
-        let systemPrompt = "INSTRUCCIONES DEL SISTEMA BASE:\n" + activeMode.prompt + "\n";
+        let systemPrompt = "INSTRUCCIONES DEL SISTEMA BASE:\n" + (activeMode?.prompt || '') + "\n";
         systemPrompt += "Eres Jarvis, el asistente de PC. Tienes herramientas de automatización y de auto-aprendizaje (Code-Act).\n";
-        systemPrompt += "REGLA DE VIDA O MUERTE: Si el usuario te hace charla casual, te pregunta qué sabes hacer, cómo estás, o cualquier pregunta general sobre ti mismo, ESTÁ EXTRICTAMENTE PROHIBIDO (PENADO) USAR UNA HERRAMIENTA. Responde únicamente chateando de forma natural.\n";
-        systemPrompt += "REGLA DE WHATSAPP: El destinatario debe ser el nombre del contacto limpio. Si te piden enviar algo que acabas de explicar o buscar (información anterior), usa tu memoria para escribir toda esa info completa en el campo 'message'.\n";
-        
+        systemPrompt += "REGLA DE VIDA O MUERTE: Si el usuario te hace charla casual, te pregunta qué sabes hacer, cómo estás, o cualquier pregunta general sobre ti mismo, ESTÁ STRICTAMENTE PROHIBIDO USAR UNA HERRAMIENTA. Responde únicamente chateando de forma natural.\n";
+        systemPrompt += "REGLA DE WHATSAPP: El destinatario debe ser el nombre del contacto limpio. Si te piden enviar algo que acabas de explicar o buscar, usa tu memoria para escribir toda esa info completa en el campo 'message'.\n";
+
         const dateNow = new Date();
-        systemPrompt += `\nFECHA Y HORA ACTUAL DEL SISTEMA: ${dateNow.toLocaleString('es-AR')}. Usa esta información exacta si el usuario pregunta la hora o el día. Si el usuario pregunta la hora de otro país, calcúlala usando tu propio conocimiento horario.\n\n`;
+        systemPrompt += `\nFECHA Y HORA ACTUAL DEL SISTEMA: ${dateNow.toLocaleString('es-AR')}. Usa esta información exacta si el usuario pregunta la hora o el día.\n\n`;
 
         if (screenContext) {
             systemPrompt += "CONTEXTO VISUAL ACTUAL: " + screenContext + "\n\n";
@@ -521,8 +500,8 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
 
         if (conversationHistory.length > 0) {
             conversationHistory.forEach(msg => {
-                let contentText = typeof msg.content === 'object' 
-                    ? (typeof msg.content.reply === 'string' ? msg.content.reply : JSON.stringify(msg.content.reply || msg.content)) 
+                let contentText = typeof msg.content === 'object'
+                    ? (typeof msg.content.reply === 'string' ? msg.content.reply : JSON.stringify(msg.content.reply || msg.content))
                     : String(msg.content);
                 messages.push({ role: msg.role, content: contentText });
             });

@@ -3,19 +3,30 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
+const SCRIPT_PATH = path.join(__dirname, '..', '..', 'scripts', 'takeScreenshot.ps1');
+
 class DisplayService {
     setBrightness(percent) {
         const val = Math.min(100, Math.max(0, parseInt(percent, 10) || 50));
         const script = `
             try {
-                $b = Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods
-                if ($b) { $b.WmiSetBrightness(1, ${val}); Write-Output "OK" } else { Write-Output "NOT_SUPPORTED" }
-            } catch { Write-Output "NOT_SUPPORTED" }
+                $b = Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods -ErrorAction SilentlyContinue
+                if ($b) {
+                    $b.WmiSetBrightness(1, ${val})
+                    Write-Output "OK"
+                } else {
+                    Write-Output "NOT_SUPPORTED"
+                }
+            } catch {
+                Write-Output "NOT_SUPPORTED"
+            }
         `;
         try {
-            const out = execSync(`powershell.exe -NoProfile -Command "${script.replace(/\r?\n/g, ' ')}"`, { timeout: 6000 }).toString().trim();
+            const buffer = Buffer.from(script, 'utf16le');
+            const base64 = buffer.toString('base64');
+            const out = execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${base64}`, { timeout: 6000 }).toString().trim();
             if (out.includes('NOT_SUPPORTED')) {
-                return { ok: false, code: 'ERR_BRIGHTNESS_UNSUPPORTED', message: 'El monitor o pantalla actual no soporta ajuste de brillo por software (WMI).' };
+                return { ok: false, code: 'ERR_BRIGHTNESS_UNSUPPORTED', message: 'El monitor actual no soporta ajuste de brillo por software (WMI).' };
             }
             return { ok: true, brightness: val, message: `Brillo de pantalla ajustado al ${val}%.` };
         } catch (err) {
@@ -25,24 +36,14 @@ class DisplayService {
 
     takeScreenshot(destinationDir = null) {
         const desktop = destinationDir || process.env.JARVIS_DESKTOP_DIR || path.join(os.homedir(), 'Desktop');
-        fs.mkdirSync(desktop, { recursive: true });
+        if (!fs.existsSync(desktop)) {
+            fs.mkdirSync(desktop, { recursive: true });
+        }
         const filename = `Captura_${Date.now()}.png`;
         const filePath = path.join(desktop, filename);
 
-        const script = `
-            Add-Type -AssemblyName System.Windows.Forms
-            Add-Type -AssemblyName System.Drawing
-            $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-            $bitmap.Save('${filePath.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png)
-            $graphics.Dispose()
-            $bitmap.Dispose()
-        `;
-
         try {
-            execSync(`powershell.exe -NoProfile -Command "${script.replace(/\r?\n/g, ' ')}"`, { timeout: 8000 });
+            execSync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${SCRIPT_PATH}" -FilePath "${filePath}"`, { timeout: 10000 });
             return { ok: true, filePath, filename, message: `Captura de pantalla guardada en el Escritorio: ${filename}` };
         } catch (err) {
             return { ok: false, code: 'ERR_SCREENSHOT_FAILED', message: err.message };
