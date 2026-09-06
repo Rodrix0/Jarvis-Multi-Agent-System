@@ -27,6 +27,8 @@ function decryptOnDemand(ciphertext) {
     }
 }
 
+const memoryImportanceService = require('./memoryImportanceService');
+
 class MemoryService {
     constructor() {
         this.workingMemory = new Map();
@@ -34,28 +36,57 @@ class MemoryService {
 
     addMemory({
         type = 'PREFERENCE', // 'EPISODIC', 'SEMANTIC', 'PREFERENCE', 'CORRECTION'
-        tier = 'NORMAL',      // 'NORMAL', 'PERSONAL', 'SENSITIVE', 'DO_NOT_PERSIST'
+        tier = 'NORMAL',      // 'NORMAL', 'PERSONAL', 'SENSITIVE', 'DO_NOT_PERSIST', 'CORE'
         key = null,
         value,
         source = 'explicit_user_statement', // 'explicit_user_statement', 'inferred_pattern', 'system_observed'
-        confidence = 1.0,
-        expiresAt = null
+        confidence = null,
+        expiresAt = null,
+        bypassTriage = false
     }) {
         if (tier === 'DO_NOT_PERSIST') {
             this.workingMemory.set(key || `temp-${Date.now()}`, { type, value, source });
             return { ok: true, tier: 'DO_NOT_PERSIST' };
         }
 
+        // Triaje Automático de Importancia (Ítem 18)
+        let effectiveTier = tier;
+        let effectiveExpiresAt = expiresAt;
+        let effectiveConfidence = typeof confidence === 'number' ? confidence : 1.0;
+
+        if (!bypassTriage) {
+            const triage = memoryImportanceService.triageMemory(value, { type, tier, key });
+            if (triage.action === 'DISCARD') {
+                return {
+                    ok: true,
+                    discarded: true,
+                    action: 'DISCARD',
+                    importance: triage.importance,
+                    reason: triage.reason
+                };
+            }
+
+            if (tier === 'NORMAL' && triage.action === 'PERMANENT') {
+                effectiveTier = 'CORE';
+            }
+            if (!effectiveExpiresAt && triage.action === 'EPISODIC') {
+                effectiveExpiresAt = triage.expiresAt;
+            }
+            if (confidence === null || confidence === undefined) {
+                effectiveConfidence = triage.importance;
+            }
+        }
+
         const id = `mem-${crypto.randomUUID().slice(0, 8)}`;
         const now = new Date().toISOString();
-        const storedValue = tier === 'SENSITIVE' ? encryptAtRest(value) : value;
+        const storedValue = effectiveTier === 'SENSITIVE' ? encryptAtRest(value) : value;
 
         try {
             databaseService.db.prepare(`
                 INSERT INTO memory (id, type, tier, key, value, source, confidence, created_at, expires_at, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-            `).run(id, type, tier, key, storedValue, source, confidence, now, expiresAt);
-            return { ok: true, id, message: 'Recuerdo guardado con éxito.' };
+            `).run(id, type, effectiveTier, key, storedValue, source, effectiveConfidence, now, effectiveExpiresAt);
+            return { ok: true, id, tier: effectiveTier, importance: effectiveConfidence, message: 'Recuerdo guardado con éxito.' };
         } catch (err) {
             return { ok: false, message: err.message };
         }
