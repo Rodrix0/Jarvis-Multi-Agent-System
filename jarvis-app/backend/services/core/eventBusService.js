@@ -53,15 +53,20 @@ class JarvisEventBus extends EventEmitter {
     }
 
     /**
-     * Publica un evento en el bus para todos los suscriptores y sockets.
+     * Publica un evento en el bus para todos los suscriptores y sockets con correlationId y eventId.
      * @param {string} eventName Nombre del evento
      * @param {object} payload Datos asociados
      * @returns {object} El evento emitido
      */
     publish(eventName, payload = {}) {
         const timestamp = new Date().toISOString();
+        const eventId = payload.eventId || `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const correlationId = payload.correlationId || null;
+
         const eventData = {
+            eventId,
             eventName,
+            correlationId,
             timestamp,
             ...payload
         };
