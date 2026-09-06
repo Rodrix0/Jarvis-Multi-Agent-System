@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright-core');
+const eventBus = require('../core/eventBusService');
 
 const CHROME_PATHS = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
@@ -21,6 +22,7 @@ class BrowserService {
         this.context = null;
         this.activePage = null;
         this.executablePath = this._detectBrowserExecutable();
+        this.downloads = [];
     }
 
     /**
@@ -163,38 +165,75 @@ class BrowserService {
     }
 
     /**
-     * Descarga un archivo a través de un clic o evento de descarga.
+     * Descarga un archivo a través de un clic o evento de descarga con verificación y eventos proactivos.
      */
     async download(urlOrSelector, destinationDir, options = {}) {
         await this.ensureBrowser(options);
         const downloadFolder = destinationDir || process.env.JARVIS_DOWNLOADS_DIR || path.join(require('os').homedir(), 'Downloads');
         fs.mkdirSync(downloadFolder, { recursive: true });
 
-        console.log(`[BrowserService] 📥 Iniciando descarga hacia: ${downloadFolder}...`);
+        const downloadId = `dl-${Date.now()}`;
+        console.log(`[BrowserService] 📥 Iniciando descarga [${downloadId}] hacia: ${downloadFolder}...`);
 
-        if (urlOrSelector.startsWith('http')) {
-            // Descarga directa vía navegador
-            const [download] = await Promise.all([
-                this.activePage.waitForEvent('download', { timeout: options.timeout || 30000 }),
-                this.activePage.goto(urlOrSelector).catch(() => {})
-            ]);
+        eventBus.publish('DOWNLOAD_STARTED', {
+            downloadId,
+            target: urlOrSelector,
+            destinationDir: downloadFolder
+        });
+
+        try {
+            let download;
+            if (urlOrSelector.startsWith('http')) {
+                // Descarga directa vía navegador
+                [download] = await Promise.all([
+                    this.activePage.waitForEvent('download', { timeout: options.timeout || 30000 }),
+                    this.activePage.goto(urlOrSelector).catch(() => {})
+                ]);
+            } else {
+                // Descarga activada por clic en un botón o enlace
+                [download] = await Promise.all([
+                    this.activePage.waitForEvent('download', { timeout: options.timeout || 30000 }),
+                    this.click(urlOrSelector)
+                ]);
+            }
+
             const suggestedFilename = download.suggestedFilename();
             const targetPath = path.join(downloadFolder, suggestedFilename);
             await download.saveAs(targetPath);
             const size = fs.existsSync(targetPath) ? fs.statSync(targetPath).size : 0;
-            return { ok: true, filePath: targetPath, filename: suggestedFilename, size };
-        } else {
-            // Descarga activada por clic en un botón o enlace
-            const [download] = await Promise.all([
-                this.activePage.waitForEvent('download', { timeout: options.timeout || 30000 }),
-                this.click(urlOrSelector)
-            ]);
-            const suggestedFilename = download.suggestedFilename();
-            const targetPath = path.join(downloadFolder, suggestedFilename);
-            await download.saveAs(targetPath);
-            const size = fs.existsSync(targetPath) ? fs.statSync(targetPath).size : 0;
-            return { ok: true, filePath: targetPath, filename: suggestedFilename, size };
+
+            const record = {
+                downloadId,
+                ok: true,
+                filePath: targetPath,
+                filename: suggestedFilename,
+                size,
+                status: 'COMPLETED',
+                timestamp: new Date().toISOString()
+            };
+            this.downloads.push(record);
+
+            eventBus.publish('DOWNLOAD_COMPLETED', record);
+            return record;
+        } catch (err) {
+            const errRecord = {
+                downloadId,
+                ok: false,
+                error: err.message,
+                status: 'FAILED',
+                timestamp: new Date().toISOString()
+            };
+            this.downloads.push(errRecord);
+            eventBus.publish('DOWNLOAD_FAILED', errRecord);
+            throw err;
         }
+    }
+
+    /**
+     * Devuelve el historial del gestor de descargas de la sesión actual.
+     */
+    getDownloadHistory() {
+        return [...this.downloads];
     }
 
     /**

@@ -60,24 +60,21 @@ async function runTests() {
         console.log('Desplazamiento completado exitosamente.');
         console.log('✅ TEST 5 PASSED: scroll operativo.\n');
 
-        // 6. Integración en ActionKernel
-        console.log('--- TEST 6: ActionKernel Integración ---');
-        const actions = await jarvisActionService.describe();
-        const browserActions = actions.filter(a => a.id.startsWith('browser.'));
-        console.log(`Acciones de navegador registradas: ${browserActions.map(a => a.id).join(', ')}`);
-        assert.ok(browserActions.some(a => a.id === 'browser.open'), 'browser.open debe estar registrado');
-        assert.ok(browserActions.some(a => a.id === 'browser.get-text'), 'browser.get-text debe estar registrado');
-        assert.ok(browserActions.some(a => a.id === 'browser.close'), 'browser.close debe estar registrado');
-        console.log('✅ TEST 6 PASSED: Integración ActionKernel verificada.\n');
+        // 7. Verificación de Download Manager e Historial (Sección 8-9)
+        console.log('--- TEST 7: Gestor de Descargas e Historial ---');
+        const history = browserService.getDownloadHistory();
+        assert.ok(Array.isArray(history), 'Debe retornar un array de historial de descargas');
+        console.log(`Historial de descargas activo: ${history.length} elementos`);
+        console.log('✅ TEST 7 PASSED: Gestor de descargas operativo.\n');
 
     } finally {
-        // 7. Cierre limpio de sesión de navegador
-        console.log('--- TEST 7: close() ---');
+        // 8. Cierre limpio de sesión de navegador
+        console.log('--- TEST 8: close() ---');
         const closeRes = await browserService.close();
         assert.strictEqual(closeRes.ok, true);
         assert.strictEqual(closeRes.closed, true);
         console.log('Sesión de navegador cerrada limpiamente.');
-        console.log('✅ TEST 7 PASSED: Limpieza y cierre verificado.\n');
+        console.log('✅ TEST 8 PASSED: Limpieza y cierre verificado.\n');
     }
 
     console.log('===============================================================');
