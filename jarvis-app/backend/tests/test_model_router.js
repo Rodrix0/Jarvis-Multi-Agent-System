@@ -121,6 +121,58 @@ async function runTests() {
         console.log('     Estadísticas de enrutamiento:', stats);
     });
 
+    // 8. JARVIS 3.0: Clasificaciones Avanzadas de Capacidad (Sección 4)
+    test('Clasifica intenciones especializadas (MEMORY_EXTRACTION, TOOL_PLANNING, VERIFICATION)', () => {
+        const mem = modelRouter.classifyTask('extraer hechos de la conversación', { action: 'memory_extraction' });
+        assert.strictEqual(mem.route, 'MEMORY_EXTRACTION');
+        assert.strictEqual(mem.useLLM, true);
+
+        const plan = modelRouter.classifyTask('planificá y descompon pasos para descargar y organizar archivos', { action: 'tool_planning' });
+        assert.strictEqual(plan.route, 'TOOL_PLANNING');
+        assert.strictEqual(plan.useLLM, true);
+
+        const verify = modelRouter.classifyTask('', { taskType: 'VERIFICATION' });
+        assert.strictEqual(verify.route, 'VERIFICATION');
+        assert.strictEqual(verify.useLLM, true);
+    });
+
+    // 9. JARVIS 3.0: VRAM & Resource Coordinator (Sección 79)
+    test('Coordina adquisición de VRAM lock para inferencias sin interbloqueo', () => {
+        const exec1 = `exec_test_${Date.now()}_1`;
+        const lock1 = modelRouter.acquireInferenceLock(exec1, 'qwen2.5-coder:7b');
+        assert.strictEqual(lock1.acquired, true);
+        assert.strictEqual(lock1.estimatedVramMb, 5000);
+
+        // Segundo intento con otro ID sobre el mismo recurso exclusivo debe retornar throttled
+        const exec2 = `exec_test_${Date.now()}_2`;
+        const lock2 = modelRouter.acquireInferenceLock(exec2, 'hermes3:latest');
+        assert.strictEqual(lock2.acquired, false);
+        assert.strictEqual(lock2.code, 'ERR_RESOURCE_LOCKED');
+
+        // Liberar lock de exec1
+        lock1.release();
+
+        // Ahora exec2 puede adquirir el lock
+        const lock2Retry = modelRouter.acquireInferenceLock(exec2, 'hermes3:latest');
+        assert.strictEqual(lock2Retry.acquired, true);
+        lock2Retry.release();
+    });
+
+    // 10. JARVIS 3.0: Lightweight Benchmark Runner (Sección 78)
+    await testAsync('Ejecuta benchmark ligero de modelo y cachea métricas de rendimiento', async () => {
+        const bench = await modelRouter.benchmarkModel('qwen2.5:3b');
+        assert.ok(bench);
+        assert.strictEqual(bench.model, 'qwen2.5:3b');
+        assert.strictEqual(typeof bench.ttftMs, 'number');
+        assert.strictEqual(typeof bench.tokensPerSecond, 'number');
+        assert.strictEqual(typeof bench.schemaCompliance, 'number');
+        assert.strictEqual(bench.vramEstimateMb, 2500);
+
+        // Comprobación de recuperación desde cache
+        const cached = await modelRouter.benchmarkModel('qwen2.5:3b');
+        assert.strictEqual(cached.benchmarkedAt, bench.benchmarkedAt);
+    });
+
     console.log(`\n===============================================================`);
     console.log(`🎉 TODOS LOS TESTS DE MODEL ROUTER PASARON EXITOSAMENTE: ${passed}/${total} (100%)`);
     console.log(`===============================================================\n`);
