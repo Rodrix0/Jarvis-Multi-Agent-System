@@ -24,8 +24,14 @@ class ProactivePolicyService {
      * Inicializa dependencias y suscribe a eventos del sistema.
      */
     init({ ttsService = null, io = null, modeService = null } = {}) {
-        if (ttsService) this.ttsService = ttsService;
-        if (io) this.io = io;
+        if (ttsService) {
+            this.ttsService = ttsService;
+            notificationService.setTtsService(ttsService);
+        }
+        if (io) {
+            this.io = io;
+            notificationService.setSocketIO(io);
+        }
         if (modeService) this.modeService = modeService;
 
         this.detach();
