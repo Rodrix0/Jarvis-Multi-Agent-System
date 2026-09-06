@@ -58,14 +58,16 @@ class FastCommandParser {
         }
 
         // 1.1 Volumen de Windows (Notebook / PC)
-        const volMatch = clean.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
-            || clean.match(/(?:volumen|sonido|audio).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i)
-            || clean.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia|coloca|sete(?:a|ar)).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i);
-        if (volMatch) {
-            return { match: true, action: 'audio.set-volume', params: { percent: parseInt(volMatch[1], 10) } };
-        }
-        if (/\b(?:mute|silenci(?:a|ar|ate)|mutear|desmutear|pon(?:e)? en silencio|sac(?:a)? el silencio)\b/i.test(clean)) {
-            return { match: true, action: 'audio.toggle-mute', params: {} };
+        if (!/\b(?:aire|grados|temperatura|brillo|iluminacion)\b/i.test(clean)) {
+            const volMatch = clean.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
+                || clean.match(/(?:volumen|sonido|audio).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i)
+                || clean.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia|coloca|sete(?:a|ar)).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i);
+            if (volMatch) {
+                return { match: true, action: 'audio.set-volume', params: { percent: parseInt(volMatch[1], 10) } };
+            }
+            if (/\b(?:mute|silenci(?:a|ar|ate)|mutear|desmutear|pon(?:e)? en silencio|sac(?:a)? el silencio)\b/i.test(clean)) {
+                return { match: true, action: 'audio.toggle-mute', params: {} };
+            }
         }
 
         // 2. Brillo
@@ -221,7 +223,7 @@ class FastCommandParser {
         }
 
         // 10. Modo descanso / Despertar (ignorar si el destino es un dispositivo externo como tele o luces)
-        const isDevicePowerTarget = /\b(?:tele|television|tv|pantalla|monitor|pc|computadora|luz|luces|aire)\b/i.test(clean);
+        const isDevicePowerTarget = /\b(?:tele|television|tv|pantalla|monitor|pc|computadora|luz|luces|aire|ventilador|enchufe|switch|lampara)\b/i.test(clean);
         if (!isDevicePowerTarget) {
             // 10.1 Poner a Jarvis en descanso / Apagar escucha
             if (/\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(clean)
@@ -234,6 +236,125 @@ class FastCommandParser {
                 || /^(?:hola\s+jarvis|buen\s+dia\s+jarvis|buenas\s+jarvis|hey\s+jarvis|che\s+jarvis|ok\s+jarvis|jarvis)$/i.test(clean)) {
                 return { match: true, action: 'voice.wake', params: {} };
             }
+        }
+
+        // 11. Automatizaciones reactivas y por condiciones (Ítem 27)
+        // 11.1 Listar reglas
+        if (/\b(?:listar|ver|cuales\s+son|mostra(?:r)?)\s+(?:las\s+)?(?:automatizaciones|reglas\s+de\s+automatizacion|reglas\s+activas)\b/i.test(clean)
+            || clean === 'automatizaciones' || clean === 'reglas activas') {
+            return { match: true, action: 'automation.list-rules', params: {} };
+        }
+
+        // 11.2 "cuando termine la descarga avisame / avisa"
+        const downloadAlertMatch = clean.match(/\bcuando\s+termine\s+(?:la|una)\s+descarga\s*(?:de\s+([^,]+?))?\s*(?:,|->)?\s*(?:avisame|notificame|decime|avisa)\b/i);
+        if (downloadAlertMatch) {
+            const targetFile = downloadAlertMatch[1]?.trim();
+            const filters = targetFile ? { filename: { contains: targetFile } } : {};
+            return {
+                match: true,
+                action: 'automation.create-rule',
+                params: {
+                    rule: {
+                        name: targetFile ? `Aviso descarga: ${targetFile}` : 'Aviso descarga completada',
+                        trigger: { event: 'DOWNLOAD_COMPLETED', once: true, filters },
+                        actions: [
+                            { type: 'tts', message: 'Se completó la descarga de {{filename}}.' },
+                            { type: 'notification', title: 'Descarga Lista', message: '{{filename}} está listo en tu carpeta.' }
+                        ]
+                    }
+                }
+            };
+        }
+
+        // 11.3 "cuando termine la descarga apagar pc"
+        if (/\bcuando\s+termine\s+(?:la|una)\s+descarga\s*(?:,|->)?\s*(?:apaga(?:r)?\s+(?:la\s+pc|la\s+computadora|el\s+equipo))\b/i.test(clean)) {
+            return {
+                match: true,
+                action: 'automation.create-rule',
+                params: {
+                    rule: {
+                        name: 'Apagar PC tras descarga',
+                        trigger: { event: 'DOWNLOAD_COMPLETED', once: true },
+                        actions: [
+                            { type: 'tts', message: 'Descarga terminada. Procediendo a apagar el equipo.' },
+                            { type: 'action', action: 'power.shutdown', params: {} }
+                        ]
+                    }
+                }
+            };
+        }
+
+        // 11.4 "cuando cierre <app> apagar pc / cambiar de modo"
+        const closeProcMatch = clean.match(/\bcuando\s+cierre\s+([a-zA-Z0-9\s._-]+?)\s*(?:,|->)?\s*(?:apaga(?:r)?\s+(?:la\s+pc|la\s+computadora)|cambia(?:r)?\s+(?:a\s+|de\s+)?modo\s+([a-zA-Z0-9\s]+))\b/i);
+        if (closeProcMatch) {
+            const procName = closeProcMatch[1].trim();
+            const targetMode = closeProcMatch[2]?.trim();
+            const actions = targetMode
+                ? [{ type: 'routine', name: targetMode }]
+                : [
+                    { type: 'tts', message: `Se cerró ${procName}. Apagando la computadora.` },
+                    { type: 'action', action: 'power.shutdown', params: {} }
+                ];
+
+            return {
+                match: true,
+                action: 'automation.create-rule',
+                params: {
+                    rule: {
+                        name: `Al cerrar ${procName}: ${targetMode ? `Cambiar a ${targetMode}` : 'Apagar PC'}`,
+                        trigger: {
+                            event: 'PROCESS_TERMINATED',
+                            filters: { processName: { contains: procName } },
+                            once: true
+                        },
+                        actions
+                    }
+                }
+            };
+        }
+
+        // 12. Tareas persistentes y recuperación (Ítem 28)
+        if (/\b(?:recupera(?:r)?|continuar|reanudar)\s+(?:las\s+)?(?:tareas\s+pendientes|tareas\s+interrumpidas|tareas\s+anteriores|la\s+sesion)\b/i.test(clean)
+            || clean === 'recuperar tareas' || clean === 'recuperar tareas pendientes') {
+            return { match: true, action: 'task.recover', params: {} };
+        }
+        if (/\b(?:historial|registro)\s+de\s+tareas\b/i.test(clean)) {
+            return { match: true, action: 'task.history', params: {} };
+        }
+        if (/\b(?:reintentar|repetir)\s+(?:la\s+)?(?:tarea|descarga)\b/i.test(clean)) {
+            return { match: true, action: 'task.retry', params: {} };
+        }
+
+        // 13. Domótica y Home Assistant (Ítem 29)
+        // 13.1 Consulta de temperatura
+        if (/\b(?:cuanta|que|cual\s+es\s+la|como\s+esta\s+la)\s+temperatura\b/i.test(clean) || clean === 'temperatura' || clean === 'temperatura living') {
+            return { match: true, action: 'ha.command', params: { text: clean } };
+        }
+
+        // 13.2 Control de Aire Acondicionado
+        if (/\b(?:el\s+)?aire\b/i.test(clean) && !/\b(?:tele|pantalla|audio)\b/i.test(clean)) {
+            if (/\b(?:pon|pone|coloca|cambia|sete(?:a|ar)|ajusta|prende|apaga|encende|desactiva|temperatura)\b/i.test(clean)) {
+                return { match: true, action: 'ha.command', params: { text: clean } };
+            }
+        }
+
+        // 13.3 Luces y Lámparas
+        if (/\b(?:luz|luces|lampara|lamparas)\b/i.test(clean)) {
+            if (/\b(?:prende|encende|apaga|apagar|apagarme|activa|desactiva|alterna|toggle)\b/i.test(clean)) {
+                return { match: true, action: 'ha.command', params: { text: clean } };
+            }
+        }
+
+        // 13.4 Enchufes y Ventiladores
+        if (/\b(?:enchufe|ventilador)\b/i.test(clean)) {
+            if (/\b(?:prende|encende|apaga|apagar|activa|desactiva)\b/i.test(clean)) {
+                return { match: true, action: 'ha.command', params: { text: clean } };
+            }
+        }
+
+        // 13.5 Listar dispositivos domóticos
+        if (/\b(?:dispositivos\s+(?:inteligentes|domoticos)|listar\s+luces|dispositivos\s+de\s+casa)\b/i.test(clean)) {
+            return { match: true, action: 'ha.list-devices', params: {} };
         }
 
         return { match: false };

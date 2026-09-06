@@ -66,6 +66,7 @@ async function describe(context = {}) {
 
 async function execute(id, params = {}, context = {}, options = {}) {
     const action = actions.get(id);
+    const startMs = Date.now();
     const startedAt = new Date().toISOString();
     if (!action) return { ok: false, status: 'failed', actionId: id, verified: true, message: `Acción desconocida: ${id}.` };
 
@@ -85,23 +86,126 @@ async function execute(id, params = {}, context = {}, options = {}) {
         return result;
     }
 
-    const needsConfirmation = typeof action.confirmation === 'function'
-        ? action.confirmation(params, context)
-        : action.confirmation === true;
-    if (needsConfirmation && !options.confirmed) {
-        const token = crypto.randomUUID();
-        pendingConfirmations.set(token, { id, params, createdAt: Date.now() });
-        setTimeout(() => pendingConfirmations.delete(token), 60000).unref?.();
-        return {
-            ok: false,
-            status: 'awaiting_confirmation',
-            actionId: id,
-            confirmationToken: token,
-            permission: action.permission,
-            verified: true,
-            message: action.confirmationMessage?.(params) || `Confirmá que querés ejecutar: ${action.name}.`
-        };
+    // --- Restricción según Perfil de Comportamiento (Ítem 45) ---
+    try {
+        const { behaviorProfileService } = require('./intelligence/behaviorProfileService');
+        const allowedCheck = behaviorProfileService.isActionAllowed(id);
+        if (!allowedCheck.allowed && !options.overrideProfile) {
+            const result = {
+                ok: false,
+                status: 'profile_restricted',
+                actionId: id,
+                verified: true,
+                message: allowedCheck.reason,
+                startedAt,
+                finishedAt: new Date().toISOString()
+            };
+            audit(result);
+            return result;
+        }
+    } catch (e) {}
+
+    // --- Gobernanza de Confirmaciones según Riesgo (Ítem 38) ---
+    const { riskAssessmentService } = require('./security/riskAssessmentService');
+    const riskLevel = action.riskLevel || riskAssessmentService.classify(id, params);
+    const riskReqs = riskAssessmentService.getRequirements(riskLevel);
+
+    // 1. Nivel CRITICAL: Doble confirmación obligatoria + Validación de PIN
+    if (riskLevel === 'CRITICAL') {
+        if (!options.confirmed) {
+            const token = crypto.randomUUID();
+            pendingConfirmations.set(token, { id, params, riskLevel: 'CRITICAL', createdAt: Date.now() });
+            setTimeout(() => pendingConfirmations.delete(token), 60000).unref?.();
+            return {
+                ok: false,
+                status: 'awaiting_pin_confirmation',
+                riskLevel: 'CRITICAL',
+                actionId: id,
+                confirmationToken: token,
+                permission: action.permission,
+                verified: true,
+                message: `Esta acción es CRÍTICA (${action.name}). Requiere confirmación doble y PIN de seguridad.`
+            };
+        } else {
+            // Validar PIN de seguridad
+            const pinValidation = riskAssessmentService.verifyPin(options.pin);
+            if (!pinValidation.ok) {
+                return {
+                    ok: false,
+                    status: 'pin_verification_failed',
+                    riskLevel: 'CRITICAL',
+                    actionId: id,
+                    verified: false,
+                    message: pinValidation.error || 'PIN de seguridad inválido para ejecutar acción crítica.',
+                    locked: pinValidation.locked
+                };
+            }
+        }
     }
+    // 2. Nivel HIGH: Confirmación explícita con token
+    else if (riskLevel === 'HIGH') {
+        if (!options.confirmed) {
+            const token = crypto.randomUUID();
+            pendingConfirmations.set(token, { id, params, riskLevel: 'HIGH', createdAt: Date.now() });
+            setTimeout(() => pendingConfirmations.delete(token), 60000).unref?.();
+            return {
+                ok: false,
+                status: 'awaiting_confirmation',
+                riskLevel: 'HIGH',
+                actionId: id,
+                confirmationToken: token,
+                permission: action.permission,
+                verified: true,
+                message: action.confirmationMessage?.(params) || `Esta acción es de ALTO RIESGO. Confirmá que querés ejecutar: ${action.name}.`
+            };
+        }
+    }
+    // 3. Fallback a confirmación tradicional de la acción (si estuviese explícitamente declarada)
+    else {
+        const needsConfirmation = typeof action.confirmation === 'function'
+            ? action.confirmation(params, context)
+            : action.confirmation === true;
+        if (needsConfirmation && !options.confirmed) {
+            const token = crypto.randomUUID();
+            pendingConfirmations.set(token, { id, params, riskLevel, createdAt: Date.now() });
+            setTimeout(() => pendingConfirmations.delete(token), 60000).unref?.();
+            return {
+                ok: false,
+                status: 'awaiting_confirmation',
+                riskLevel,
+                actionId: id,
+                confirmationToken: token,
+                permission: action.permission,
+                verified: true,
+                message: action.confirmationMessage?.(params) || `Confirmá que querés ejecutar: ${action.name}.`
+            };
+        }
+    }
+
+
+    // --- Verificación de Circuit Breaker (Ítem 35) ---
+    let breaker = null;
+    try {
+        const { circuitBreakerManager } = require('./resilience/circuitBreakerService');
+        const resourceId = action.circuitBreakerResource || circuitBreakerManager.mapActionToResource(id);
+        breaker = circuitBreakerManager.getBreaker(resourceId);
+
+        if (breaker && breaker.isOpen()) {
+            const remainingSec = breaker.getRemainingCooldownSeconds();
+            const msg = `El servicio '${breaker.name}' se encuentra temporalmente suspendido por fallas consecutivas. Reintentando en ${remainingSec} segundos.`;
+            return {
+                ok: false,
+                status: 'circuit_breaker_open',
+                actionId: id,
+                permission: action.permission,
+                verified: true,
+                message: msg,
+                cooldownRemainingSeconds: remainingSec,
+                startedAt,
+                finishedAt: new Date().toISOString()
+            };
+        }
+    } catch (cbErr) {}
 
     try {
         let output = await action.execute(params, context);
@@ -130,7 +234,15 @@ async function execute(id, params = {}, context = {}, options = {}) {
         }
 
         const isOk = output?.ok !== false && verified;
+
+        // Retroalimentar al Circuit Breaker
+        if (breaker) {
+            if (isOk) breaker.recordSuccess();
+            else breaker.recordFailure();
+        }
+
         const result = {
+
             ok: isOk,
             status: !isOk ? (verified === false ? 'verification_failed' : 'failed') : 'completed',
             actionId: id,
@@ -148,9 +260,54 @@ async function execute(id, params = {}, context = {}, options = {}) {
             finishedAt: new Date().toISOString()
         };
         audit(result);
+        try {
+            const dashboardService = require('./diagnostics/dashboardService');
+            dashboardService.recordActionExecution(id, Date.now() - startMs, isOk ? 'success' : 'failed');
+        } catch (e) {}
+
+        // Registrar en Action Timeline (Ítem 48)
+        try {
+            const { actionTimelineService } = require('./core/actionTimelineService');
+            actionTimelineService.recordAction({
+                actionId: id,
+                params,
+                result,
+                status: isOk ? 'SUCCESS' : 'FAILED',
+                reversible: Boolean(action.reversible || output?.reversible),
+                undoData: output?.undoData
+            });
+        } catch (tlErr) {}
+
+        // Registrar en Trazabilidad de Decisiones y Explicación (Ítem 49)
+        try {
+            const explanationService = require('./core/explanationService');
+            explanationService.recordDecision({
+                actionId: id,
+                params,
+                result,
+                status: isOk ? 'SUCCESS' : 'FAILED',
+                context: typeof context === 'object' ? context : {}
+            });
+        } catch (expErr) {}
+        try {
+            const structuredLogger = require('./diagnostics/structuredLoggerService');
+            structuredLogger.log({
+                level: isOk ? 'INFO' : 'ERROR',
+                module: 'actionKernel',
+                action: id,
+                result: isOk ? 'success' : 'error',
+                duration: Date.now() - startMs,
+                error: isOk ? null : { code: result.status, message: result.message },
+                metadata: { permission: action.permission, verified }
+            });
+        } catch (e) {}
         return result;
     } catch (error) {
+        if (breaker) {
+            try { breaker.recordFailure(error); } catch (e) {}
+        }
         const result = {
+
             ok: false,
             status: 'failed',
             actionId: id,
@@ -160,16 +317,35 @@ async function execute(id, params = {}, context = {}, options = {}) {
             finishedAt: new Date().toISOString()
         };
         audit(result);
+        try {
+            const dashboardService = require('./diagnostics/dashboardService');
+            dashboardService.recordActionExecution(id, Date.now() - startMs, 'error');
+        } catch (e) {}
+        try {
+            const structuredLogger = require('./diagnostics/structuredLoggerService');
+            structuredLogger.log({
+                level: 'ERROR',
+                module: 'actionKernel',
+                action: id,
+                result: 'error',
+                duration: Date.now() - startMs,
+                error: { code: 'kernel_exception', message: error.message, stack: error.stack },
+                metadata: { actionId: id }
+            });
+        } catch (e) {}
         return result;
     }
+
 }
 
-async function confirm(token, context = {}) {
+async function confirm(token, context = {}, options = {}) {
     const pending = pendingConfirmations.get(token);
     if (!pending) return { ok: false, status: 'failed', verified: true, message: 'La confirmación expiró o no existe.' };
     pendingConfirmations.delete(token);
-    return execute(pending.id, pending.params, context, { confirmed: true });
+    const pin = options.pin || context.pin;
+    return execute(pending.id, pending.params, context, { confirmed: true, pin });
 }
+
 
 function cancelConfirmation(token) {
     return pendingConfirmations.delete(token);

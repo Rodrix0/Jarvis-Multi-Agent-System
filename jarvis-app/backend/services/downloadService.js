@@ -174,6 +174,19 @@ function downloadMedia(url, isAudioOnly) {
         console.log(`[DownloadService] Ejecutando yt-dlp para: ${url}`);
 
         const child = spawn(pythonExe, args);
+        let task = null;
+        try {
+            const taskManager = require('./core/taskManagerService');
+            task = taskManager.createTask({
+                type: 'download',
+                description: `Descarga de ${isAudioOnly ? 'audio' : 'video'} (${url.substring(0, 40)}...)`,
+                childProcess: child,
+                cancelFn: () => {
+                    try { child.kill('SIGKILL'); } catch (e) {}
+                }
+            });
+            taskManager.startTask(task.id);
+        } catch (e) {}
 
         child.stdout.on('data', (data) => {
             console.log(`[yt-dlp] ${data.toString().trim()}`);
@@ -184,7 +197,27 @@ function downloadMedia(url, isAudioOnly) {
         });
 
         child.on('close', (code) => {
+            if (task) {
+                try {
+                    const taskManager = require('./core/taskManagerService');
+                    if (code === 0) {
+                        taskManager.completeTask(task.id, downloadsDir);
+                    } else {
+                        taskManager.failTask(task.id, `yt-dlp exited con código ${code}`);
+                    }
+                } catch (e) {}
+            }
             if (code === 0) {
+                try {
+                    const eventBus = require('./core/eventBusService');
+                    const { SYSTEM_EVENTS } = require('./core/eventBusService');
+                    eventBus.publish(SYSTEM_EVENTS.DOWNLOAD_COMPLETED, {
+                        url,
+                        destination: downloadsDir,
+                        isAudioOnly,
+                        message: `Descarga completada en ${downloadsDir}`
+                    });
+                } catch (e) {}
                 console.log(`[DownloadService] Descarga completada con éxito en ${downloadsDir}`);
                 resolve(downloadsDir);
             } else {

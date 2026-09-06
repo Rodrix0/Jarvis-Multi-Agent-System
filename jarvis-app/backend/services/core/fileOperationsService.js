@@ -60,7 +60,7 @@ class FileOperationsService {
         fs.writeFileSync(filePath, buffer);
     }
 
-    async createFile({ fileName, content = '', format = 'txt', folderName = null, topic = null }) {
+    async createFile({ fileName, content = '', format = 'txt', folderName = null, topic = null, template = null, style = null, templateData = {} }) {
         let targetDir = this.getDesktopPath();
 
         // Si se pide crear dentro de una carpeta específica
@@ -91,7 +91,18 @@ class FileOperationsService {
         // Si es Word (.docx)
         if (isWord) {
             const title = topic || path.basename(baseName, ext);
-            await this.createWordDocument(targetFilePath, title, content);
+            if (template) {
+                const { documentTemplateService } = require('../developer/documentTemplateService');
+                await documentTemplateService.renderDocument({
+                    template,
+                    style: style || 'CLASSIC_ACADEMIC',
+                    data: { title, content, ...templateData },
+                    title,
+                    outputPath: targetFilePath
+                });
+            } else {
+                await this.createWordDocument(targetFilePath, title, content);
+            }
         } else {
             // Archivo de texto plano (.txt, .md, etc.)
             let fileContent = String(content || '');

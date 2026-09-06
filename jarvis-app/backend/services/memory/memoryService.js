@@ -28,6 +28,7 @@ function decryptOnDemand(ciphertext) {
 }
 
 const memoryImportanceService = require('./memoryImportanceService');
+const entityGraphService = require('./entityGraphService');
 
 class MemoryService {
     constructor() {
@@ -86,6 +87,27 @@ class MemoryService {
                 INSERT INTO memory (id, type, tier, key, value, source, confidence, created_at, expires_at, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
             `).run(id, type, effectiveTier, key, storedValue, source, effectiveConfidence, now, effectiveExpiresAt);
+            try {
+                const triples = entityGraphService.extractTriplesFromText(value);
+                for (const t of triples) {
+                    const objId = `${t.object_type || 'concept'}:${t.object_name.replace(/\s+/g, '_')}`;
+                    if (!entityGraphService.getEntity(objId)) {
+                        entityGraphService.createEntity({
+                            id: objId,
+                            name: t.object_name,
+                            type: t.object_type || 'concept',
+                            aliases: [t.object_name]
+                        });
+                    }
+                    entityGraphService.createRelation({
+                        subject_id: t.subject_id,
+                        predicate: t.predicate,
+                        object_id: objId,
+                        confidence: effectiveConfidence
+                    });
+                }
+            } catch (_) {}
+
             return { ok: true, id, tier: effectiveTier, importance: effectiveConfidence, message: 'Recuerdo guardado con éxito.' };
         } catch (err) {
             return { ok: false, message: err.message };
@@ -112,6 +134,10 @@ class MemoryService {
         `).run(`%${keyOrTopic}%`, `%${keyOrTopic}%`);
 
         return { ok: true, count: res.changes, message: `Se marcaron ${res.changes} recuerdo(s) como olvidados.` };
+    }
+
+    get entityGraph() {
+        return entityGraphService;
     }
 }
 

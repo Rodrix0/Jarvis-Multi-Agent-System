@@ -41,6 +41,9 @@
                 <button id="btn-open-brain-modal" class="voice-test-btn" type="button" title="Voz, memoria y acciones">
                     <i class="fa-solid fa-brain"></i> Voz y memoria
                 </button>
+                <button id="btn-open-dashboard" class="voice-test-btn" type="button" title="Panel de Telemetría y Diagnóstico (Ítem 31)" style="border-color: #00ffff; color: #00ffff;">
+                    <i class="fa-solid fa-gauge-high"></i> Dashboard
+                </button>
                 <div id="jarvis-power-badge" class="jarvis-power-badge awake" title="Clic para alternar entre PRENDIDO y APAGADO">
                     <span class="power-dot"></span>
                     <div class="power-info">
@@ -251,6 +254,117 @@
             <div class="brain-tab-content" id="tab-memory" style="display: none;">
                 <p>Recuerdos persistentes almacenados en la base de datos de Jarvis.</p>
                 <ul id="memory-items-list" style="list-style: none; padding: 0;"></ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL DASHBOARD DE TELEMETRÍA (Ítem 31) -->
+    <div id="dashboard-modal" class="modal hidden">
+        <div class="modal-content dashboard-modal-content">
+            <div class="dashboard-header-bar">
+                <div class="dashboard-title-wrap">
+                    <span class="live-pulse-dot"></span>
+                    <h2><i class="fa-solid fa-gauge-high"></i> JARVIS STATUS</h2>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="btn-refresh-dashboard" class="voice-test-btn" style="padding: 4px 10px;" title="Refrescar métricas"><i class="fa-solid fa-arrows-rotate"></i></button>
+                    <span class="close-btn" id="close-dashboard-modal">&times;</span>
+                </div>
+            </div>
+
+            <div class="dashboard-sections-container">
+                <!-- SECCIÓN 1: SERVICIOS SATÉLITE -->
+                <div class="dashboard-card">
+                    <div class="card-subtitle"><i class="fa-solid fa-server"></i> SERVICIOS PRINCIPALES</div>
+                    <div class="services-telemetry-grid" id="dashboard-services-grid">
+                        <div class="service-item" id="svc-core">
+                            <span class="svc-name">Core</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-ollama">
+                            <span class="svc-name">Ollama</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-python">
+                            <span class="svc-name">Python Engine</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-whisper">
+                            <span class="svc-name">Whisper</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-comfyui">
+                            <span class="svc-name">ComfyUI</span>
+                            <span class="svc-badge badge-sleep">SLEEP</span>
+                        </div>
+                        <div class="service-item" id="svc-broadlink">
+                            <span class="svc-name">BroadLink</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-homeassistant">
+                            <span class="svc-name">Home Assistant</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SECCIÓN 2: HARDWARE & RECURSOS -->
+                <div class="dashboard-card">
+                    <div class="card-subtitle"><i class="fa-solid fa-microchip"></i> RECURSOS DE HARDWARE</div>
+                    <div class="hardware-meters-list">
+                        <!-- CPU -->
+                        <div class="meter-item">
+                            <div class="meter-labels">
+                                <span><i class="fa-solid fa-bolt"></i> CPU</span>
+                                <span id="dash-cpu-val" class="meter-val">8%</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div id="dash-cpu-bar" class="progress-bar-fill fill-cpu" style="width: 8%;"></div>
+                            </div>
+                        </div>
+
+                        <!-- RAM -->
+                        <div class="meter-item">
+                            <div class="meter-labels">
+                                <span><i class="fa-solid fa-memory"></i> RAM</span>
+                                <span id="dash-ram-val" class="meter-val">7.0 / 16.0 GB (44%)</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div id="dash-ram-bar" class="progress-bar-fill fill-ram" style="width: 44%;"></div>
+                            </div>
+                        </div>
+
+                        <!-- VRAM GPU -->
+                        <div class="meter-item">
+                            <div class="meter-labels">
+                                <span><i class="fa-solid fa-vr-cardboard"></i> VRAM</span>
+                                <span id="dash-vram-val" class="meter-val">5.2 / 8.0 GB (65%)</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div id="dash-vram-bar" class="progress-bar-fill fill-vram" style="width: 65%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SECCIÓN 3: OPERACIÓN & IA -->
+                <div class="dashboard-card">
+                    <div class="card-subtitle"><i class="fa-solid fa-robot"></i> DIAGNÓSTICO DE OPERACIÓN &amp; IA</div>
+                    <div class="op-metrics-grid">
+                        <div class="op-item">
+                            <span class="op-label">Current model</span>
+                            <span id="dash-current-model" class="op-value tag-model">Qwen 2.5</span>
+                        </div>
+                        <div class="op-item">
+                            <span class="op-label">Last action</span>
+                            <span id="dash-last-action" class="op-value tag-action">open_spotify</span>
+                        </div>
+                        <div class="op-item">
+                            <span class="op-label">Latency</span>
+                            <span id="dash-latency" class="op-value tag-latency">41 ms</span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

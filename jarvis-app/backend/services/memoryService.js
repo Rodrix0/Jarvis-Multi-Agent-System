@@ -3,10 +3,31 @@ const path = require('path');
 const crypto = require('crypto');
 
 const MEMORY_PATH = process.env.JARVIS_MEMORY_PATH || path.join(__dirname, '..', 'data', 'jarvis_memory.json');
-const MAX_TURNS = 240;
+
+// Presupuesto Dinámico de Tokens (Ítem 21): sustituye el límite fijo de 240 turnos
+const MAX_TOKENS = parseInt(process.env.JARVIS_MAX_CONTEXT_TOKENS, 10) || 20000;
+const TARGET_TOKENS = Math.floor(MAX_TOKENS * 0.90); // 18.000 tokens (zona óptima de confort)
+
+/**
+ * Estimador de tokens calibrado para español, inglés y sintaxis de programación.
+ * Pondera palabras, signos de puntuación y operadores/símbolos de código.
+ */
+function estimateTokens(text) {
+    if (!text) return 0;
+    const str = String(text);
+    const words = str.trim().split(/\s+/).filter(Boolean);
+    const symbols = (str.match(/[{}[\]()<>=;:,.*+?^$|\\!@#%&~`"'/_-]/g) || []).length;
+    // ~1.25 tokens por palabra + 0.3 por símbolo de puntuación o código
+    const estimated = Math.ceil((words.length * 1.25) + (symbols * 0.3));
+    return Math.max(1, Math.max(estimated, Math.ceil(str.length / 4.0)));
+}
+
+function getTotalTokens(conversations = []) {
+    return conversations.reduce((acc, turn) => acc + (turn.tokens || estimateTokens(turn.text)), 0);
+}
 
 const EMPTY_MEMORY = {
-    version: 1,
+    version: 2,
     activeTopic: 'general',
     conversations: [],
     topics: {},
@@ -51,23 +72,59 @@ function detectTopic(text, previous = 'general') {
     return previous || 'general';
 }
 
-function summarizeOldTurns(memory) {
-    if (memory.conversations.length <= MAX_TURNS) return;
-    const removed = memory.conversations.splice(0, memory.conversations.length - 160);
-    const grouped = removed.reduce((acc, turn) => {
+function summarizeEvictedTurns(memory, evictedTurns = []) {
+    if (!evictedTurns || evictedTurns.length === 0) return;
+    const grouped = evictedTurns.reduce((acc, turn) => {
         (acc[turn.topic || 'general'] ||= []).push(turn);
         return acc;
     }, {});
+
     for (const [topic, turns] of Object.entries(grouped)) {
+        const textSummary = turns.slice(-12).map(turn => `${turn.role}: ${turn.text.slice(0, 200)}`).join(' | ');
         memory.summaries.push({
             id: crypto.randomUUID(),
             topic,
             createdAt: new Date().toISOString(),
             turnCount: turns.length,
-            text: turns.slice(-12).map(turn => `${turn.role}: ${turn.text.slice(0, 180)}`).join(' | ')
+            tokensEstimate: estimateTokens(textSummary),
+            text: textSummary,
+            timeRange: {
+                from: turns[0]?.at,
+                to: turns[turns.length - 1]?.at
+            }
         });
     }
+
+    // Mantener un historial de resúmenes rodantes (máximo 60)
     memory.summaries = memory.summaries.slice(-60);
+}
+
+function evictOldTurnsProgressively(memory) {
+    let currentTokens = getTotalTokens(memory.conversations);
+    if (currentTokens <= MAX_TOKENS) return;
+
+    const evicted = [];
+
+    // Desalojo progresivo FIFO respetando turnos fijados ('pinned' o 'priority: high')
+    let i = 0;
+    while (i < memory.conversations.length && currentTokens > TARGET_TOKENS) {
+        const turn = memory.conversations[i];
+        const isPinned = turn.meta && (turn.meta.pinned === true || turn.meta.importance === 'HIGH' || turn.meta.priority === 'high');
+
+        if (isPinned) {
+            i++;
+            continue;
+        }
+
+        const [removed] = memory.conversations.splice(i, 1);
+        const removedTokens = removed.tokens || estimateTokens(removed.text);
+        currentTokens -= removedTokens;
+        evicted.push(removed);
+    }
+
+    if (evicted.length > 0) {
+        summarizeEvictedTurns(memory, evicted);
+    }
 }
 
 function addTurn(role, text, meta = {}) {
@@ -77,9 +134,19 @@ function addTurn(role, text, meta = {}) {
     const topic = meta.topic || detectTopic(clean, memory.activeTopic);
     memory.activeTopic = topic;
     memory.topics[topic] = { lastUsedAt: new Date().toISOString(), turnCount: (memory.topics[topic]?.turnCount || 0) + 1 };
-    const turn = { id: crypto.randomUUID(), at: new Date().toISOString(), role, text: clean.slice(0, 4000), topic, meta };
+    
+    const tokens = estimateTokens(clean);
+    const turn = {
+        id: crypto.randomUUID(),
+        at: new Date().toISOString(),
+        role,
+        text: clean.slice(0, 16000),
+        tokens,
+        topic,
+        meta
+    };
     memory.conversations.push(turn);
-    summarizeOldTurns(memory);
+    evictOldTurnsProgressively(memory);
     write(memory);
     return turn;
 }
@@ -88,6 +155,35 @@ function recent(limit = 12, topic = '') {
     const memory = read();
     const turns = topic ? memory.conversations.filter(item => item.topic === topic) : memory.conversations;
     return turns.slice(-Math.min(50, Math.max(1, Number(limit) || 12)));
+}
+
+function recentByTokens(tokenBudget = 4000, topic = '') {
+    const memory = read();
+    const allTurns = topic ? memory.conversations.filter(item => item.topic === topic) : memory.conversations;
+
+    const selectedTurns = [];
+    let accumulatedTokens = 0;
+    const budget = Math.max(100, Number(tokenBudget) || 4000);
+
+    // Iterar desde el más reciente hacia atrás
+    for (let i = allTurns.length - 1; i >= 0; i--) {
+        const turn = allTurns[i];
+        const turnTokens = turn.tokens || estimateTokens(turn.text);
+
+        if (accumulatedTokens + turnTokens <= budget) {
+            selectedTurns.unshift(turn);
+            accumulatedTokens += turnTokens;
+        } else {
+            break;
+        }
+    }
+
+    return {
+        turns: selectedTurns,
+        totalTokens: accumulatedTokens,
+        budget,
+        count: selectedTurns.length
+    };
 }
 
 function resolveReferences(text) {
@@ -141,15 +237,35 @@ function applyCorrections(text) {
     return result;
 }
 
+function getMetrics() {
+    const memory = read();
+    const totalTokens = getTotalTokens(memory.conversations);
+    const totalTurns = memory.conversations.length;
+    const pinnedTurnsCount = memory.conversations.filter(t => t.meta && (t.meta.pinned === true || t.meta.importance === 'HIGH' || t.meta.priority === 'high')).length;
+
+    return {
+        totalTurns,
+        totalTokens,
+        maxTokens: MAX_TOKENS,
+        targetTokens: TARGET_TOKENS,
+        utilizationPercent: Math.round((totalTokens / MAX_TOKENS) * 100),
+        averageTokensPerTurn: totalTurns ? Math.round(totalTokens / totalTurns) : 0,
+        pinnedTurnsCount,
+        summariesCount: memory.summaries.length,
+        topicsCount: Object.keys(memory.topics).length
+    };
+}
+
 function snapshot() {
     const memory = read();
     return {
         activeTopic: memory.activeTopic,
         topics: memory.topics,
-        conversations: memory.conversations.slice(-100),
+        conversations: memory.conversations,
         preferences: memory.preferences,
         corrections: memory.corrections,
-        summaries: memory.summaries.slice(-30)
+        summaries: memory.summaries.slice(-30),
+        metrics: getMetrics()
     };
 }
 
@@ -184,4 +300,22 @@ function clear(collection) {
     return true;
 }
 
-module.exports = { addTurn, recent, resolveReferences, addPreference, addCorrection, applyCorrections, snapshot, updateItem, removeItem, clear, detectTopic };
+module.exports = {
+    addTurn,
+    recent,
+    recentByTokens,
+    getMetrics,
+    estimateTokens,
+    getTotalTokens,
+    MAX_TOKENS,
+    TARGET_TOKENS,
+    resolveReferences,
+    addPreference,
+    addCorrection,
+    applyCorrections,
+    snapshot,
+    updateItem,
+    removeItem,
+    clear,
+    detectTopic
+};

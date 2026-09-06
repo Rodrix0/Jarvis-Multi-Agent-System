@@ -258,6 +258,13 @@ async function searchAndPlay(query) {
     }
 
     if (!deviceId) {
+        try {
+            const structuredLogger = require('./diagnostics/structuredLoggerService');
+            structuredLogger.error('spotifyService', 'play', {
+                code: 'window_not_found',
+                message: 'No hay dispositivo de Spotify activo disponible.'
+            }, { whatPlaying });
+        } catch (e) {}
         return `Encontré "${whatPlaying}" pero Spotify no tiene ningún dispositivo disponible. Abrí Spotify manualmente, dale play a cualquier canción por un segundo, y después pedime de nuevo.`;
     }
 
@@ -273,11 +280,20 @@ async function searchAndPlay(query) {
     try {
         await spotifyAPI(`/me/player/play?device_id=${deviceId}`, 'PUT', playBody);
         console.log(`[Spotify] ▶️ Reproduciendo: ${whatPlaying}`);
+        try {
+            const structuredLogger = require('./diagnostics/structuredLoggerService');
+            structuredLogger.info('spotifyService', 'play', { whatPlaying, deviceId });
+        } catch (e) {}
         return `Reproduciendo ${whatPlaying}.`;
     } catch (e) {
         console.error('[Spotify] Error final al reproducir:', e.message);
+        try {
+            const structuredLogger = require('./diagnostics/structuredLoggerService');
+            structuredLogger.error('spotifyService', 'play', e, { whatPlaying, deviceId });
+        } catch (logErr) {}
         return `Encontré "${whatPlaying}" pero hubo un error al reproducirlo: ${e.message}`;
     }
+
 }
 
 /**

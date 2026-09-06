@@ -21,14 +21,42 @@ const PYTHON_PATH = getPythonPath();
 const EDGE_TTS_SCRIPT = path.join(__dirname, '..', 'scripts', 'edge_tts_speak.py');
 
 let activeProcess = null;
+let currentSpeechId = null;
+
+function getBargeInService() {
+    try {
+        return require('./bargeInService');
+    } catch (e) {
+        return null;
+    }
+}
+
+function isPlaying() {
+    return activeProcess !== null;
+}
 
 function stop() {
     if (!activeProcess) return false;
     const processToStop = activeProcess;
     activeProcess = null;
+    const pid = processToStop.pid;
     try {
         processToStop.kill('SIGKILL');
     } catch (e) {}
+
+    // En Windows aseguramos la terminación completa del árbol de procesos si hace falta
+    if (process.platform === 'win32' && pid) {
+        try {
+            const { exec } = require('child_process');
+            exec(`taskkill /pid ${pid} /T /F`, () => {});
+        } catch (e) {}
+    }
+
+    const bargeIn = getBargeInService();
+    if (bargeIn && currentSpeechId) {
+        bargeIn.notifySpeechEnded(currentSpeechId);
+    }
+    currentSpeechId = null;
     return true;
 }
 
@@ -36,6 +64,11 @@ function speak(text, voice = 'es-AR-TomasNeural') {
     stop();
     const safeText = String(text || '').trim().slice(0, 15000);
     if (!safeText) return Promise.resolve();
+
+    const bargeIn = getBargeInService();
+    if (bargeIn) {
+        currentSpeechId = bargeIn.notifySpeechStarted(safeText, { voice });
+    }
 
     return new Promise((resolve, reject) => {
         const pythonExecutable = fs.existsSync(PYTHON_PATH) ? PYTHON_PATH : 'python';
@@ -50,6 +83,8 @@ function speak(text, voice = 'es-AR-TomasNeural') {
         const timeout = setTimeout(() => {
             if (activeProcess === child) activeProcess = null;
             try { child.kill('SIGKILL'); } catch (e) {}
+            if (bargeIn && currentSpeechId) bargeIn.notifySpeechEnded(currentSpeechId);
+            currentSpeechId = null;
             reject(new Error('La salida de voz neuronal excedió el tiempo permitido.'));
         }, Math.min(120000, Math.max(15000, safeText.length * 100)));
 
@@ -58,12 +93,16 @@ function speak(text, voice = 'es-AR-TomasNeural') {
         child.on('error', error => {
             clearTimeout(timeout);
             if (activeProcess === child) activeProcess = null;
+            if (bargeIn && currentSpeechId) bargeIn.notifySpeechEnded(currentSpeechId);
+            currentSpeechId = null;
             reject(error);
         });
 
         child.on('close', code => {
             clearTimeout(timeout);
             if (activeProcess === child) activeProcess = null;
+            if (bargeIn && currentSpeechId) bargeIn.notifySpeechEnded(currentSpeechId);
+            currentSpeechId = null;
             if (code === 0) {
                 resolve();
             } else {
@@ -82,4 +121,5 @@ function speak(text, voice = 'es-AR-TomasNeural') {
     });
 }
 
-module.exports = { speak, stop };
+module.exports = { speak, stop, isPlaying };
+

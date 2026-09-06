@@ -22,6 +22,7 @@ const trashService = require('./core/trashService');
 const memoryServiceV6 = require('./memory/memoryService');
 const routineService = require('./automation/routineService');
 const windowsControlService = require('./windowsControlService');
+const homeAssistantService = require('./homeassistant/homeAssistantService');
 
 let registered = false;
 
@@ -41,6 +42,222 @@ function registerActions() {
         id: 'undo.last', name: 'Deshacer última acción', description: 'Revierte la última acción reversible realizada.',
         parameters: {}, permission: 'standard', examples: ['Deshacé lo último'],
         execute: async () => undoManager.undoLast('GLOBAL')
+    });
+
+    // Task Management (Ítem 25)
+    actionKernel.register({
+        id: 'task.cancel', name: 'Cancelar tarea', description: 'Cancela la tarea activa especificada o la más reciente.',
+        parameters: { target: 'Tipo o nombre de la tarea a cancelar' }, permission: 'standard', examples: ['Cancelá', 'Cancelá la descarga', 'Detener tarea'],
+        execute: async ({ target } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            return taskManager.cancelCurrent(target);
+        }
+    });
+    actionKernel.register({
+        id: 'task.pause', name: 'Pausar tarea', description: 'Pausa la tarea en ejecución.',
+        parameters: { target: 'Tipo o ID de la tarea' }, permission: 'standard', examples: ['Pausá la descarga', 'Pausá'],
+        execute: async ({ target } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            const active = taskManager.getActiveTasks();
+            if (active.length === 0) return { ok: false, message: 'No hay ninguna tarea activa para pausar.' };
+            const task = target ? active.find(t => t.type.includes(target) || t.id === target) || active[active.length - 1] : active[active.length - 1];
+            return taskManager.pause(task.id);
+        }
+    });
+    actionKernel.register({
+        id: 'task.resume', name: 'Reanudar tarea', description: 'Reanuda una tarea pausada.',
+        parameters: { target: 'Tipo o ID de la tarea' }, permission: 'standard', examples: ['Reanudá la descarga', 'Continuá la tarea'],
+        execute: async ({ target } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            const paused = taskManager.listTasks({ status: 'PAUSED' });
+            if (paused.length === 0) return { ok: false, message: 'No hay ninguna tarea pausada para reanudar.' };
+            const task = target ? paused.find(t => t.type.includes(target) || t.id === target) || paused[0] : paused[0];
+            return taskManager.resume(task.id);
+        }
+    });
+    actionKernel.register({
+        id: 'task.list', name: 'Listar tareas activas', description: 'Informa las tareas actualmente en ejecución.',
+        parameters: {}, permission: 'standard', examples: ['Qué tareas hay activas', 'Listar tareas'],
+        execute: async () => {
+            const taskManager = require('./core/taskManagerService');
+            const active = taskManager.getActiveTasks();
+            if (active.length === 0) return { ok: true, count: 0, message: 'No hay ninguna tarea activa en este momento.' };
+            const summary = active.map((t, idx) => `${idx + 1}. [${t.type}] ${t.description} (${t.status})`).join('\n');
+            return {
+                ok: true,
+                count: active.length,
+                tasks: active,
+                message: `Hay ${active.length} tarea${active.length > 1 ? 's' : ''} activa${active.length > 1 ? 's' : ''}:\n${summary}`
+            };
+        }
+    });
+
+    // Persistent Task Recovery (Ítem 28)
+    actionKernel.register({
+        id: 'task.recover', name: 'Recuperar tareas interrumpidas', description: 'Escanea SQLite y recupera tareas huérfanas de sesiones anteriores.',
+        parameters: {}, permission: 'standard', examples: ['Recuperar tareas pendientes', 'Continuar tareas interrumpidas'],
+        execute: async () => {
+            const taskManager = require('./core/taskManagerService');
+            const res = await taskManager.recoverOrphanTasks();
+            return {
+                ok: true,
+                count: res.count,
+                recovered: res.recovered,
+                data: res,
+                message: res.count > 0
+                    ? `Se recuperaron ${res.count} tarea${res.count > 1 ? 's' : ''} pendiente${res.count > 1 ? 's' : ''} de sesiones anteriores.`
+                    : 'No había tareas pendientes para recuperar.'
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'task.retry', name: 'Reintentar tarea', description: 'Reintenta una tarea específica por ID o la más reciente fallida.',
+        parameters: { taskId: 'ID de la tarea' }, permission: 'standard', examples: ['Reintentar tarea', 'Reintentar'],
+        execute: async ({ taskId } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            let targetId = taskId;
+            if (!targetId) {
+                const failed = taskManager.listTasks({ status: 'FAILED' });
+                if (failed.length > 0) targetId = failed[0].id;
+            }
+            if (!targetId) return { ok: false, message: 'No se indicó una tarea para reintentar.' };
+            return taskManager.retryTask(targetId);
+        }
+    });
+    actionKernel.register({
+        id: 'task.history', name: 'Historial de tareas persistentes', description: 'Consulta el registro de tareas en SQLite con puntos de control.',
+        parameters: { limit: 'Límite de registros' }, permission: 'standard', examples: ['Ver historial de tareas', 'Registro de tareas'],
+        execute: async ({ limit = 20 } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            const history = taskManager.listTasks({ limit: Number(limit) || 20, fromDb: true });
+            return {
+                ok: true,
+                count: history.length,
+                tasks: history,
+                data: { count: history.length, tasks: history },
+                message: `Se encontraron ${history.length} tareas en el registro histórico.`
+            };
+        }
+    });
+
+    // Conditional Automation Engine (Ítem 27)
+    actionKernel.register({
+        id: 'automation.create-rule', name: 'Crear automatización condicional', description: 'Crea una regla de automatización reactiva por eventos y condiciones.',
+        parameters: { rule: 'Objeto o especificación de la regla (trigger, filters, actions)' }, permission: 'standard', examples: ['Crear regla', 'Automatizar cuando termine la descarga'],
+        execute: async (params = {}) => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            const ruleData = params.rule || params;
+            const created = conditionalAutomation.createRule(ruleData);
+            return {
+                ok: true,
+                rule: created,
+                data: { rule: created },
+                message: `Automatización "${created.name}" creada con éxito (ID: ${created.id}).`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'automation.list-rules', name: 'Listar automatizaciones', description: 'Lista todas las reglas de automatización condicional configuradas.',
+        parameters: {}, permission: 'standard', examples: ['Listar automatizaciones', 'Ver reglas de automatización'],
+        execute: async () => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            const rules = conditionalAutomation.getAllRules();
+            if (rules.length === 0) return { ok: true, count: 0, rules: [], data: { count: 0, rules: [] }, message: 'No hay reglas de automatización configuradas.' };
+            const summary = rules.map((r, i) => `${i + 1}. [${r.enabled ? 'ACTIVA' : 'INACTIVA'}] "${r.name}" (Evento: ${r.trigger.event})`).join('\n');
+            return {
+                ok: true,
+                count: rules.length,
+                rules,
+                data: { count: rules.length, rules },
+                message: `Hay ${rules.length} automatización${rules.length > 1 ? 'es' : ''}:\n${summary}`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'automation.toggle-rule', name: 'Alternar regla de automatización', description: 'Habilita o deshabilita una regla por ID.',
+        parameters: { id: 'ID de la regla', enabled: 'Opcional booleano' }, permission: 'standard', examples: ['Pausar regla', 'Activar regla'],
+        execute: async ({ id, enabled } = {}) => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            const updated = conditionalAutomation.toggleRule(id, enabled);
+            if (!updated) return { ok: false, message: `No se encontró la regla ${id}.` };
+            return {
+                ok: true,
+                rule: updated,
+                data: { rule: updated },
+                message: `Regla "${updated.name}" ahora está ${updated.enabled ? 'activada' : 'desactivada'}.`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'automation.delete-rule', name: 'Eliminar regla de automatización', description: 'Elimina definitivamente una regla de automatización.',
+        parameters: { id: 'ID de la regla a eliminar' }, permission: 'standard', examples: ['Borrar regla de automatización'],
+        execute: async ({ id } = {}) => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            const deleted = conditionalAutomation.deleteRule(id);
+            return {
+                ok: deleted,
+                message: deleted ? `Regla ${id} eliminada.` : `No se pudo eliminar la regla ${id}.`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'automation.test-rule', name: 'Probar regla de automatización', description: 'Ejecuta una simulación (dry-run) de una regla contra datos de prueba.',
+        parameters: { id: 'ID de la regla', mockPayload: 'Datos simulados del evento' }, permission: 'standard', examples: ['Probar automatización'],
+        execute: async ({ id, mockPayload = {} } = {}) => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            return conditionalAutomation.testRule(id, mockPayload);
+        }
+    });
+
+    // Home Assistant & Domótica (Ítem 29)
+    actionKernel.register({
+        id: 'ha.command', name: 'Comando de domótica', description: 'Ejecuta una acción o servicio sobre dispositivos inteligentes en Home Assistant.',
+        parameters: { text: 'Orden en lenguaje natural', domain: 'Dominio HA', service: 'Servicio HA', entity_id: 'Entidad de HA' }, permission: 'standard',
+        examples: ['Prende la luz del living', 'Pone el aire a 24 grados', 'Apaga las luces', 'Prende el enchufe'],
+        execute: async (params = {}) => {
+            let res;
+            if (params.text) {
+                res = await homeAssistantService.executeCommand(params.text);
+            } else if (params.domain && params.service) {
+                res = await homeAssistantService.callService(params.domain, params.service, params);
+            } else {
+                return { ok: false, message: 'Faltan parámetros para la orden de domótica.' };
+            }
+            return { ok: res?.success !== false, data: res, message: res?.message || 'Comando de domótica ejecutado.' };
+        }
+    });
+    actionKernel.register({
+        id: 'ha.get-state', name: 'Consultar estado de dispositivo', description: 'Consulta el valor o estado de un sensor o entidad de Home Assistant.',
+        parameters: { entity_id: 'ID de la entidad a consultar' }, permission: 'standard', examples: ['Estado de la luz', 'Temperatura del living'],
+        execute: async ({ entity_id } = {}) => {
+            const state = homeAssistantService.getState(entity_id);
+            if (!state) return { ok: false, message: `Dispositivo ${entity_id} no encontrado.` };
+            return {
+                ok: true,
+                data: { entity_id, state: state.state, attributes: state.attributes },
+                message: `El estado de ${entity_id} es ${state.state}.`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'ha.list-devices', name: 'Listar dispositivos inteligentes', description: 'Lista todos los dispositivos domóticos sincronizados.',
+        parameters: { domain: 'Filtro opcional por dominio (light, climate, switch, sensor)' }, permission: 'standard', examples: ['Listar luces', 'Ver dispositivos inteligentes'],
+        execute: async ({ domain } = {}) => {
+            const devices = homeAssistantService.listDevices(domain);
+            return {
+                ok: true,
+                data: { count: devices.length, devices },
+                message: `Se encontraron ${devices.length} dispositivos${domain ? ` en el dominio ${domain}` : ''}.`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'ha.sync', name: 'Sincronizar Home Assistant', description: 'Sincroniza el inventario completo de entidades con Home Assistant.',
+        parameters: {}, permission: 'standard', examples: ['Sincronizar domótica', 'Actualizar dispositivos'],
+        execute: async () => {
+            await homeAssistantService.syncAllStates();
+            return { ok: true, data: { ok: true }, message: 'Dispositivos de Home Assistant sincronizados con éxito.' };
+        }
     });
 
     // Windows Audio
@@ -351,6 +568,357 @@ function registerActions() {
         execute: async ({ topic }) => memoryServiceV6.forgetMemory(topic)
     });
 
+    // --- Coding Agent Autónomo (Ítem 41) ---
+    const { codingAgentService } = require('./developer/codingAgentService');
+    actionKernel.register({
+        id: 'code.autonomous_fix',
+        name: 'Reparar código con Coding Agent',
+        description: 'Mapea el repositorio, localiza archivos relevantes, modifica código, compila, auto-repara errores y genera diff.',
+        parameters: { instruction: 'Instrucción o bug a solucionar', projectPath: 'Ruta al proyecto o repositorio' },
+        permission: 'standard',
+        riskLevel: 'MEDIUM',
+        examples: ['Arreglá el sistema de inventario de mi Unity', 'Repará el error en el controller de mi API'],
+        execute: async ({ instruction, projectPath }) => {
+            const targetPath = projectPath || process.cwd();
+            const result = await codingAgentService.executeAutonomousFix({
+                projectPath: targetPath,
+                instruction
+            });
+            return {
+                ok: result.ok,
+                data: result,
+                message: result.report || result.error
+            };
+        }
+    });
+
+    // --- Integración Git con Gobernanza de Ramas Protegidas (Ítem 42) ---
+    const { gitIntegrationService } = require('./developer/gitIntegrationService');
+    actionKernel.register({
+        id: 'git.status',
+        name: 'Estado de Git',
+        description: 'Consulta el estado detallado del repositorio Git (rama, modificaciones, staged, untracked).',
+        parameters: { projectPath: 'Ruta del repositorio (opcional)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath } = {}) => {
+            const res = gitIntegrationService.getStatus(projectPath);
+            return { ok: res.isGit, data: res, message: res.isGit ? `Rama: ${res.branch}, Cambios: ${res.totalChanges}` : res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.diff',
+        name: 'Diferencias Git',
+        description: 'Muestra las diferencias (diff) del repositorio o de un archivo específico.',
+        parameters: { projectPath: 'Ruta del repo', file: 'Archivo específico (opcional)', staged: 'Ver solo staged' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath, file, staged } = {}) => {
+            const res = gitIntegrationService.getDiff(projectPath, { file, staged });
+            return { ok: res.ok, data: res, message: res.diff };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.safe_branch',
+        name: 'Asegurar Rama Segura',
+        description: 'Garantiza que Jarvis trabaje en una rama segura (jarvis/<slug>) sin tocar ramas protegidas como main o master.',
+        parameters: { projectPath: 'Ruta del repo', taskName: 'Nombre descriptivo de la tarea o fix' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath, taskName } = {}) => {
+            const res = gitIntegrationService.ensureSafeBranch(projectPath, taskName);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.safe_commit',
+        name: 'Commit Seguro con Política',
+        description: 'Realiza un commit en Git validando que la rama actual NO esté protegida y agregando firma de auditoría.',
+        parameters: { projectPath: 'Ruta del repo', message: 'Mensaje de commit', files: 'Archivos específicos (opcional)' },
+        permission: 'standard',
+        riskLevel: 'MEDIUM',
+        execute: async ({ projectPath, message, files } = {}) => {
+            const res = gitIntegrationService.commit(projectPath, message, { files });
+            return { ok: res.ok, data: res, message: res.summary || res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.rollback',
+        name: 'Rollback Git Seguro',
+        description: 'Restaura el árbol de trabajo o revierte el último commit preservando la integridad.',
+        parameters: { projectPath: 'Ruta del repo', mode: 'working_tree o commit' },
+        permission: 'standard',
+        riskLevel: 'MEDIUM',
+        execute: async ({ projectPath, mode } = {}) => {
+            const res = gitIntegrationService.rollback(projectPath, mode);
+            return { ok: res.ok, data: res, message: res.message || res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.summary',
+        name: 'Resumen de Cambios Git',
+        description: 'Compara la rama actual de Jarvis contra la base (main) y genera un reporte legible de cambios.',
+        parameters: { projectPath: 'Ruta del repo', baseBranch: 'Rama base (default: main)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath, baseBranch } = {}) => {
+            const res = gitIntegrationService.summarizeWork(projectPath, baseBranch);
+            return { ok: res.ok, data: res, message: res.summary || res.error };
+        }
+    });
+
+    // --- Snapshots Universales antes de Modificar Proyectos (Ítem 43) ---
+    const { snapshotService } = require('./developer/snapshotService');
+    actionKernel.register({
+        id: 'snapshot.create',
+        name: 'Crear Snapshot de Proyecto',
+        description: 'Genera un punto de restauración atómico (Git o Manifiesto) antes de realizar modificaciones en un proyecto o carpeta.',
+        parameters: { projectPath: 'Ruta del proyecto', label: 'Etiqueta descriptiva del snapshot' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath, label } = {}) => {
+            const res = await snapshotService.createSnapshot(projectPath, label);
+            return { ok: true, data: res, message: `Snapshot ${res.id} creado (${res.provider}, ${res.filesCount} archivos).` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'snapshot.restore',
+        name: 'Restaurar Snapshot de Proyecto',
+        description: 'Restaura un snapshot atómico revirtiendo cambios en archivos y limpiando archivos nuevos agregados.',
+        parameters: { snapshotId: 'ID del snapshot a restaurar' },
+        permission: 'standard',
+        riskLevel: 'HIGH',
+        execute: async ({ snapshotId } = {}) => {
+            const res = await snapshotService.restoreSnapshot(snapshotId);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    actionKernel.register({
+        id: 'snapshot.list',
+        name: 'Listar Snapshots',
+        description: 'Lista los snapshots disponibles para un proyecto o carpeta.',
+        parameters: { projectPath: 'Ruta del proyecto (opcional)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath } = {}) => {
+            const list = snapshotService.listSnapshots(projectPath);
+            return { ok: true, data: list, message: `${list.length} snapshots disponibles.` };
+        }
+    });
+
+    // --- Motor de Plantillas de Documentos y Estilos Guardados (Ítem 44) ---
+    const { documentTemplateService } = require('./developer/documentTemplateService');
+    actionKernel.register({
+        id: 'document.template_create',
+        name: 'Crear Documento desde Plantilla',
+        description: 'Genera un documento Word (.docx) formal utilizando plantillas (universidad, cv, informe_tecnico, monografia, presentacion, trabajo_practico) y estilos guardados.',
+        parameters: { template: 'Nombre de la plantilla', style: 'Estilo visual (opcional)', title: 'Título del documento', data: 'Datos estructurados para la plantilla' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ template, style, title, data = {} } = {}) => {
+            const res = await documentTemplateService.renderDocument({ template, style, data, title });
+            return { ok: res.ok, data: res, message: `Documento generado con plantilla '${res.template}' y estilo '${res.style}' en: ${res.filePath}` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'document.template_list',
+        name: 'Listar Plantillas de Documentos',
+        description: 'Lista todas las plantillas de documentos profesionales disponibles en Jarvis.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const templates = documentTemplateService.listTemplates();
+            return { ok: true, data: templates, message: `${templates.length} plantillas disponibles.` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'document.style_list',
+        name: 'Listar Estilos Guardados',
+        description: 'Lista los estilos de diseño visual (incorporados y personalizados) para documentos.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const styles = documentTemplateService.listStyles();
+            return { ok: true, data: styles, message: `${styles.length} estilos de diseño disponibles.` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'document.style_save',
+        name: 'Guardar Estilo de Documento',
+        description: 'Guarda un nuevo estilo visual personalizado con paleta de colores y tipografía.',
+        parameters: { name: 'Nombre del estilo', styleConfig: 'Configuración visual (font, primaryColor, secondaryColor...)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ name, styleConfig } = {}) => {
+            const saved = documentTemplateService.saveStyle(name, styleConfig);
+            return { ok: true, data: saved, message: `Estilo '${saved.name}' guardado exitosamente.` };
+        }
+    });
+
+    // --- Sistema de Perfiles de Comportamiento (Ítem 45) ---
+    const { behaviorProfileService } = require('./intelligence/behaviorProfileService');
+    actionKernel.register({
+        id: 'profile.switch',
+        name: 'Cambiar Perfil de Comportamiento',
+        description: 'Conmuta el perfil activo (NORMAL, CODING, GAMING, STUDY, HOME) adaptando herramientas, modelos LLM y verbosidad.',
+        parameters: { profileId: 'ID del perfil (NORMAL, CODING, GAMING, STUDY, HOME)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ profileId } = {}) => {
+            const res = behaviorProfileService.switchProfile(profileId);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    actionKernel.register({
+        id: 'profile.current',
+        name: 'Consultar Perfil Activo',
+        description: 'Obtiene la configuración del perfil de comportamiento activo en Jarvis.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const profile = behaviorProfileService.getActiveProfile();
+            return { ok: true, data: profile, message: `Perfil activo: ${profile.name} (${profile.id})` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'profile.list',
+        name: 'Listar Perfiles de Comportamiento',
+        description: 'Lista los perfiles de comportamiento disponibles en Jarvis.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const profiles = behaviorProfileService.listProfiles();
+            return { ok: true, data: profiles, message: `${profiles.length} perfiles disponibles.` };
+        }
+    });
+
+    // --- Contexto de Actividad en Tiempo Real (Ítem 46) ---
+    const { activityContextService } = require('./intelligence/activityContextService');
+    actionKernel.register({
+        id: 'context.current',
+        name: 'Contexto de Actividad Actual',
+        description: 'Obtiene el contexto en tiempo real: aplicación activa, archivo en foco, proyecto, monitor, hora y dispositivos cercanos.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const ctx = await activityContextService.getCurrentContext();
+            return { ok: true, data: ctx, message: `Activo: ${ctx.app} | Archivo: ${ctx.file || 'Ninguno'} | Proyecto: ${ctx.project || 'Ninguno'}` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'context.resolve_implicit',
+        name: 'Resolver Comando Implícito',
+        description: 'Interpreta y resuelve órdenes con pronombres ("compilalo", "guardalo", "cerralo") según la app y archivo activo.',
+        parameters: { utterance: 'Comando del usuario (e.g. "compilalo", "cerralo")' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ utterance } = {}) => {
+            const res = await activityContextService.resolveImplicitCommand(utterance);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    // --- Clipboard Inteligente Bajo Demanda (Ítem 47) ---
+    const { smartClipboardService } = require('./intelligence/smartClipboardService');
+    actionKernel.register({
+        id: 'clipboard.process',
+        name: 'Procesar Portapapeles Inteligente',
+        description: 'Procesa el portapapeles bajo comando ("arreglame esto", "mandale esto a mamá", "explicame esto", "traducí esto").',
+        parameters: { utterance: 'Comando o instrucción deíctica del usuario', explicitText: 'Texto opcional' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ utterance, explicitText } = {}) => {
+            const res = await smartClipboardService.processClipboardIntent({ utterance, explicitText });
+            return { ok: res.ok, data: res, message: res.message || res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'clipboard.read',
+        name: 'Leer Portapapeles Bajo Demanda',
+        description: 'Lee el contenido actual del portapapeles de Windows de forma segura (sin espionaje pasivo).',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const text = smartClipboardService.readClipboard();
+            const type = smartClipboardService.classifyContent(text);
+            return { ok: true, data: { text, type }, message: `Portapapeles (${type}): ${text.slice(0, 60)}...` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'clipboard.write',
+        name: 'Escribir en Portapapeles',
+        description: 'Copia un texto en el portapapeles de Windows.',
+        parameters: { text: 'Texto a escribir' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ text } = {}) => {
+            const ok = smartClipboardService.writeClipboard(text);
+            return { ok, message: ok ? 'Copiado al portapapeles.' : 'Error al copiar al portapapeles.' };
+        }
+    });
+
+    // --- Historial de Acciones y Timeline (Ítem 48) ---
+    const { actionTimelineService } = require('./core/actionTimelineService');
+    actionKernel.register({
+        id: 'timeline.query',
+        name: 'Consultar Historial de Acciones',
+        description: 'Responde consultas sobre las acciones recientes de Jarvis (ej. "¿qué hiciste en los últimos 20 minutos?").',
+        parameters: { utterance: 'Consulta temporal del usuario' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ utterance } = {}) => {
+            const res = actionTimelineService.queryTimeline(utterance);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    actionKernel.register({
+        id: 'timeline.recent',
+        name: 'Listar Línea Temporal',
+        description: 'Obtiene la lista cronológica de las acciones ejecutadas en los últimos minutos.',
+        parameters: { minutes: 'Ventana en minutos (default: 20)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ minutes = 20 } = {}) => {
+            const res = actionTimelineService.getTimeline(Number(minutes));
+            return { ok: true, data: res, message: res.formattedText };
+        }
+    });
+
+    actionKernel.register({
+        id: 'timeline.undo_last',
+        name: 'Deshacer Último Cambio',
+        description: 'Revierte la última acción reversible registrada en la línea temporal (archivos, código, git o sistema).',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'MEDIUM',
+        execute: async () => {
+            const res = await actionTimelineService.undoLastAction();
+            return { ok: res.ok, data: res, message: res.message || res.error };
+        }
+    });
+
     // Routines & Explanations
     actionKernel.register({
         id: 'routine.execute', name: 'Ejecutar rutina', description: 'Ejecuta una rutina de sistema configurada.',
@@ -359,10 +927,87 @@ function registerActions() {
     });
     actionKernel.register({
         id: 'explain.query', name: 'Explicar decisión o historial', description: 'Explica decisiones operativas y muestra historial.',
-        parameters: { query: 'Consulta de explicación' }, permission: 'standard',
+        parameters: { query: 'Consulta de explicación' }, permission: 'standard', riskLevel: 'LOW',
         execute: async ({ query }) => {
             const explanation = await explanationService.explainDecision(query);
-            return { message: explanation };
+            return { ok: true, message: explanation, explanation };
+        }
+    });
+
+    actionKernel.register({
+        id: 'explain.last_decision', name: 'Explicar última decisión', description: 'Retorna la trazabilidad y explicación detallada de la última decisión tomada.',
+        parameters: { tool: 'Filtro opcional por herramienta' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ tool } = {}) => {
+            const dec = explanationService.getLastDecision(tool);
+            if (!dec) return { ok: false, message: 'No hay decisiones registradas recientemente.' };
+            return { ok: true, data: dec, message: dec.userExplanation };
+        }
+    });
+
+    actionKernel.register({
+        id: 'explain.action', name: 'Explicar acción específica', description: 'Consulta la explicación y motivo de una acción específica.',
+        parameters: { action: 'Nombre o filtro de la acción' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ action } = {}) => {
+            const explanation = await explanationService.explainDecision(action);
+            return { ok: true, message: explanation };
+        }
+    });
+
+    // --- Sistema de Objetivos Jerárquicos y Ejecución Autónoma (Ítem 50) ---
+    const goalManager = require('./goals/goalManagerService');
+    actionKernel.register({
+        id: 'goal.plan', name: 'Planificar Objetivo', description: 'Desglosa una meta de alto nivel en un plan de subobjetivos jerárquicos.',
+        parameters: { instruction: 'Meta o instrucción del usuario' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ instruction } = {}) => {
+            const goal = goalManager.planGoalFromInstruction(instruction);
+            return { ok: true, goal, message: `Objetivo planificado con ${goal.subgoals.length} subobjetivos.` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.plan_and_execute', name: 'Planificar y Ejecutar Objetivo', description: 'Planifica y comienza la ejecución autónoma paso a paso de una meta.',
+        parameters: { instruction: 'Meta o instrucción del usuario', maxSteps: 'Número máximo de pasos' }, permission: 'standard', riskLevel: 'MEDIUM',
+        execute: async ({ instruction, maxSteps = 20 } = {}) => {
+            const goal = goalManager.planGoalFromInstruction(instruction);
+            const res = await goalManager.executeGoalStepByStep(goal.id, { maxSteps: Number(maxSteps) });
+            return { ok: res.ok, data: res, message: `Ejecutados ${res.stepsExecuted} pasos para el objetivo "${goal.title}". Progreso: ${res.progress.progressPercentage}%.` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.step', name: 'Avanzar Paso de Objetivo', description: 'Ejecuta el siguiente subobjetivo pendiente de un objetivo activo.',
+        parameters: { goalId: 'ID del objetivo' }, permission: 'standard', riskLevel: 'MEDIUM',
+        execute: async ({ goalId } = {}) => {
+            const res = await goalManager.stepGoal(goalId);
+            return { ok: res.ok, data: res, message: res.message || res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.progress', name: 'Consultar Progreso de Objetivo', description: 'Consulta el estado actual, porcentaje de avance y lista de subobjetivos.',
+        parameters: { goalId: 'ID del objetivo' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ goalId } = {}) => {
+            const prog = goalManager.getGoalProgress(goalId);
+            if (!prog) return { ok: false, message: 'Objetivo no encontrado.' };
+            return { ok: true, data: prog, progress: prog, message: `Objetivo "${prog.title}": ${prog.progressPercentage}% (${prog.completedSteps}/${prog.totalSteps} pasos).` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.pause', name: 'Pausar Objetivo', description: 'Pausa temporalmente la ejecución autónoma de un objetivo.',
+        parameters: { goalId: 'ID del objetivo' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ goalId } = {}) => {
+            const res = goalManager.pauseGoal(goalId);
+            return { ok: true, data: res, message: 'Objetivo pausado con éxito.' };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.resume', name: 'Reanudar Objetivo', description: 'Reanuda la ejecución autónoma de un objetivo pausado.',
+        parameters: { goalId: 'ID del objetivo' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ goalId } = {}) => {
+            const res = goalManager.resumeGoal(goalId);
+            return { ok: true, data: res, message: 'Objetivo reanudado con éxito.' };
         }
     });
 
@@ -738,6 +1383,26 @@ async function resolve(text) {
         return { id: 'emergency.stop', params: {} };
     }
 
+    // 2.5 Gestión y Cancelación de Tareas (Ítem 25)
+    if (/\b(?:cancel(?:a|ar|ame)|deten(?:er|e)|fren(?:a|ar))\s+(?:la\s+)?(?:descarga|bajada)\b/i.test(lower)) {
+        return { id: 'task.cancel', params: { target: 'download' } };
+    }
+    if (/\b(?:cancel(?:a|ar|ame)|deten(?:er|e)|fren(?:a|ar))\s+(?:la\s+)?(?:instalacion|tarea|accion|proceso|busqueda|investigacion)\b/i.test(lower)) {
+        return { id: 'task.cancel', params: { target: 'task' } };
+    }
+    if (/^(?:(?:jarvis\s+)?(?:cancel(?:a|ar|ame)|fren(?:a|ar))\s*)$/i.test(lower) || /^(?:cancel[aá]|cancelar|cancela\s+eso|cancela\s+la\s+orden)$/i.test(lower)) {
+        return { id: 'task.cancel', params: { target: null } };
+    }
+    if (/\b(?:paus(?:a|ar|ame)|pon\s+en\s+pausa)\s+(?:la\s+)?(?:descarga|tarea|proceso)?\b/i.test(lower) || /^(?:paus[aá]|pausar)$/i.test(lower)) {
+        return { id: 'task.pause', params: { target: null } };
+    }
+    if (/\b(?:reanud(?:a|ar|ame)|continu(?:a|ar|ame)|segu[ií]|seguir)\s+(?:la\s+)?(?:descarga|tarea|proceso)?\b/i.test(lower) || /^(?:reanud[aá]|reanudar|continuar)$/i.test(lower)) {
+        return { id: 'task.resume', params: { target: null } };
+    }
+    if (/\b(?:qu[eé]\s+tareas\s+(?:hay|est[aá]n)\s+activas|listar\s+tareas|tareas\s+activas)\b/i.test(lower)) {
+        return { id: 'task.list', params: {} };
+    }
+
     // 3. Deshacer Global (Undo)
     if (/\b(?:deshac(?:e|er)?|deshace lo ultimo|deshace eso|revertir|deshacer)\b/i.test(lower)) {
         return { id: 'undo.last', params: {} };
@@ -946,13 +1611,43 @@ async function resolve(text) {
 
 async function process(text, context = {}) {
     registerActions();
-    const request = await resolve(text);
-    memoryService.addTurn('user', text, { actionId: request.id });
-    const result = await actionKernel.execute(request.id, request.params, context);
+    const operationMetricsService = require('./diagnostics/operationMetricsService');
+    const trace = operationMetricsService.startTrace('turn', { text });
+
+    let request;
+    try {
+        request = await trace.timeStage('intent_detection', async () => resolve(text));
+    } catch (err) {
+        trace.finish({ status: 'FAILED', error: err });
+        throw err;
+    }
+
+    await trace.timeStage('memory_search', async () => {
+        memoryService.addTurn('user', text, { actionId: request.id });
+    });
+
+    let result;
+    try {
+        result = await trace.timeStage('tool_execution', async () => {
+            return actionKernel.execute(request.id, request.params, context);
+        });
+    } catch (err) {
+        trace.recordToolError(err);
+        trace.finish({ status: 'FAILED', error: err });
+        throw err;
+    }
+
     voiceLearningService.recordVerifiedExecution({
         utterance: text, actionId: request.id, params: request.params, result
     });
     if (result.message) memoryService.addTurn('assistant', result.message, { actionId: request.id, status: result.status, verified: result.verified });
+
+    trace.finish({
+        status: result.ok !== false ? 'SUCCESS' : 'FAILED',
+        error: result.ok !== false ? null : result.message,
+        metadata: { actionId: request.id }
+    });
+
     return result;
 }
 

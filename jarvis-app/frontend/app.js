@@ -94,7 +94,33 @@ socket.on('jarvis_event', (ev) => {
 });
 
 socket.on('notification', (data) => {
-    showActionToast(`[${data.title}] ${data.message}`, data.priority === 'EMERGENCY' ? 'failed' : 'success', 5000);
+    let phase = 'success';
+    if (data.priority === 'EMERGENCY') phase = 'emergency';
+    else if (data.priority === 'WARNING' || data.priority === 'HIGH') phase = 'warning';
+
+    showActionToast(`[${data.title || 'Jarvis'}] ${data.message || ''}`, phase, 5500);
+
+    // Si la pestaña está en segundo plano, mostrar notificación nativa del navegador
+    if (window.Notification && Notification.permission === 'granted') {
+        try {
+            new Notification(data.title || 'Jarvis OS', {
+                body: data.message || '',
+                icon: '/favicon.ico',
+                silent: false
+            });
+        } catch (e) {}
+    }
+});
+
+// Pedir permiso de notificaciones de escritorio en la primera interacción
+window.addEventListener('click', () => {
+    if (window.Notification && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+    }
+}, { once: true });
+
+socket.on('speak_phrase', (data) => {
+    console.log('[TTS Speak Phrase]:', data.phrase);
 });
 
 function showActionToast(message, phase = 'working', duration = 4500) {
@@ -457,17 +483,18 @@ function speechChunks(text, maxLength = 180) {
     return chunks;
 }
 
-function speak(text, callback) {
+function speak(text, callback, screenText = null) {
     const runId = ++speechRunId;
     window.speechSynthesis?.cancel();
     isJarvisSpeaking = true;
     setRingState('speaking');
 
+    const displayText = screenText || text;
     if (typeof marked !== 'undefined') {
-        jarvisBox.innerHTML = marked.parse(text);
+        jarvisBox.innerHTML = marked.parse(displayText);
         if (window.MathJax) MathJax.typesetPromise([jarvisBox]);
     } else {
-        jarvisBox.textContent = text;
+        jarvisBox.textContent = displayText;
     }
     userBox.textContent = '...';
     document.getElementById('btn-stop-audio').style.display = 'block';
@@ -1231,11 +1258,19 @@ socket.on('response', (data) => {
         afterResponse();
         return;
     }
+    const displayText = data.text || '';
+    const voiceText = data.voiceText || data.text || '';
+
     if (data.suppressTts) {
-        jarvisBox.textContent = data.text;
+        if (typeof marked !== 'undefined') {
+            jarvisBox.innerHTML = marked.parse(displayText);
+            if (window.MathJax) MathJax.typesetPromise([jarvisBox]);
+        } else {
+            jarvisBox.textContent = displayText;
+        }
         afterResponse();
     } else {
-        speak(data.text, afterResponse);
+        speak(voiceText, afterResponse, displayText);
     }
 });
 
@@ -1617,3 +1652,144 @@ btnSaveMask.addEventListener('click', () => {
         document.getElementById('dropzone-text').textContent = "✅ Máscara lista. Escribe la edición y envía.";
     }
 });
+
+// =================================================================
+// DASHBOARD DE TELEMETRÍA Y DIAGNÓSTICO (Ítem 31)
+// =================================================================
+const btnOpenDashboard = document.getElementById('btn-open-dashboard');
+const dashboardModal = document.getElementById('dashboard-modal');
+const btnCloseDashboardModal = document.getElementById('close-dashboard-modal');
+const btnRefreshDashboard = document.getElementById('btn-refresh-dashboard');
+
+function renderDashboard(data) {
+    if (!data) return;
+
+    // 1. Servicios Satélite
+    if (data.services) {
+        const svcMap = {
+            'Core': 'svc-core',
+            'Ollama': 'svc-ollama',
+            'Python Engine': 'svc-python',
+            'Whisper': 'svc-whisper',
+            'ComfyUI': 'svc-comfyui',
+            'BroadLink': 'svc-broadlink',
+            'HomeAssistant': 'svc-homeassistant'
+        };
+
+        for (const [svcName, elId] of Object.entries(svcMap)) {
+            const el = document.getElementById(elId);
+            if (el) {
+                const status = data.services[svcName] || 'OFFLINE';
+                const badge = el.querySelector('.svc-badge');
+                if (badge) {
+                    badge.textContent = status;
+                    badge.className = 'svc-badge';
+                    if (status === 'ONLINE') badge.classList.add('badge-online');
+                    else if (status === 'SLEEP') badge.classList.add('badge-sleep');
+                    else badge.classList.add('badge-offline');
+                }
+            }
+        }
+    }
+
+    // 2. Hardware
+    if (data.hardware) {
+        const cpuVal = document.getElementById('dash-cpu-val');
+        const cpuBar = document.getElementById('dash-cpu-bar');
+        if (cpuVal && cpuBar) {
+            cpuVal.textContent = `${data.hardware.cpuPercent}%`;
+            cpuBar.style.width = `${Math.min(100, Math.max(2, data.hardware.cpuPercent))}%`;
+        }
+
+        const ramVal = document.getElementById('dash-ram-val');
+        const ramBar = document.getElementById('dash-ram-bar');
+        if (ramVal && ramBar) {
+            ramVal.textContent = `${data.hardware.ramUsedGB} / ${data.hardware.ramTotalGB} GB (${data.hardware.ramPercent}%)`;
+            ramBar.style.width = `${Math.min(100, Math.max(2, data.hardware.ramPercent))}%`;
+        }
+
+        const vramVal = document.getElementById('dash-vram-val');
+        const vramBar = document.getElementById('dash-vram-bar');
+        if (vramVal && vramBar) {
+            if (data.hardware.vramAvailable === false) {
+                vramVal.textContent = 'No disponible';
+                vramBar.style.width = '0%';
+            } else {
+                vramVal.textContent = `${data.hardware.vramUsedGB} / ${data.hardware.vramTotalGB} GB (${data.hardware.vramPercent}%)`;
+                vramBar.style.width = `${Math.min(100, Math.max(2, data.hardware.vramPercent))}%`;
+            }
+        }
+    }
+
+    // 3. Operación & IA
+    if (data.operation) {
+        const modelEl = document.getElementById('dash-current-model');
+        if (modelEl) modelEl.textContent = data.operation.currentModel || 'Qwen 2.5';
+
+        const actionEl = document.getElementById('dash-last-action');
+        if (actionEl) {
+            actionEl.textContent = data.operation.lastAction || 'none';
+            actionEl.style.color = data.operation.lastActionStatus === 'error' ? '#ef4444' : '#a78bfa';
+        }
+
+        const latencyEl = document.getElementById('dash-latency');
+        if (latencyEl) {
+            const ms = data.operation.latencyMs || 0;
+            latencyEl.textContent = `${ms} ms`;
+            if (ms < 100) latencyEl.style.color = '#34d399';
+            else if (ms < 500) latencyEl.style.color = '#f59e0b';
+            else latencyEl.style.color = '#ef4444';
+        }
+    }
+}
+
+async function fetchDashboardStatus() {
+    try {
+        const res = await fetch('/api/dashboard/status');
+        if (res.ok) {
+            const data = await res.json();
+            renderDashboard(data);
+        }
+    } catch (err) {
+        console.warn('[Dashboard] No se pudo obtener telemetría inicial:', err.message);
+    }
+}
+
+if (btnOpenDashboard && dashboardModal) {
+    btnOpenDashboard.addEventListener('click', () => {
+        dashboardModal.classList.remove('hidden');
+        fetchDashboardStatus();
+    });
+}
+
+if (btnCloseDashboardModal && dashboardModal) {
+    btnCloseDashboardModal.addEventListener('click', () => {
+        dashboardModal.classList.add('hidden');
+    });
+}
+
+if (btnRefreshDashboard) {
+    btnRefreshDashboard.addEventListener('click', () => {
+        fetchDashboardStatus();
+    });
+}
+
+// Escuchar streaming por Socket.IO en tiempo real
+if (typeof socket !== 'undefined' && socket) {
+    socket.on('dashboard_telemetry', (data) => {
+        // Actualizar solo si el modal está abierto o para mantener el estado
+        renderDashboard(data);
+    });
+
+    socket.on('dashboard_action_update', (actionUpdate) => {
+        const actionEl = document.getElementById('dash-last-action');
+        if (actionEl) {
+            actionEl.textContent = actionUpdate.name || actionUpdate.actionId;
+            actionEl.style.color = actionUpdate.status === 'error' ? '#ef4444' : '#a78bfa';
+        }
+        const latencyEl = document.getElementById('dash-latency');
+        if (latencyEl) {
+            latencyEl.textContent = `${actionUpdate.latencyMs} ms`;
+        }
+    });
+}

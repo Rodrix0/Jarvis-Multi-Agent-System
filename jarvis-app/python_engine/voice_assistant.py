@@ -235,6 +235,21 @@ def trigger_immediate_emergency():
     speak("Parada de emergencia ejecutada. Cancelé todos los procesos.")
 
 
+def trigger_barge_in(reason="keyword", detected=""):
+    stop_speaking()
+    def async_notify():
+        try:
+            requests.post(
+                f"{NODE_URL}/api/tts/barge-in",
+                json={"reason": reason, "metadata": {"detected": str(detected)}},
+                timeout=2,
+            )
+        except Exception:
+            pass
+    threading.Thread(target=async_notify, daemon=True).start()
+
+
+
 def clear_audio_queue():
     try:
         while True:
@@ -364,9 +379,18 @@ class LocalVoiceEngine:
             "apagate", "apaga", "jarvis apagate", "apagate jarvis",
             "dormite", "duerme", "jarvis dormite", "dormite jarvis",
             "modo descanso", "descanso", "a dormir", "a descansar",
-            "silenciate", "silencio", "reposo", "modo reposo", "[unk]"
+            "reposo", "modo reposo", "[unk]"
         ])
         self.sleep_recognizer = KaldiRecognizer(self.wake_model, SAMPLE_RATE, sleep_grammar)
+        barge_grammar = json.dumps([
+            "para", "parate", "detente", "detene", "frena", "frenate",
+            "callate", "silencio", "silenciate", "stop", "basta",
+            "espera", "esperate", "corta", "cortala", "jarvis para",
+            "jarvis parate", "jarvis detente", "jarvis callate",
+            "jarvis stop", "jarvis silencio", "no para", "no espera",
+            "[unk]"
+        ])
+        self.barge_recognizer = KaldiRecognizer(self.wake_model, SAMPLE_RATE, barge_grammar)
         self.whisper = None
         self.wake_name_until = 0.0
         self.wake_word_until = 0.0
@@ -497,12 +521,30 @@ class LocalVoiceEngine:
 
         detected = any(w in text for w in (
             "apagate", "apaga", "dormite", "duerme", "modo descanso",
-            "descanso", "a dormir", "a descansar", "silenciate", "silencio",
-            "reposo", "modo reposo"
+            "descanso", "a dormir", "a descansar", "reposo", "modo reposo"
         ))
         if detected:
             self.sleep_recognizer.Reset()
         return detected
+
+    def barge_detected(self, frame):
+        if self.barge_recognizer.AcceptWaveform(frame):
+            text = normalized(json.loads(self.barge_recognizer.Result()).get("text", ""))
+        else:
+            text = normalized(json.loads(self.barge_recognizer.PartialResult()).get("partial", ""))
+        if not text:
+            return False, ""
+
+        detected_words = (
+            "para", "parate", "detente", "detene", "frena", "frenate",
+            "callate", "silencio", "silenciate", "stop", "basta",
+            "espera", "esperate", "corta", "cortala"
+        )
+        for w in detected_words:
+            if w in text:
+                self.barge_recognizer.Reset()
+                return True, w
+        return False, ""
 
     def handle_transcript(self, text, confidence, metadata):
         if not text:
@@ -601,6 +643,7 @@ class LocalVoiceEngine:
         utterance = []
         voiced_streak = 0
         silent_streak = 0
+        tts_overlap_streak = 0
         capturing = False
         report_status(stage="listening", device=device)
         if self.state == "awake":
@@ -667,6 +710,7 @@ class LocalVoiceEngine:
                 # Mientras Jarvis habla no transcribimos su propia voz. Conservamos
                 # un reconocedor mínimo y barato exclusivamente para interrumpirlo.
                 if tts_active.is_set():
+                    # 1. Apagado explícito hacia reposo ("apagate", "dormite")
                     if self.sleep_detected(frame):
                         stop_speaking()
                         self.state = "dormant"
@@ -677,7 +721,41 @@ class LocalVoiceEngine:
                         clear_audio_queue()
                         report_status(stage="dormant")
                         threading.Thread(target=unload_local_understanding, daemon=True).start()
+                        tts_overlap_streak = 0
+                        continue
+
+                    # 2. Barge-in por palabra clave ("pará", "detente", "silencio", "stop", etc.)
+                    is_barge, barge_word = self.barge_detected(frame)
+                    if is_barge:
+                        print(f"[Voz local] Barge-in detectado por palabra clave: {barge_word!r}")
+                        trigger_barge_in(reason="keyword", detected=barge_word)
+                        clear_audio_queue()
+                        self.suppress_until = time.monotonic() + 0.15
+                        tts_overlap_streak = 0
+                        report_status(stage="listening", stageDetail=f"barge_in_{barge_word}")
+                        continue
+
+                    # 3. Barge-in acústico por voz humana sobre el audio
+                    level = rms(frame)
+                    is_speech = self.vad.is_speech(frame, SAMPLE_RATE)
+                    if is_speech and level >= minimum_voice_level * 2.8:
+                        tts_overlap_streak += 1
+                        if tts_overlap_streak >= 4:  # ~120ms continuos de voz
+                            print(f"[Voz local] Barge-in acústico detectado (RMS={level:.3f})")
+                            trigger_barge_in(reason="acoustic_vad", detected="voice_overlap")
+                            clear_audio_queue()
+                            self.suppress_until = time.monotonic() + 0.10
+                            tts_overlap_streak = 0
+                            capturing = True
+                            utterance = [frame]
+                            silent_streak = 0
+                            report_status(stage="recording", level=level, bargeIn=True)
+                    else:
+                        tts_overlap_streak = max(0, tts_overlap_streak - 1)
+
                     continue
+                else:
+                    tts_overlap_streak = 0
 
                 is_voice = self.vad.is_speech(frame, SAMPLE_RATE)
                 level = rms(frame)

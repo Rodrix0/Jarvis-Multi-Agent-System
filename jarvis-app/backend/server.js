@@ -24,6 +24,9 @@ const voiceSettingsService = require('./services/voiceSettingsService');
 const memoryService = require('./services/memoryService');
 const jarvisActionService = require('./services/jarvisActionService');
 const ttsService = require('./services/ttsService');
+const wakeWordService = require('./services/wakeWordService');
+const bargeInService = require('./services/bargeInService');
+const responseFormatterService = require('./services/responseFormatterService');
 const voiceLearningService = require('./services/voiceLearningService');
 const shopRoutes = require('./routes/shopRoutes');
 
@@ -68,6 +71,34 @@ const io = new Server(server, {
     perMessageDeflate: true
 });
 notificationService.setSocketIO(io);
+notificationService.setTtsService(ttsService);
+bargeInService.init({ ttsService, wakeWordService, io });
+
+// --- SERVICIOS PROACTIVOS Y AUTOMATIZACIÓN (Ítems 26 y 27) ---
+const proactivePolicyService = require('./services/core/proactivePolicyService');
+const proactiveMonitorService = require('./services/core/proactiveMonitorService');
+const conditionalAutomationService = require('./services/automation/conditionalAutomationService');
+const routineService = require('./services/automation/routineService');
+
+proactivePolicyService.init({ ttsService, io, modeService });
+proactiveMonitorService.start();
+conditionalAutomationService.init({ ttsService, routineService });
+
+// --- RECUPERACIÓN DE TAREAS PERSISTENTES (Ítem 28) ---
+const taskManagerService = require('./services/core/taskManagerService');
+taskManagerService.recoverOrphanTasks().catch(err => {
+    console.error('[Server] Error en recuperación de tareas huérfanas:', err.message);
+});
+
+// --- HOME ASSISTANT & DOMÓTICA (Ítem 29) ---
+const homeAssistantService = require('./services/homeassistant/homeAssistantService');
+homeAssistantService.init().catch(err => {
+    console.error('[Server] Error al inicializar Home Assistant:', err.message);
+});
+
+// --- DASHBOARD & TELEMETRÍA (Ítem 31) ---
+const dashboardService = require('./services/diagnostics/dashboardService');
+dashboardService.startLiveStreaming(io, 2000);
 
 // Reenviar eventos de Jarvis OS al HUD
 eventBus.subscribe('*', (ev) => {
@@ -75,6 +106,469 @@ eventBus.subscribe('*', (ev) => {
 });
 
 // --- ENDPOINTS JARVIS OS V6 ---
+app.get('/api/dashboard/status', async (req, res) => {
+    try {
+        const data = await dashboardService.getDashboardData();
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS MÉTRICAS POR OPERACIÓN (Ítem 32) ---
+const operationMetricsService = require('./services/diagnostics/operationMetricsService');
+app.get('/api/metrics/summary', (req, res) => {
+    try {
+        const summary = operationMetricsService.getSummary(req.query.hours || 24);
+        res.json(summary);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/metrics/traces', (req, res) => {
+    try {
+        const traces = operationMetricsService.getRecentTraces(req.query.limit || 50, req.query);
+        res.json(traces);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/metrics/diagnosis', (req, res) => {
+    try {
+        const diagnosis = operationMetricsService.diagnoseBottlenecks();
+        res.json(diagnosis);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS LOGS ESTRUCTURADOS Y FORENSE (Ítem 33) ---
+const structuredLoggerService = require('./services/diagnostics/structuredLoggerService');
+app.get('/api/logs/query', (req, res) => {
+    try {
+        const logs = structuredLoggerService.query(req.query);
+        res.json(logs);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/logs/forensics', (req, res) => {
+    try {
+        const forensics = structuredLoggerService.diagnose(req.query.hours || 24);
+        res.json(forensics);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS AUTORREPARACIÓN DE SERVICIOS (Ítem 34) ---
+const autoHealService = require('./services/resilience/autoHealService');
+app.get('/api/services/status', (req, res) => {
+    try {
+        res.json(autoHealService.getServicesStatus());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/services/:id/restart', async (req, res) => {
+    try {
+        const result = await autoHealService.forceRestart(req.params.id);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/services/heal-now', async (req, res) => {
+    try {
+        const results = await autoHealService.checkAllServices();
+        res.json(results);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS CIRCUIT BREAKERS (Ítem 35) ---
+const { circuitBreakerManager } = require('./services/resilience/circuitBreakerService');
+app.get('/api/circuit-breakers/status', (req, res) => {
+    try {
+        res.json(circuitBreakerManager.getStatus());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/circuit-breakers/:id/reset', (req, res) => {
+    try {
+        const ok = circuitBreakerManager.resetBreaker(req.params.id);
+        res.json({ ok, breakerId: req.params.id });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS FALLBACKS INTELIGENTES (Ítem 36) ---
+const { fallbackEngine } = require('./services/resilience/fallbackEngine');
+app.get('/api/fallbacks/chains', (req, res) => {
+    try {
+        res.json(fallbackEngine.getChainsStatus());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/fallbacks/execute/:id', async (req, res) => {
+    try {
+        const result = await fallbackEngine.executeChain(req.params.id, req.body.params || req.body, req.body.context || {});
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINT CONTROL DE CONFIANZA (Ítem 37) ---
+const { confidenceEngine } = require('./services/intelligence/confidenceEngine');
+app.post('/api/confidence/evaluate', (req, res) => {
+    try {
+        const { candidateIntent, text, context } = req.body;
+        const evaluation = confidenceEngine.evaluate(candidateIntent || {}, text || '', context || {});
+        res.json(evaluation);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS GOBERNANZA DE RIESGO Y PIN (Ítem 38) ---
+const { riskAssessmentService } = require('./services/security/riskAssessmentService');
+app.post('/api/risk/evaluate', (req, res) => {
+    try {
+        const { actionId, params } = req.body;
+        const riskLevel = riskAssessmentService.classify(actionId, params);
+        const reqs = riskAssessmentService.getRequirements(riskLevel);
+        res.json({ actionId, riskLevel, requirements: reqs });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/security/pin/verify', (req, res) => {
+    try {
+        const result = riskAssessmentService.verifyPin(req.body.pin);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS SECRET MANAGER (Ítem 39) ---
+const { secretVaultService } = require('./services/security/secretVaultService');
+app.get('/api/secrets', (req, res) => {
+    try {
+        res.json(secretVaultService.listSecrets());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/secrets/store', (req, res) => {
+    try {
+        const { key, value, metadata } = req.body;
+        const result = secretVaultService.storeSecret(key, value, metadata);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/secrets/token', (req, res) => {
+    try {
+        const { key, ttlSeconds, singleUse } = req.body;
+        const tokenData = secretVaultService.getSecretToken(key, ttlSeconds, singleUse);
+        res.json(tokenData);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.delete('/api/secrets/:key', (req, res) => {
+    try {
+        const ok = secretVaultService.deleteSecret(req.params.key);
+        res.json({ ok, key: req.params.key });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS CODING AGENT REAL (Ítem 41) ---
+const { codingAgentService } = require('./services/developer/codingAgentService');
+app.post('/api/coding-agent/analyze', (req, res) => {
+    try {
+        const { projectPath, instruction } = req.body;
+        const targetPath = projectPath || process.cwd();
+        const stack = codingAgentService.detectProjectStack(targetPath);
+        const structure = codingAgentService.mapProjectStructure(stack.rootDir);
+        const relevant = codingAgentService.locateRelevantFiles(targetPath, instruction || '', structure);
+        res.json({ stack, totalFiles: structure.length, relevantFiles: relevant.slice(0, 15) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/coding-agent/execute', async (req, res) => {
+    try {
+        const { projectPath, instruction, maxIterations } = req.body;
+        const result = await codingAgentService.executeAutonomousFix({
+            projectPath: projectPath || process.cwd(),
+            instruction,
+            maxIterations: maxIterations || 3
+        });
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS INTEGRACIÓN GIT (Ítem 42) ---
+const { gitIntegrationService } = require('./services/developer/gitIntegrationService');
+app.get('/api/git/status', (req, res) => {
+    try {
+        const result = gitIntegrationService.getStatus(req.query.path);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/git/diff', (req, res) => {
+    try {
+        const result = gitIntegrationService.getDiff(req.query.path, {
+            file: req.query.file,
+            staged: req.query.staged === 'true'
+        });
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/git/branch', (req, res) => {
+    try {
+        const { projectPath, taskName } = req.body;
+        const result = gitIntegrationService.ensureSafeBranch(projectPath, taskName);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/git/commit', (req, res) => {
+    try {
+        const { projectPath, message, files, allowProtected } = req.body;
+        const result = gitIntegrationService.commit(projectPath, message, { files, allowProtected });
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/git/rollback', (req, res) => {
+    try {
+        const { projectPath, mode, target } = req.body;
+        const result = gitIntegrationService.rollback(projectPath, mode, target);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/git/summary', (req, res) => {
+    try {
+        const result = gitIntegrationService.summarizeWork(req.query.path, req.query.baseBranch);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS SNAPSHOTS DE PROYECTO (Ítem 43) ---
+const { snapshotService } = require('./services/developer/snapshotService');
+app.post('/api/snapshots/create', async (req, res) => {
+    try {
+        const { projectPath, label } = req.body;
+        const result = await snapshotService.createSnapshot(projectPath, label);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/snapshots/restore', async (req, res) => {
+    try {
+        const { snapshotId } = req.body;
+        const result = await snapshotService.restoreSnapshot(snapshotId);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/snapshots/list', (req, res) => {
+    try {
+        const result = snapshotService.listSnapshots(req.query.path);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/snapshots/prune', (req, res) => {
+    try {
+        const { maxAgeHours, maxPerProject } = req.body;
+        const result = snapshotService.pruneOldSnapshots(maxAgeHours, maxPerProject);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS PLANTILLAS DE DOCUMENTOS Y ESTILOS (Ítem 44) ---
+const { documentTemplateService } = require('./services/developer/documentTemplateService');
+app.post('/api/documents/generate', async (req, res) => {
+    try {
+        const result = await documentTemplateService.renderDocument(req.body);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/documents/templates', (req, res) => {
+    try {
+        res.json(documentTemplateService.listTemplates());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/documents/styles', (req, res) => {
+    try {
+        res.json(documentTemplateService.listStyles());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/documents/styles', (req, res) => {
+    try {
+        const { name, styleConfig } = req.body;
+        const result = documentTemplateService.saveStyle(name, styleConfig);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS PERFILES DE COMPORTAMIENTO (Ítem 45) ---
+const { behaviorProfileService } = require('./services/intelligence/behaviorProfileService');
+app.get('/api/profiles/current', (req, res) => {
+    try {
+        res.json(behaviorProfileService.getActiveProfile());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/profiles/switch', (req, res) => {
+    try {
+        const { profileId, reason } = req.body;
+        const result = behaviorProfileService.switchProfile(profileId, reason);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/profiles/list', (req, res) => {
+    try {
+        res.json(behaviorProfileService.listProfiles());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/profiles/custom', (req, res) => {
+    try {
+        const { id, config } = req.body;
+        const result = behaviorProfileService.saveCustomProfile(id, config);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS CONTEXTO DE ACTIVIDAD (Ítem 46) ---
+const { activityContextService } = require('./services/intelligence/activityContextService');
+app.get('/api/context/current', async (req, res) => {
+    try {
+        const ctx = await activityContextService.getCurrentContext();
+        res.json(ctx);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/context/resolve', async (req, res) => {
+    try {
+        const { utterance } = req.body;
+        const result = await activityContextService.resolveImplicitCommand(utterance);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS SMART CLIPBOARD (Ítem 47) ---
+const { smartClipboardService } = require('./services/intelligence/smartClipboardService');
+app.post('/api/clipboard/process', async (req, res) => {
+    try {
+        const result = await smartClipboardService.processClipboardIntent(req.body);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.get('/api/clipboard/read', (req, res) => {
+    try {
+        const text = smartClipboardService.readClipboard();
+        const type = smartClipboardService.classifyContent(text);
+        res.json({ text, type });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/clipboard/write', (req, res) => {
+    try {
+        const ok = smartClipboardService.writeClipboard(req.body.text);
+        res.json({ ok });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ENDPOINTS ACTION TIMELINE (Ítem 48) ---
+const { actionTimelineService } = require('./services/core/actionTimelineService');
+app.get('/api/timeline/recent', (req, res) => {
+    try {
+        const minutes = req.query.minutes ? Number(req.query.minutes) : 20;
+        const result = actionTimelineService.getTimeline(minutes);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/timeline/query', (req, res) => {
+    try {
+        const { utterance } = req.body;
+        const result = actionTimelineService.queryTimeline(utterance);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/timeline/undo', async (req, res) => {
+    try {
+        const result = await actionTimelineService.undoLastAction();
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+
+
+
+
+
+
+
 app.post('/api/emergency-stop', (req, res) => {
     const result = emergencyService.triggerEmergencyStop(req.body.source || 'REST_API');
     res.json(result);
@@ -91,12 +585,62 @@ app.post('/api/undo', async (req, res) => {
 });
 
 app.post('/api/explain', async (req, res) => {
-    const explanation = await explanationService.explainDecision(req.body.query);
-    res.json({ explanation });
+    try {
+        const query = req.body.query || '';
+        const explanation = await explanationService.explainDecision(query);
+        const lastDecision = explanationService.getLastDecision();
+        res.json({ ok: true, explanation, decision: lastDecision });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
+app.get('/api/explain/last', (req, res) => {
+    const decision = explanationService.getLastDecision(req.query.tool);
+    if (!decision) return res.status(404).json({ ok: false, message: 'No hay decisiones registradas' });
+    res.json({ ok: true, decision, explanation: decision.userExplanation });
+});
+
+app.get('/api/explain/recent', (req, res) => {
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const decisions = explanationService.listDecisions(limit);
+    res.json({ ok: true, count: decisions.length, decisions });
 });
 
 app.get('/api/goals', (req, res) => res.json(goalManagerService.listGoals(req.query.status)));
 app.post('/api/goals', (req, res) => res.json(goalManagerService.createGoal(req.body)));
+app.post('/api/goals/plan', (req, res) => {
+    try {
+        const goal = goalManagerService.planGoalFromInstruction(req.body.instruction, req.body);
+        res.json({ ok: true, goal });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+app.post('/api/goals/:id/step', async (req, res) => {
+    try {
+        const result = await goalManagerService.stepGoal(req.params.id);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+app.post('/api/goals/:id/execute', async (req, res) => {
+    try {
+        const maxSteps = req.body.maxSteps ? Number(req.body.maxSteps) : 20;
+        const result = await goalManagerService.executeGoalStepByStep(req.params.id, { maxSteps });
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+app.get('/api/goals/:id/progress', (req, res) => {
+    const progress = goalManagerService.getGoalProgress(req.params.id);
+    if (!progress) return res.status(404).json({ ok: false, error: 'Objetivo no encontrado' });
+    res.json({ ok: true, progress });
+});
+app.post('/api/goals/:id/pause', (req, res) => res.json(goalManagerService.pauseGoal(req.params.id)));
+app.post('/api/goals/:id/resume', (req, res) => res.json(goalManagerService.resumeGoal(req.params.id)));
 
 app.get('/api/agenda', (req, res) => res.json(agendaService.listReminders(req.query.status)));
 app.post('/api/agenda', (req, res) => res.json(agendaService.addReminder(req.body)));
@@ -104,6 +648,31 @@ app.delete('/api/agenda/:id', (req, res) => res.json(agendaService.deleteReminde
 
 app.get('/api/trash', (req, res) => res.json(trashService.listTrash()));
 app.post('/api/trash/restore', (req, res) => res.json(trashService.restoreFromTrash(req.body.identifier, req.body.conflictResolution)));
+
+// --- HOME ASSISTANT ENDPOINTS (Ítem 29) ---
+app.get('/api/homeassistant/status', (req, res) => {
+    res.json(homeAssistantService.getPublicStatus());
+});
+app.get('/api/homeassistant/devices', (req, res) => {
+    res.json(homeAssistantService.listDevices(req.query.domain));
+});
+app.post('/api/homeassistant/command', async (req, res) => {
+    try {
+        const result = await homeAssistantService.executeCommand(req.body.text || '');
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/homeassistant/service', async (req, res) => {
+    try {
+        const { domain, service, data } = req.body;
+        const result = await homeAssistantService.callService(domain, service, data);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -293,6 +862,62 @@ app.post('/api/tts/stop', (req, res) => {
     res.json({ ok: true, stopped: ttsService.stop() });
 });
 
+app.post('/api/tts/barge-in', (req, res) => {
+    const { reason, metadata } = req.body || {};
+    const result = bargeInService.interrupt(reason, metadata);
+    res.json({ ok: true, ...result });
+});
+
+app.get('/api/tts/barge-in/status', (req, res) => {
+    res.json(bargeInService.getStatus());
+});
+
+app.get('/api/tts/barge-in/metrics', (req, res) => {
+    res.json(bargeInService.getMetrics());
+});
+
+// --- TASK MANAGER ENDPOINTS (Ítem 25) ---
+const taskManager = require('./services/core/taskManagerService');
+
+app.get('/api/tasks', (req, res) => {
+    res.json({ ok: true, tasks: taskManager.listTasks(req.query) });
+});
+
+app.get('/api/tasks/active', (req, res) => {
+    res.json({ ok: true, activeTasks: taskManager.getActiveTasks() });
+});
+
+app.post('/api/tasks/:id/cancel', (req, res) => {
+    const result = taskManager.cancel(req.params.id, req.body.reason);
+    res.json(result);
+});
+
+app.post('/api/tasks/:id/pause', (req, res) => {
+    const result = taskManager.pause(req.params.id);
+    res.json(result);
+});
+
+app.post('/api/tasks/:id/resume', (req, res) => {
+    const result = taskManager.resume(req.params.id);
+    res.json(result);
+});
+
+app.post('/api/tasks/cancel-all', (req, res) => {
+    const result = taskManager.cancelAll(req.body.reason);
+    res.json(result);
+});
+
+// --- EVENT BUS & PROACTIVE MONITOR ENDPOINTS (Ítem 26) ---
+app.get('/api/events/history', (req, res) => {
+    const limit = Number(req.query.limit) || 50;
+    res.json({ ok: true, events: eventBus.getHistory(limit, req.query.filter) });
+});
+
+app.post('/api/events/check-now', async (req, res) => {
+    const result = await proactiveMonitorService.checkNow();
+    res.json({ ok: true, result });
+});
+
 app.post('/api/modes', (req, res) => {
     const { name, description } = req.body;
     if (!name || !description) {
@@ -308,9 +933,10 @@ app.post('/api/modes', (req, res) => {
 app.post('/api/speak', (req, res) => {
     const { text } = req.body;
     if (text && io) {
-        io.emit('response', { text: text, action: "REMOTE_SPEAK", actionPayload: null });
-        console.log(`[Jarvis Comunicación Externa]: ${text}`);
-        res.json({ status: "success" });
+        const formatted = responseFormatterService.format(text);
+        io.emit('response', { text: formatted.screen, voiceText: formatted.voice, action: "REMOTE_SPEAK", actionPayload: null });
+        console.log(`[Jarvis Comunicación Externa]: ${formatted.voice}`);
+        res.json({ status: "success", voice: formatted.voice, screen: formatted.screen });
     } else {
         res.status(400).json({ error: "Text missing" });
     }
@@ -367,13 +993,21 @@ app.post('/api/process_speech_local', async (req, res) => {
     } else if (result.actionId === 'voice.wake') {
         setVoiceState('awake');
     }
-    const responseText = result.message;
+    const formatted = responseFormatterService.format(result.message, { actionId: result.actionId, data: result.data });
     
     // Sincronizar la respuesta con cualquier UI web abierta
-    io.emit('response', { text: responseText, action: result.actionId, actionPayload: result.data || null, suppressTts: true, verified: result.verified, status: result.status });
+    io.emit('response', {
+        text: formatted.screen,
+        voiceText: formatted.voice,
+        action: result.actionId,
+        actionPayload: result.data || null,
+        suppressTts: true,
+        verified: result.verified,
+        status: result.status
+    });
     
-    // Responder a Python para que lo hable por TTS
-    res.json({ response: responseText, result });
+    // Responder a Python para que lo hable por TTS usando el canal de voz optimizado
+    res.json({ response: formatted.voice, screenText: formatted.screen, result });
 });
 
 function actionContext(onTvProgress) {
@@ -539,9 +1173,11 @@ io.on('connection', (socket) => {
             } else if (result.actionId === 'voice.wake') {
                 setVoiceState('awake');
             }
+            const formatted = responseFormatterService.format(result.message, { actionId: result.actionId, data: result.data });
             socket.emit('action_result', result);
             socket.emit('response', {
-                text: result.message,
+                text: formatted.screen,
+                voiceText: formatted.voice,
                 action: result.actionId,
                 actionPayload: result.data || null,
                 verified: result.verified,
