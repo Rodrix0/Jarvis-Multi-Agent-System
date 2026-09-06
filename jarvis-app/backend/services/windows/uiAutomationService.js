@@ -200,6 +200,74 @@ class UiAutomationService {
         }
         return null;
     }
+    /**
+     * Busca una colección de elementos que coincidan con los criterios dados.
+     */
+    async findElements(windowTarget, criteria = {}) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const name = criteria.name || '';
+        const cType = criteria.controlType || 'Any';
+        const autoId = criteria.automationId || '';
+
+        const args = ['-Action', 'find-elements', '-Hwnd', String(hwnd), '-ControlType', cType];
+        if (name) args.push('-NamePattern', String(name));
+        if (autoId) args.push('-AutomationId', String(autoId));
+
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || 'Error buscando elementos.');
+        return res.elements || [];
+    }
+
+    /**
+     * Verificador de Pantalla y Evidencia Operacional (Sección 6, 97)
+     * Comprueba si un estado esperado se cumplió en pantalla y genera evidencia operacional.
+     * Niveles:
+     *   - Level 1: UI Tree / Accessibility (UI Automation)
+     *   - Level 2: Screenshot VLM / OCR Fallback
+     */
+    async verifyScreenState(expectedState = {}, timeoutMs = 5000) {
+        const start = Date.now();
+        const evidence = {
+            verified: false,
+            level: 'accessibility',
+            action: expectedState.action || 'verify',
+            observedEvidence: null,
+            durationMs: 0
+        };
+
+        // 1. Verificación de cierre de ventana (dialog_closed / window_closed)
+        if (expectedState.windowClosed) {
+            while (Date.now() - start < timeoutMs) {
+                const win = await this.findWindow(expectedState.windowClosed);
+                if (!win) {
+                    evidence.verified = true;
+                    evidence.observedEvidence = `Ventana '${expectedState.windowClosed}' cerrada exitosamente.`;
+                    evidence.durationMs = Date.now() - start;
+                    return evidence;
+                }
+                await new Promise(r => setTimeout(r, 400));
+            }
+            evidence.observedEvidence = `Ventana '${expectedState.windowClosed}' sigue activa tras ${timeoutMs}ms.`;
+            evidence.durationMs = Date.now() - start;
+            return evidence;
+        }
+
+        // 2. Verificación de presencia de elemento (element_present)
+        if (expectedState.elementPresent && expectedState.window) {
+            const found = await this.waitForElement(expectedState.window, expectedState.elementPresent, timeoutMs);
+            if (found) {
+                evidence.verified = true;
+                evidence.observedEvidence = `Elemento encontrado en '${expectedState.window}': ${found.name || found.automationId}`;
+            } else {
+                evidence.observedEvidence = `Elemento no encontrado en '${expectedState.window}' tras timeout.`;
+            }
+            evidence.durationMs = Date.now() - start;
+            return evidence;
+        }
+
+        evidence.durationMs = Date.now() - start;
+        return evidence;
+    }
 }
 
 const uiAutomationService = new UiAutomationService();

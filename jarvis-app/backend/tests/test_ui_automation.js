@@ -111,6 +111,17 @@ async function runTests() {
     assert.strictEqual(inspectRes.ok, true);
     console.log('✅ TEST 6 PASSED: Integración con ActionKernel verificada.\n');
 
+    // 7. JARVIS 3.0 Screen Verifier & Evidencia Operacional (Sección 6, 97)
+    console.log('--- TEST 7: verifyScreenState() y Evidencia Operacional ---');
+    const screenVerify = await uiAutomationService.verifyScreenState({
+        windowClosed: 'VentanaCompletamenteInexistenteXYZ'
+    }, 1000);
+    console.log('Evidencia operacional de verificación:', screenVerify);
+    assert.strictEqual(screenVerify.verified, true);
+    assert.ok(screenVerify.observedEvidence.includes('cerrada exitosamente'));
+    assert.strictEqual(screenVerify.level, 'accessibility');
+    console.log('✅ TEST 7 PASSED: Verificador de estado de pantalla con evidencia operacional.\n');
+
     console.log('===============================================================');
     console.log('🎉 TODOS LOS TESTS DE UI AUTOMATION PASARON EXITOSAMENTE (100%)');
     console.log('===============================================================\n');
