@@ -28,12 +28,16 @@ class SkillManager {
     }
 
     listSkills() {
-        return databaseService.db.prepare('SELECT * FROM skills_manifest WHERE status = "enabled"').all();
+        return databaseService.db.prepare("SELECT * FROM skills_manifest WHERE status = 'enabled'").all();
     }
 
     rollbackSkill(skillId) {
-        databaseService.db.prepare('UPDATE skills_manifest SET status = "disabled" WHERE id = ?').run(skillId);
+        databaseService.db.prepare("UPDATE skills_manifest SET status = 'disabled' WHERE id = ?").run(skillId);
         return { ok: true, message: `Habilidad ${skillId} deshabilitada por rollback.` };
+    }
+
+    getSkill(idOrName) {
+        return databaseService.db.prepare("SELECT * FROM skills_manifest WHERE (id = ? OR name = ?) AND status = 'enabled' ORDER BY rowid DESC LIMIT 1").get(idOrName, idOrName);
     }
 }
 

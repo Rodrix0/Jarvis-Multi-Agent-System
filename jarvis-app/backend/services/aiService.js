@@ -1,6 +1,9 @@
 const cheerio = require('cheerio');
 const profileService = require('./memory/profileService');
 const embeddingService = require('./memory/embeddingService');
+const modelRouterService = require('./ai/modelRouterService');
+const structuredOutputService = require('./ai/structuredOutputService');
+const toolRegistryService = require('./tools/toolRegistryService');
 
 // Eliminamos las credenciales de Google porque ahora somos 100% locales
 let conversationHistory = [];
@@ -428,7 +431,21 @@ TAREA: Leé los datos y respondé la pregunta en 1-2 oraciones.
 }
 
 async function executeLlamaChat(messages, tools = null, jsonFormat = false, overrideModel = null) {
-    const selectedModel = overrideModel || process.env.OLLAMA_MODEL || 'hermes3:latest';
+    let selectedModel = overrideModel;
+    let fallbackModel = 'llama3.1:latest';
+
+    if (!selectedModel) {
+        try {
+            const lastUserMsg = Array.isArray(messages) ? messages.slice().reverse().find(m => m.role === 'user') : null;
+            const promptText = lastUserMsg && typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '';
+            const routeInfo = await modelRouterService.route(promptText, { tools: !!tools });
+            selectedModel = routeInfo.model || process.env.OLLAMA_MODEL || 'hermes3:latest';
+            fallbackModel = routeInfo.fallbackModel || 'llama3.1:latest';
+        } catch (_) {
+            selectedModel = process.env.OLLAMA_MODEL || 'hermes3:latest';
+        }
+    }
+
     const payload = {
         model: selectedModel,
         messages: messages,
@@ -436,11 +453,24 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
     };
 
     if (tools) {
-        payload.tools = tools;
+        if (tools === true || tools === 'auto') {
+            const lastUserMsg = Array.isArray(messages) ? messages.slice().reverse().find(m => m.role === 'user') : null;
+            const promptText = lastUserMsg && typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '';
+            const contextualTools = toolRegistryService.selectToolsForPrompt(promptText);
+            payload.tools = toolRegistryService.formatForOllama(contextualTools);
+        } else {
+            payload.tools = tools;
+        }
     }
 
     if (jsonFormat) {
-        payload.format = "json";
+        if (typeof jsonFormat === 'string' && structuredOutputService.schemas[jsonFormat]) {
+            payload.format = structuredOutputService.getSchema(jsonFormat);
+        } else if (typeof jsonFormat === 'object') {
+            payload.format = jsonFormat;
+        } else {
+            payload.format = "json";
+        }
     }
 
     try {
@@ -451,9 +481,9 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
         });
 
         if (!response.ok) {
-            // Si hermes3 no está disponible, probar fallback con llama3.1
-            if (selectedModel !== 'llama3.1:latest') {
-                return executeLlamaChat(messages, tools, jsonFormat, 'llama3.1:latest');
+            // Si el modelo seleccionado no está disponible, probar fallback
+            if (selectedModel !== fallbackModel) {
+                return executeLlamaChat(messages, tools, jsonFormat, fallbackModel);
             }
             throw new Error(`Ollama devolvió un error HTTP: ${response.status}`);
         }
@@ -461,8 +491,8 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
         const data = await response.json();
         return data.message;
     } catch (err) {
-        if (selectedModel !== 'llama3.1:latest') {
-            return executeLlamaChat(messages, tools, jsonFormat, 'llama3.1:latest');
+        if (selectedModel !== fallbackModel) {
+            return executeLlamaChat(messages, tools, jsonFormat, fallbackModel);
         }
         throw err;
     }
@@ -1763,7 +1793,20 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
 }
 
 
+async function executeStructuredChat(messages, schemaName, overrideModel = null) {
+    const sysPrompt = structuredOutputService.getSystemPromptInstruction(schemaName);
+    const enrichedMessages = [
+        { role: 'system', content: sysPrompt },
+        ...messages
+    ];
+    const rawResult = await executeLlamaChat(enrichedMessages, null, schemaName, overrideModel);
+    const content = typeof rawResult.content === 'string' ? rawResult.content : JSON.stringify(rawResult.content);
+    return structuredOutputService.parseAndValidate(content, schemaName);
+}
+
 module.exports = {
     getAIResponse,
-    searchSports
+    searchSports,
+    executeLlamaChat,
+    executeStructuredChat
 };

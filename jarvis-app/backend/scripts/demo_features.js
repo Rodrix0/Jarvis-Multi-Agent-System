@@ -69,32 +69,42 @@ async function demoItem2() {
     console.log('\n===============================================================');
     console.log('🖥️  DEMO ÍTEM 2: Control Visual de Windows (UI Automation)');
     console.log('===============================================================');
-    console.log('Abriendo el Bloc de Notas (Notepad) para interactuar semánticamente...');
-    
+
     const uiAutomationService = require('../services/windows/uiAutomationService');
-    const { exec } = require('child_process');
+    const actionKernel = require('../services/actionKernelService');
+    require('../services/jarvisActionService');
 
-    // Abrir notepad
-    exec('notepad.exe');
-    console.log('Esperando que aparezca la ventana de Notepad...');
+    console.log('1. Listando ventanas activas del escritorio...');
+    const windows = await uiAutomationService.listWindows();
+    console.log(`✅ Ventanas activas detectadas: ${windows.length}`);
 
-    const win = await uiAutomationService.waitForWindow('Bloc de notas|Notepad', 5000);
-    if (win) {
-        console.log(`✅ Ventana detectada: "${win.title}" (Handle: ${win.handle})`);
+    // Mostrar las primeras 3 ventanas
+    windows.slice(0, 3).forEach((w, i) => {
+        console.log(`   [${i + 1}] HWND: ${w.Hwnd} | Título: "${w.Title}" | Clase: ${w.ClassName}`);
+    });
+
+    const targetWin = windows[0];
+    if (targetWin) {
+        console.log(`\n2. Inspeccionando controles semánticos en ventana activa: "${targetWin.Title}"...`);
+        const inspectRes = await actionKernel.execute('ui.inspect', { window: targetWin.Title });
         
-        console.log('Buscando el área de texto semántica (Edit/Document) sin coordenadas fijas...');
-        const editElem = await uiAutomationService.findTextBox(win.handle);
-        if (editElem) {
-            console.log(`✅ Elemento encontrado: "${editElem.name || editElem.type}" (Control: ${editElem.controlType})`);
-            console.log('Escribiendo texto mediante UI Automation...');
-            await uiAutomationService.setText(win.handle, null, '¡Hola Rodrigo! Esto fue escrito por JARVIS usando UI Automation sin coordenadas fijas.');
-            console.log('✅ Texto inyectado con éxito en el Bloc de Notas.');
-        } else {
-            console.log('⚠️ No se pudo localizar el control de edición directamente.');
+        console.log(`✅ Controles descubiertos vía Microsoft UI Automation: ${inspectRes.elementsCount || 0}`);
+        if (inspectRes.elements && inspectRes.elements.length > 0) {
+            console.log('Primeros controles interactivos encontrados (sin usar coordenadas de pantalla fijas):');
+            inspectRes.elements.slice(0, 5).forEach((el, idx) => {
+                const boundsStr = el.bounds ? `[X:${el.bounds.x}, Y:${el.bounds.y}, W:${el.bounds.width}, H:${el.bounds.height}]` : '[Sin bounds]';
+                console.log(`   (${idx + 1}) Tipo: ${el.controlType} | Nombre: "${el.name || '(Sin etiqueta)'}" | Bounds: ${boundsStr}`);
+            });
         }
-    } else {
-        console.log('⚠️ No se abrió la ventana a tiempo.');
+
+        // Búsqueda de botón
+        const btn = await uiAutomationService.findButton(targetWin);
+        if (btn) {
+            console.log(`\n✅ Botón identificado semánticamente: "${btn.name}" (Habilitado: ${btn.isEnabled})`);
+        }
     }
+
+    console.log('\n✅ Control Visual UI Automation operativo: interactúa por tipo y nombre de control, no por píxeles fijos.');
     console.log('Prueba del Ítem 2 completada.\n');
 }
 
@@ -152,7 +162,7 @@ async function demoItem4() {
     require('../services/jarvisActionService');
 
     const goal = {
-        id: 'plan-demo-test',
+        id: `plan-demo-${Date.now()}`,
         goal: 'Crear estructura de proyecto demo',
         steps: [
             {
@@ -183,7 +193,7 @@ async function demoItem4() {
     console.log('Pasos ejecutados:');
     Object.keys(result.results || {}).forEach(stepId => {
         const r = result.results[stepId];
-        console.log(`  - [${stepId}]: completado=${r.ok}, verificado=${r.verified}`);
+        console.log(`  - [${stepId}]: verificado=${r.verified} (Salida: ${r.output?.message || 'OK'})`);
     });
 
     // Limpieza
