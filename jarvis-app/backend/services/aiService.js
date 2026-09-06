@@ -1,4 +1,6 @@
 const cheerio = require('cheerio');
+const profileService = require('./memory/profileService');
+const embeddingService = require('./memory/embeddingService');
 
 // Eliminamos las credenciales de Google porque ahora somos 100% locales
 let conversationHistory = [];
@@ -489,6 +491,30 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
         systemPrompt += "REGLA DE VIDA O MUERTE: Si el usuario te hace charla casual, te pregunta qué sabes hacer, cómo estás, o cualquier pregunta general sobre ti mismo, ESTÁ STRICTAMENTE PROHIBIDO USAR UNA HERRAMIENTA. Responde únicamente chateando de forma natural.\n";
         systemPrompt += "REGLA DE WHATSAPP: El destinatario debe ser el nombre del contacto limpio. Si te piden enviar algo que acabas de explicar o buscar, usa tu memoria para escribir toda esa info completa en el campo 'message'.\n";
 
+        // Inyección del Bloque Perfil Humano Nuclear (Rodri)
+        try {
+            systemPrompt += profileService.getSystemPromptBlock() + "\n";
+        } catch (errProfile) {
+            console.warn('[AI Service] No se pudo inyectar perfil de usuario:', errProfile.message);
+        }
+
+        // Recuperación de recuerdos a largo plazo relevantes si la consulta es conversacional
+        try {
+            const isHardwareOrFastAction = /(netflix|volumen|tele|tv|stremio|abrir|cerrar|apagar|reiniciar)/i.test(userText);
+            if (!isHardwareOrFastAction) {
+                const relevantMemories = await embeddingService.searchSimilar(userText, { limit: 2, threshold: 0.35 });
+                if (relevantMemories && relevantMemories.length > 0) {
+                    systemPrompt += `\n[RECUERDOS RELEVANTES DE CONVERSACIONES PASADAS]\n`;
+                    relevantMemories.forEach(m => {
+                        systemPrompt += `- ${m.text}\n`;
+                    });
+                    systemPrompt += `------------------------------------------------------------\n\n`;
+                }
+            }
+        } catch (errMem) {
+            console.warn('[AI Service] Búsqueda de recuerdos omitida:', errMem.message);
+        }
+
         const dateNow = new Date();
         systemPrompt += `\nFECHA Y HORA ACTUAL DEL SISTEMA: ${dateNow.toLocaleString('es-AR')}. Usa esta información exacta si el usuario pregunta la hora o el día.\n\n`;
 
@@ -525,7 +551,8 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
             { type: "function", function: { name: "build_software", description: "OBLIGATORIA SI PIDEN HACER, CREAR O PROGRAMAR UNA PÁGINA WEB, APLICACIÓN O PROYECTO. Funciona como un Senior Software Engineer.", parameters: { type: "object", properties: { target: { type: "string", description: "Especificaciones de la web o el programa a realizar" }, reply: { type: "string", description: "Confirmación en voz alta (ej: 'Comenzando a desarrollar tu aplicación señor.')" } }, required: ["target", "reply"] } } },
             { type: "function", function: { name: "generate_image", description: "OBLIGATORIA SI EL USUARIO PIDE DIBUJAR, CREAR UNA IMAGEN, RENDER, FOTO O ARTE VISUAL DE CERO.", parameters: { type: "object", properties: { target: { type: "string", description: "OBLIGATORIO EN INGLÉS. Escribe un prompt DETALLADO describiendo exactamente la escena que el usuario pidió. Incluye: sujeto principal, composición, iluminación, estilo visual, colores. Ej: si pide 'un gato en la luna', escribe 'a fluffy orange cat sitting on the surface of the moon, Earth visible in the background, dramatic cinematic lighting, space photography'. NUNCA traduzcas literalmente, EXPANDE la descripción." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } },
             { type: "function", function: { name: "edit_image", description: "OBLIGATORIA SI EL USUARIO PIDE EDITAR O MODIFICAR UNA IMAGEN QUE ACABA DE SUBIR O PROPORCIONAR.", parameters: { type: "object", properties: { target: { type: "string", description: "OBLIGATORIO EN INGLÉS. Describe SOLAMENTE lo que debe aparecer en la zona editada de la foto. NO describas la foto entera. Ej: si pide 'ponerle lentes', escribe 'stylish dark sunglasses on the face, realistic reflections'. Si pide 'pelo rubio', escribe 'bright blonde hair, natural highlights, silky texture'. Sé específico y visual." }, filepath: { type: "string", description: "La ruta del archivo." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } },
-            { type: "function", function: { name: "search_streaming", description: "MÁXIMA PRIORIDAD. USA ESTA OBLIGATORIAMENTE cada vez que el usuario mencione el NOMBRE de una película, serie, anime o documental que quiera VER, BUSCAR, PONER, REPRODUCIR o ENCONTRAR. Ejemplos: 'quiero ver Breaking Bad', 'poné Stranger Things', 'buscame una de terror', 'poneme el señor de los anillos'. Busca en Stremio (tiene Netflix, HBO, Disney+, Prime, y más) y lo abre automáticamente. NUNCA uses open_app ni search_web para esto.", parameters: { type: "object", properties: { target: { type: "string", description: "El nombre exacto de la película o serie que el usuario quiere ver. Ej: 'Breaking Bad', 'Avengers Endgame', 'Stranger Things'. Escribe el nombre más preciso posible, preferentemente en su idioma original." }, type: { type: "string", enum: ["movie", "series", "auto"], description: "Si es película usa 'movie', si es serie usa 'series'. Si no sabés, usa 'auto'." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } }
+            { type: "function", function: { name: "search_streaming", description: "MÁXIMA PRIORIDAD. USA ESTA OBLIGATORIAMENTE cada vez que el usuario mencione el NOMBRE de una película, serie, anime o documental que quiera VER, BUSCAR, PONER, REPRODUCIR o ENCONTRAR. Ejemplos: 'quiero ver Breaking Bad', 'poné Stranger Things', 'buscame una de terror', 'poneme el señor de los anillos'. Busca en Stremio (tiene Netflix, HBO, Disney+, Prime, y más) y lo abre automáticamente. NUNCA uses open_app ni search_web para esto.", parameters: { type: "object", properties: { target: { type: "string", description: "El nombre exacto de la película o serie que el usuario quiere ver. Ej: 'Breaking Bad', 'Avengers Endgame', 'Stranger Things'. Escribe el nombre más preciso posible, preferentemente en su idioma original." }, type: { type: "string", enum: ["movie", "series", "auto"], description: "Si es película usa 'movie', si es serie usa 'series'. Si no sabés, usa 'auto'." }, reply: { type: "string", description: "Confirmación en voz alta." } }, required: ["target", "reply"] } } },
+            { type: "function", function: { name: "analyze_screen", description: "OBLIGATORIA si el usuario pide ver, revisar, analizar o diagnosticar lo que aparece en pantalla, un error en pantalla o qué ventana está abierta. Captura la pantalla, extrae el texto por OCR y diagnostica el problema.", parameters: { type: "object", properties: { query: { type: "string", description: "La pregunta o duda sobre la pantalla (ej: 'fijate qué error salió')" }, reply: { type: "string", description: "Confirmación en voz alta" } }, required: ["query", "reply"] } } }
         ];
 
         try {
@@ -1481,6 +1508,20 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
             }
 
             if (intent.action === "generate_image") {
+                // Guardia de seguridad: si el texto del usuario era un mensaje a un contacto (ej: "un mensaje a color cartón que diga te amo"),
+                // no debe generar una imagen con Stable Diffusion.
+                if (/\b(?:mandale|manda|envia|escribi|un mensaje|mensaje|diga|watsap|whatsapp)\b/i.test(userText)) {
+                    console.warn(`[Jarvis Artista Guardia] Rechazada generación de imagen errónea para: "${userText}"`);
+                    const fast = require('./ai/fastCommandParser');
+                    const parsed = fast.parse(userText);
+                    if (parsed.match && parsed.action === 'whatsapp.send') {
+                        const winCtrl = require('./windowsControlService');
+                        const res = await winCtrl.whatsapp.sendMessage(parsed.params.contact, parsed.params.message);
+                        return res.message;
+                    }
+                    return "Entendido, pero no pude determinar a quién enviar el mensaje. Podés decirme: Mandale un mensaje a [contacto] que diga [texto].";
+                }
+
                 try {
                     const imageService = require('./imageService');
                     console.log(`[Jarvis Artista] Recibida orden de imagen: ${intent.target}`);
@@ -1639,6 +1680,19 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
                  return intent.reply;
             }
 
+            if (intent.action === "analyze_screen") {
+                try {
+                    const visionService = require('./vision/visionService');
+                    const vRes = await visionService.analyzeScreen(intent.query || userText);
+                    conversationHistory.push({ role: "user", content: userText });
+                    conversationHistory.push({ role: "assistant", content: intent });
+                    return vRes.reply;
+                } catch (e) {
+                    console.error("Error en analyze_screen:", e);
+                    return "No pude analizar la pantalla. " + e.message;
+                }
+            }
+
             if (intent.action === "open_app") {
                 console.log(`[Jarvis Local] Abriendo aplicación: ${intent.target}`);
                 const sysServices = require('./systemService');
@@ -1674,6 +1728,31 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
 
         if (conversationHistory.length > 20) {
             conversationHistory = conversationHistory.slice(-20);
+        }
+
+        // Si el usuario dio una instrucción explícita para guardar en su perfil
+        try {
+            const explicitProfileMatch = userText.match(/(?:guard[aá]|anot[aá]|agreg[aá]|actualiz[aá])\s+(?:en mi perfil|al perfil)\s*(?:que)?\s*(.+)/i);
+            if (explicitProfileMatch && explicitProfileMatch[1]) {
+                const statement = explicitProfileMatch[1].trim();
+                if (/anime|serie|pel[ií]cula|netflix|stremio/i.test(statement)) {
+                    profileService.updateProfile('entertainment', { favorite_shows: [statement] }, { explicit: true });
+                } else if (/proyecto|desarrollo|trabajo|software/i.test(statement)) {
+                    profileService.updateProfile('projects', statement, { explicit: true });
+                }
+            }
+
+            // Indexación asíncrona en memoria vectorial para conversaciones significativas (> 15 caracteres y no comandos rápidos)
+            const isTrivial = /(netflix|volumen|tele|tv|abrir|cerrar|apagar|reiniciar|chau|hola|gracias)/i.test(userText);
+            if (!isTrivial && userText.length > 15 && intent.reply) {
+                embeddingService.storeMemoryVector({
+                    text: `Usuario: ${userText} | Jarvis: ${intent.reply}`,
+                    category: 'dialogue',
+                    sync: false
+                }).catch(() => {});
+            }
+        } catch (memErr) {
+            console.warn('[AI Service] Error registrando en memoria de fondo:', memErr.message);
         }
 
         return intent.reply || "He procesado la acción pero no generé respuesta hablada.";

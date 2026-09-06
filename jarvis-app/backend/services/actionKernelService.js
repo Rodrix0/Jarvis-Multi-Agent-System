@@ -104,16 +104,46 @@ async function execute(id, params = {}, context = {}, options = {}) {
     }
 
     try {
-        const output = await action.execute(params, context);
+        let output = await action.execute(params, context);
+        let verified = output?.verified !== false;
+        let verificationResult = null;
+
+        // Post-Execution Verification (verificationService hook)
+        if (typeof action.verifier === 'function' && output?.ok !== false) {
+            try {
+                verificationResult = await action.verifier(output, params, context);
+                if (verificationResult && verificationResult.verified === false) {
+                    // Reintento automático si está configurado en la acción
+                    if (action.retry && !options._retried) {
+                        options._retried = true;
+                        output = await action.execute(params, context);
+                        verificationResult = await action.verifier(output, params, context);
+                    }
+                }
+                if (verificationResult) {
+                    verified = verificationResult.verified !== false;
+                }
+            } catch (verErr) {
+                verified = false;
+                verificationResult = { verified: false, error: verErr.message };
+            }
+        }
+
+        const isOk = output?.ok !== false && verified;
         const result = {
-            ok: output?.ok !== false,
-            status: output?.ok === false ? 'failed' : 'completed',
+            ok: isOk,
+            status: !isOk ? (verified === false ? 'verification_failed' : 'failed') : 'completed',
             actionId: id,
             permission: action.permission,
-            verified: output?.verified !== false,
-            message: output?.message || `${action.name} completada.`,
+            verified,
+            message: !verified && verificationResult?.error
+                ? `${output?.message || action.name}. (Verificación: ${verificationResult.error})`
+                : (output?.message || `${action.name} completada.`),
             data: output?.data,
-            evidence: output?.evidence,
+            evidence: {
+                ...(output?.evidence || {}),
+                ...(verificationResult ? { verification: verificationResult } : {})
+            },
             startedAt,
             finishedAt: new Date().toISOString()
         };

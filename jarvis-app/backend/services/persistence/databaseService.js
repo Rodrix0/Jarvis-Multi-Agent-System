@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'jarvis.db');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 
 // Serialización canónica de JSON (claves ordenadas determinísticamente)
 function canonicalStringify(obj) {
@@ -64,7 +64,7 @@ class DatabaseService {
         const row = this.db.prepare('SELECT MAX(version) AS version FROM schema_info').get();
         const currentVer = row && row.version ? Number(row.version) : 0;
 
-        if (currentVer < CURRENT_SCHEMA_VERSION) {
+        if (currentVer < 6) {
             this.db.exec('BEGIN TRANSACTION;');
             try {
                 // Tablas Core
@@ -197,9 +197,35 @@ class DatabaseService {
                 `);
 
                 this.db.prepare('INSERT INTO schema_info (version, applied_at) VALUES (?, ?)')
-                    .run(CURRENT_SCHEMA_VERSION, new Date().toISOString());
+                    .run(6, new Date().toISOString());
                 this.db.exec('COMMIT;');
-                console.log(`[Database] Migraciones aplicadas a versión v${CURRENT_SCHEMA_VERSION} con éxito.`);
+                console.log(`[Database] Migraciones aplicadas a versión v6 con éxito.`);
+            } catch (err) {
+                this.db.exec('ROLLBACK;');
+                throw err;
+            }
+        }
+
+        if (currentVer < 7) {
+            this.db.exec('BEGIN TRANSACTION;');
+            try {
+                this.db.exec(`
+                    CREATE TABLE IF NOT EXISTS memory_vectors (
+                        id TEXT PRIMARY KEY,
+                        text TEXT NOT NULL,
+                        vector BLOB NOT NULL,
+                        category TEXT DEFAULT 'general',
+                        metadata_json TEXT,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_memory_vectors_category ON memory_vectors (category);
+                    CREATE INDEX IF NOT EXISTS idx_memory_vectors_created ON memory_vectors (created_at);
+                `);
+
+                this.db.prepare('INSERT INTO schema_info (version, applied_at) VALUES (?, ?)')
+                    .run(7, new Date().toISOString());
+                this.db.exec('COMMIT;');
+                console.log('[Database] Migración v7 (memory_vectors) aplicada con éxito.');
             } catch (err) {
                 this.db.exec('ROLLBACK;');
                 throw err;

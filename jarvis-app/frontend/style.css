@@ -894,3 +894,155 @@ body::after {
     cursor: not-allowed;
     transform: none;
 }
+
+/* ========================================================
+   JARVIS POWER STATUS BADGE & HUD BANNER (ON / OFF INDICATOR)
+   ======================================================== */
+
+.jarvis-power-badge {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    border-radius: 22px;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    background: rgba(17, 24, 39, 0.75);
+    border: 1px solid var(--border-soft);
+}
+
+.jarvis-power-badge.awake {
+    border-color: rgba(0, 229, 255, 0.6);
+    background: rgba(0, 229, 255, 0.08);
+    box-shadow: 0 0 14px rgba(0, 229, 255, 0.2);
+}
+
+.jarvis-power-badge.dormant {
+    border-color: rgba(245, 158, 11, 0.6);
+    background: rgba(245, 158, 11, 0.08);
+    box-shadow: 0 0 14px rgba(245, 158, 11, 0.18);
+}
+
+.power-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    transition: all 0.3s ease;
+}
+
+.jarvis-power-badge.awake .power-dot {
+    background-color: #00E5FF;
+    box-shadow: 0 0 10px #00E5FF, 0 0 20px #00E5FF;
+    animation: blink 2s infinite ease-in-out;
+}
+
+.jarvis-power-badge.dormant .power-dot {
+    background-color: #f59e0b;
+    box-shadow: 0 0 10px #f59e0b;
+    animation: pulse-slow 3s infinite ease-in-out;
+}
+
+@keyframes pulse-slow {
+    0%, 100% { opacity: 0.95; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.power-info {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+}
+
+.power-title {
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.jarvis-power-badge.awake .power-title {
+    color: #00E5FF;
+}
+
+.jarvis-power-badge.dormant .power-title {
+    color: #f59e0b;
+}
+
+.power-sub {
+    font-size: 0.62rem;
+    color: var(--text-secondary);
+}
+
+.power-icon {
+    font-size: 0.85rem;
+    margin-left: 2px;
+    transition: transform 0.25s ease;
+}
+
+.jarvis-power-badge.awake .power-icon {
+    color: #00E5FF;
+}
+
+.jarvis-power-badge.dormant .power-icon {
+    color: #f59e0b;
+}
+
+.jarvis-power-badge:hover {
+    transform: translateY(-1px);
+}
+
+.jarvis-power-badge.awake:hover {
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.4);
+}
+
+.jarvis-power-badge.dormant:hover {
+    box-shadow: 0 0 20px rgba(245, 158, 11, 0.35);
+}
+
+/* CENTRAL HUD POWER BANNER */
+.hud-power-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 6px 18px;
+    border-radius: 30px;
+    margin: 4px auto 10px auto;
+    font-size: 0.78rem;
+    border: 1px solid;
+    transition: all 0.3s ease;
+    backdrop-filter: blur(8px);
+    user-select: none;
+    max-width: 550px;
+}
+
+.hud-power-banner.awake {
+    background: rgba(0, 229, 255, 0.06);
+    border-color: rgba(0, 229, 255, 0.3);
+    color: #E5E7EB;
+}
+
+.hud-power-banner.awake .banner-pill {
+    background: rgba(0, 229, 255, 0.2);
+    color: #00E5FF;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.hud-power-banner.dormant {
+    background: rgba(245, 158, 11, 0.08);
+    border-color: rgba(245, 158, 11, 0.35);
+    color: #fcd34d;
+}
+
+.hud-power-banner.dormant .banner-pill {
+    background: rgba(245, 158, 11, 0.25);
+    color: #f59e0b;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 700;
+}

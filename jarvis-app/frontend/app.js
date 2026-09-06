@@ -246,14 +246,16 @@ function isDirectImperativeCommand(text) {
 
 function isWakeCommand(text) {
     const normalized = normalizeActivationText(text);
-    if (/\b(tele|television|tv|netflix)\b/.test(normalized)) return false;
-    return /^(?:hola\s+)?jarvis\s+(?:prendete|prenderte|despertate|despierta|reactivate)$/.test(normalized) || /^jarvis\s+activa(?:te)?$/.test(normalized);
+    if (/\b(tele|television|tv|netflix|pantalla|pc|luz)\b/.test(normalized)) return false;
+    return /\b(?:prende(?:te)?|encende(?:te)?|desperta(?:te)?|despierta|despiertate|reactiva(?:te)?|activa(?:te)?|arriba|levantate)\b/i.test(normalized)
+        || /^(?:hola\s+jarvis|buen\s+dia\s+jarvis|buenas\s+jarvis|hey\s+jarvis|che\s+jarvis|ok\s+jarvis|jarvis)$/i.test(normalized);
 }
 
 function isSleepCommand(text) {
     const normalized = normalizeActivationText(text);
-    if (/\b(tele|television|tv|netflix)\b/.test(normalized)) return false;
-    return /^(?:hola\s+)?jarvis\s+(?:apagate|apagarte|dormite|modo descanso|entra en modo descanso)$/.test(normalized);
+    if (/\b(tele|television|tv|netflix|pantalla|pc|luz)\b/.test(normalized)) return false;
+    return /\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(normalized)
+        || /^(?:buenas\s+noches(?:\s+jarvis)?|hasta\s+luego(?:\s+jarvis)?|chau\s+jarvis|adios\s+jarvis)$/i.test(normalized);
 }
 
 function restartRecognition(delay = 300) {
@@ -265,7 +267,7 @@ function restartRecognition(delay = 300) {
 }
 
 function handleRecognizedTranscript(transcript, alternatives = []) {
-    if (!transcript || transcript.length < 2 || isJarvisSpeaking) return;
+    if (!transcript || transcript.length < 2 || isJarvisSpeaking || localVoiceOnline) return;
     const normalized = normalizeActivationText(transcript);
 
     // 1. Manejo de apagar/dormir
@@ -344,7 +346,10 @@ if (SpeechRecognition) {
     recognition.maxAlternatives = 3;
 
     recognition.onresult = (event) => {
-        if (isJarvisSpeaking) return;
+        if (isJarvisSpeaking || localVoiceOnline) {
+            try { recognition.abort(); } catch(_) {}
+            return;
+        }
 
         const resultGroups = [];
         for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -486,7 +491,7 @@ function speak(text, callback) {
             isJarvisSpeaking = false;
             setRingState('idle');
             if (callback) callback();
-            if (recognition && isSystemActive) {
+            if (recognition && isSystemActive && !localVoiceOnline) {
                 try { recognition.start(); } catch(error) {}
             }
         }, 700);
@@ -551,7 +556,7 @@ function speakInBrowser(text, callback) {
             isJarvisSpeaking = false;
             setRingState('idle');
             if (callback) callback();
-            if (recognition && isSystemActive) {
+            if (recognition && isSystemActive && !localVoiceOnline) {
                 try { recognition.start(); } catch(e) {}
             }
         }, 900);
@@ -735,9 +740,8 @@ function renderLocalVoiceStatus(status = {}) {
     }
     if (localVoiceOnline) {
         isSystemActive = true;
-        isDormant = status.state !== 'awake';
+        updatePowerStateUI(status.state === 'awake');
         try { recognition?.abort(); } catch (_) {}
-        updateMicButtonUI();
     }
 }
 
@@ -1171,12 +1175,10 @@ socket.on('response', (data) => {
     );
     if (data.action === 'voice.wake' || data.actionPayload?.voiceState === 'awake') {
         isSystemActive = true;
-        isDormant = false;
-        updateMicButtonUI();
+        updatePowerStateUI(true);
     } else if (data.action === 'voice.sleep' || data.actionPayload?.voiceState === 'dormant') {
         isSystemActive = true;
-        isDormant = true;
-        updateMicButtonUI();
+        updatePowerStateUI(false);
     }
     const afterResponse = () => {
         // Ejecutar acciones visuales una vez termine de hablar
@@ -1273,60 +1275,107 @@ function setRingState(state) {
     }
 }
 
-function updateMicButtonUI() {
-    if (isSystemActive && !isDormant) {
-        btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone"></i> ESCUCHA ACTIVA — Di tu orden directamente';
-        btnToggleMic.classList.add('active');
+function updatePowerStateUI(isAwake) {
+    isDormant = !isAwake;
+    const badge = document.getElementById('jarvis-power-badge');
+    const title = document.getElementById('power-status-title');
+    const sub = document.getElementById('power-status-sub');
+    const banner = document.getElementById('hud-power-banner');
+    const bannerIcon = document.getElementById('hud-power-icon');
+    const bannerState = document.getElementById('hud-power-state');
+    const bannerHint = document.getElementById('hud-power-hint');
+
+    if (isAwake) {
+        if (badge) {
+            badge.className = 'jarvis-power-badge awake';
+            if (title) title.textContent = 'JARVIS PRENDIDO';
+            if (sub) sub.textContent = 'Escucha activa';
+        }
+        if (banner) {
+            banner.className = 'hud-power-banner awake';
+            if (bannerIcon) bannerIcon.className = 'fa-solid fa-bolt';
+            if (bannerState) bannerState.textContent = 'PRENDIDO';
+            if (bannerHint) bannerHint.textContent = 'Escucha activa — Di tu orden directamente';
+        }
+        if (btnToggleMic) {
+            btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone"></i> ESCUCHA ACTIVA — Di tu orden directamente';
+            btnToggleMic.classList.add('active');
+        }
         setRingState('listening');
-    } else if (isSystemActive && isDormant) {
-        btnToggleMic.innerHTML = '<i class="fa-solid fa-moon"></i> EN PAUSA — Decí "Préndete" para despertar';
-        btnToggleMic.classList.remove('active');
-        setRingState('idle');
     } else {
-        btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone-slash"></i> MICRÓFONO APAGADO — Click para activar';
-        btnToggleMic.classList.remove('active');
+        if (badge) {
+            badge.className = 'jarvis-power-badge dormant';
+            if (title) title.textContent = 'JARVIS APAGADO';
+            if (sub) sub.textContent = 'En reposo';
+        }
+        if (banner) {
+            banner.className = 'hud-power-banner dormant';
+            if (bannerIcon) bannerIcon.className = 'fa-solid fa-moon';
+            if (bannerState) bannerState.textContent = 'APAGADO';
+            if (bannerHint) bannerHint.textContent = 'Modo reposo — Decí "Jarvis, préndete" o hacé clic para despertar';
+        }
+        if (btnToggleMic) {
+            btnToggleMic.innerHTML = '<i class="fa-solid fa-moon"></i> EN REPOSO (APAGADO) — Decí "Préndete" para despertar';
+            btnToggleMic.classList.remove('active');
+        }
         setRingState('idle');
     }
 }
 
+function updateMicButtonUI() {
+    updatePowerStateUI(!isDormant);
+}
+
 function startHandsFreeMode() {
-    if (!recognition) return;
+    if (!recognition || localVoiceOnline) return;
     isSystemActive = true;
-    isDormant = false;
-    updateMicButtonUI();
+    updatePowerStateUI(true);
     jarvisBox.textContent = "Sistema activo. Di 'Jarvis' o un comando directo (abre, busca, crea...).";
     try { recognition.start(); } catch(e) {}
 }
 
 function startDormantMode() {
-    if (!recognition) return;
+    if (!recognition || localVoiceOnline) return;
     isSystemActive = true;
-    isDormant = true;
-    updateMicButtonUI();
+    updatePowerStateUI(false);
     jarvisBox.textContent = 'Jarvis está en descanso. Decí "Jarvis, prendete" para activarlo.';
     try { recognition.start(); } catch(e) {}
 }
 
-// Click en el botón: toggle encender/apagar
+// Click en el botón o en el badge de estado: toggle encender/apagar
 btnToggleMic.addEventListener('click', (e) => {
     e.preventDefault();
+    const nextState = isDormant ? 'awake' : 'dormant';
+    updatePowerStateUI(nextState === 'awake');
+
     if (localVoiceOnline) {
-        const state = isDormant ? 'awake' : 'dormant';
-        if (state === 'dormant') stopAllSpeech();
-        voiceApi('/api/voice/local/state', { method: 'POST', body: JSON.stringify({ state }) })
+        if (nextState === 'dormant') stopAllSpeech();
+        voiceApi('/api/voice/local/state', { method: 'POST', body: JSON.stringify({ state: nextState }) })
             .then(() => voiceApi('/api/voice/local/status'))
             .then(renderLocalVoiceStatus)
             .catch(error => { jarvisBox.textContent = error.message; });
         return;
     }
-    if (isSystemActive && !isDormant) {
-        isDormant = true;
-        updateMicButtonUI();
-        jarvisBox.textContent = 'Jarvis está en descanso. Decí "Jarvis, prendete" para activarlo.';
-    } else if (isSystemActive && isDormant) {
-        startHandsFreeMode();
-    } else {
+    if (nextState === 'dormant') {
         startDormantMode();
+    } else {
+        startHandsFreeMode();
+    }
+});
+
+// Clic en el badge superior de la cabecera
+const powerBadgeEl = document.getElementById('jarvis-power-badge');
+if (powerBadgeEl) {
+    powerBadgeEl.addEventListener('click', (e) => {
+        e.preventDefault();
+        btnToggleMic.click();
+    });
+}
+
+// Escuchar cambios de estado desde el backend en tiempo real
+socket.on('voice_state_changed', (data) => {
+    if (data && data.state) {
+        updatePowerStateUI(data.state === 'awake');
     }
 });
 

@@ -5,6 +5,9 @@ const processService = require('./windows/processService');
 const fileService = require('./windows/fileService');
 const clipboardService = require('./windows/clipboardService');
 const systemMetricsService = require('./windows/systemMetricsService');
+const windowTabService = require('./windows/windowTabService');
+const whatsappService = require('./windows/whatsappService');
+const uiAutomationService = require('./windows/uiAutomationService');
 const actionRouterService = require('./core/actionRouterService');
 
 class WindowsControlService {
@@ -16,6 +19,9 @@ class WindowsControlService {
         this.file = fileService;
         this.clipboard = clipboardService;
         this.metrics = systemMetricsService;
+        this.windowTab = windowTabService;
+        this.whatsapp = whatsappService;
+        this.uiAutomation = uiAutomationService;
 
         this.registerActionRouterHandlers();
     }
@@ -55,6 +61,26 @@ class WindowsControlService {
         // System Metrics
         actionRouterService.registerAction('system.get-disk-space', async () => this.metrics.getDiskSpace());
         actionRouterService.registerAction('system.get-overview', async () => this.metrics.getSystemOverview());
+
+        // Window & Tab Control
+        actionRouterService.registerAction('window.minimize', async () => this.windowTab.minimizeActive());
+        actionRouterService.registerAction('window.minimize-all', async () => this.windowTab.minimizeAll());
+        actionRouterService.registerAction('window.maximize', async () => this.windowTab.maximizeActive());
+        actionRouterService.registerAction('window.close', async () => this.windowTab.closeWindow());
+        actionRouterService.registerAction('window.next', async () => this.windowTab.nextWindow());
+        actionRouterService.registerAction('tab.next', async () => this.windowTab.nextTab());
+        actionRouterService.registerAction('tab.prev', async () => this.windowTab.prevTab());
+        actionRouterService.registerAction('tab.close', async () => this.windowTab.closeTab());
+        actionRouterService.registerAction('tab.new', async () => this.windowTab.newTab());
+        actionRouterService.registerAction('tab.go-to', async (params) => this.windowTab.goToTab(params?.index));
+
+        // WhatsApp Messaging
+        actionRouterService.registerAction('whatsapp.send', async (params) => this.whatsapp.sendMessage(params?.contact, params?.message));
+
+        // UI Automation
+        actionRouterService.registerAction('ui.click', async (params) => this.uiAutomation.clickElement(params?.window, params?.element, params?.options));
+        actionRouterService.registerAction('ui.set-text', async (params) => this.uiAutomation.setText(params?.window, params?.element, params?.text, params?.options));
+        actionRouterService.registerAction('ui.select-option', async (params) => this.uiAutomation.selectOption(params?.window, params?.option, params?.options));
     }
 }
 

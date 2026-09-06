@@ -224,7 +224,12 @@ function findBestSystemMatch(rawQuery, discovered) {
                 score = 88;
             }
         } else if (compactName.length >= 3 && compactQuery.includes(compactName)) {
-            score = 85;
+            // Si la consulta es mucho más larga que el nombre de la app (frase compleja), no es orden de apertura
+            if (compactQuery.length <= compactName.length + 3) {
+                score = 85;
+            } else {
+                score = 50;
+            }
         } else if (queryTokens.length > 0 && queryTokens.every(qt => nameTokens.includes(qt) || normBaseFile.split(/\s+/).includes(qt))) {
             score = 86 + Math.min(queryTokens.length * 2, 8);
         } else if (queryTokens.length > 0) {
@@ -525,10 +530,10 @@ function handleSystemCommand(text) {
     }
 
     // 3. Reconocimiento directo si el usuario nombra directamente una app/juego indexado con alta confianza
-    if (cleanText.length >= 3 && cleanText.split(/\s+/).length <= 6 && !/^(hola|como estas|que tal|quien sos|ayuda|gracias|chau|adios|buenas|que es|quien es|como se)/i.test(cleanText)) {
+    if (cleanText.length >= 3 && cleanText.split(/\s+/).length <= 3 && !/^(hola|como estas|que tal|quien sos|ayuda|gracias|chau|adios|buenas|que es|quien es|como se|mandale|manda|envia|escribi|un mensaje|mensaje)/i.test(cleanText)) {
         const discovered = appDiscoveryService.getAppDictionary();
         const bestMatch = findBestSystemMatch(cleanText, discovered);
-        if (bestMatch && bestMatch.score >= 85) {
+        if (bestMatch && bestMatch.score >= 88) {
             return { isSystemCommand: true, appName: cleanText, isLearned: false };
         }
     }

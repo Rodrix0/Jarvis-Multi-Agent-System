@@ -41,8 +41,13 @@
                 <button id="btn-open-brain-modal" class="voice-test-btn" type="button" title="Voz, memoria y acciones">
                     <i class="fa-solid fa-brain"></i> Voz y memoria
                 </button>
-                <div class="system-status">
-                    <span class="status-dot"></span> Online
+                <div id="jarvis-power-badge" class="jarvis-power-badge awake" title="Clic para alternar entre PRENDIDO y APAGADO">
+                    <span class="power-dot"></span>
+                    <div class="power-info">
+                        <span id="power-status-title" class="power-title">JARVIS PRENDIDO</span>
+                        <span id="power-status-sub" class="power-sub">Escucha activa</span>
+                    </div>
+                    <i class="fa-solid fa-power-off power-icon"></i>
                 </div>
             </div>
         </header>
@@ -62,6 +67,10 @@
 
             <!-- CENTER PANEL: AI INTERFACE -->
             <section class="center-panel">
+                <div id="hud-power-banner" class="hud-power-banner awake" title="Estado operativo de Jarvis">
+                    <span class="banner-pill"><i id="hud-power-icon" class="fa-solid fa-bolt"></i> <strong id="hud-power-state">PRENDIDO</strong></span>
+                    <span id="hud-power-hint">Escucha activa — Di tu orden directamente</span>
+                </div>
                 <div class="visualizer-container" id="visualizer-container" style="position: relative; height: 350px;">
                     <!-- El canvas 3D se inyectará aquí -->
                 </div>

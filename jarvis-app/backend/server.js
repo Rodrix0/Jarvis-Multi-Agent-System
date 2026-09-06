@@ -209,13 +209,23 @@ app.post('/api/voice/local/status', (req, res) => {
     io.emit('local_voice_status', localVoiceStatus);
     res.json({ ok: true });
 });
-app.post('/api/voice/local/state', (req, res) => {
-    const state = req.body.state === 'awake' ? 'awake' : 'dormant';
-    if (state === 'dormant') ttsService.stop();
+function setVoiceState(state) {
+    const newState = state === 'awake' ? 'awake' : 'dormant';
+    if (newState === 'dormant') ttsService.stop();
     const statePath = path.join(__dirname, 'data', 'local_voice_state.json');
-    fs.writeFileSync(statePath, JSON.stringify({ state, updatedAt: Date.now() }, null, 2));
-    localVoiceStatus = { ...localVoiceStatus, state, lastSeenAt: new Date().toISOString() };
+    try {
+        fs.writeFileSync(statePath, JSON.stringify({ state: newState, updatedAt: Date.now() }, null, 2));
+    } catch (e) {
+        console.warn('[VoiceState] Error escribiendo statePath:', e.message);
+    }
+    localVoiceStatus = { ...localVoiceStatus, state: newState, lastSeenAt: new Date().toISOString() };
     io.emit('local_voice_status', localVoiceStatus);
+    io.emit('voice_state_changed', { state: newState });
+    return newState;
+}
+
+app.post('/api/voice/local/state', (req, res) => {
+    const state = setVoiceState(req.body.state);
     res.json({ ok: true, state });
 });
 
@@ -349,15 +359,14 @@ app.post('/api/process_speech_local', async (req, res) => {
         'Entendido, en proceso.'
     ];
     const ackText = ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)];
-    io.emit('action_status', { phase: 'accepted', message: ackText, text, speakAck: true });
-    
-    // Hablar inmediatamente para que el usuario sepa que Jarvis escuchó y está trabajando
-    if (!/apagate|dormite|descanso/i.test(text)) {
-        ttsService.speak(ackText).catch(err => console.warn('[TTS Ack Local Warning]', err.message));
-    }
+    io.emit('action_status', { phase: 'accepted', message: ackText, text, speakAck: false });
 
     const result = await jarvisActionService.process(text, actionContext(progress => io.emit('tv_progress', progress)));
-    if (result.actionId === 'voice.sleep') ttsService.stop();
+    if (result.actionId === 'voice.sleep') {
+        setVoiceState('dormant');
+    } else if (result.actionId === 'voice.wake') {
+        setVoiceState('awake');
+    }
     const responseText = result.message;
     
     // Sincronizar la respuesta con cualquier UI web abierta
@@ -525,7 +534,11 @@ io.on('connection', (socket) => {
                 ...actionContext(progress => socket.emit('tv_progress', progress)),
                 inpaintingMask: data.inpaintingMask
             });
-            if (result.actionId === 'voice.sleep') ttsService.stop();
+            if (result.actionId === 'voice.sleep') {
+                setVoiceState('dormant');
+            } else if (result.actionId === 'voice.wake') {
+                setVoiceState('awake');
+            }
             socket.emit('action_result', result);
             socket.emit('response', {
                 text: result.message,

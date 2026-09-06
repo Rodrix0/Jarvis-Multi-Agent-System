@@ -54,7 +54,11 @@ SAMPLE_RATE = 16000
 FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
 FRAME_BYTES = FRAME_SAMPLES * 2
-WAKE_WORDS = ("prendete", "prende", "prende te", "despertate", "despierta", "reactivate")
+WAKE_WORDS = (
+    "prendete", "prende", "prende te", "encendete", "encende",
+    "despertate", "despierta", "desperta", "reactivate", "reactiva",
+    "activate", "activa", "arriba", "levantate"
+)
 NAME_WORDS = ("jarvis", "yarvis", "charvis", "harvis")
 
 audio_queue = queue.Queue(maxsize=300)
@@ -131,7 +135,7 @@ def load_settings():
         "whisperDevice": "cuda",
         "vadAggressiveness": 2,
         "speechStartFrames": 3,
-        "endSilenceMs": 1350,
+        "endSilenceMs": 2200,
         "preRollMs": 450,
         "maxUtteranceSeconds": 45,
         "localConfidenceThreshold": 0.68,
@@ -348,13 +352,25 @@ class LocalVoiceEngine:
         if not VOSK_PATH.exists():
             raise RuntimeError(f"Falta el modelo Vosk: {VOSK_PATH}")
         self.wake_model = Model(str(VOSK_PATH))
-        wake_grammar = json.dumps([*NAME_WORDS, *WAKE_WORDS, "jarvis prendete", "jarvis despertate", "[unk]"])
+        wake_grammar = json.dumps([
+            *NAME_WORDS, *WAKE_WORDS,
+            "jarvis prendete", "prendete jarvis", "jarvis despertate", "despertate jarvis",
+            "hola jarvis", "hey jarvis", "che jarvis", "ok jarvis",
+            "jarvis reactivate", "jarvis activa", "activa jarvis", "jarvis encendete",
+            "[unk]"
+        ])
         self.wake_recognizer = KaldiRecognizer(self.wake_model, SAMPLE_RATE, wake_grammar)
-        sleep_grammar = json.dumps(["apagate", "jarvis apagate", "dormite", "jarvis dormite", "modo descanso", "[unk]"])
+        sleep_grammar = json.dumps([
+            "apagate", "apaga", "jarvis apagate", "apagate jarvis",
+            "dormite", "duerme", "jarvis dormite", "dormite jarvis",
+            "modo descanso", "descanso", "a dormir", "a descansar",
+            "silenciate", "silencio", "reposo", "modo reposo", "[unk]"
+        ])
         self.sleep_recognizer = KaldiRecognizer(self.wake_model, SAMPLE_RATE, sleep_grammar)
         self.whisper = None
         self.wake_name_until = 0.0
         self.wake_word_until = 0.0
+        self.last_state_check = 0.0
 
     def ensure_whisper(self):
         if self.whisper is not None:
@@ -437,25 +453,53 @@ class LocalVoiceEngine:
             text = normalized(json.loads(self.wake_recognizer.Result()).get("text", ""))
         else:
             text = normalized(json.loads(self.wake_recognizer.PartialResult()).get("partial", ""))
-        has_name = any(word in text for word in NAME_WORDS)
-        has_wake = any(word in text for word in WAKE_WORDS)
+        if not text:
+            return False
+
         now = time.monotonic()
-        if has_name:
-            self.wake_name_until = now + 2.2
-        if has_wake:
-            self.wake_word_until = now + 2.2
-        detected = now <= self.wake_name_until and now <= self.wake_word_until
-        if detected:
+        # Frases directas y completas
+        if any(p in text for p in ("jarvis prendete", "prendete jarvis", "jarvis despertate", "despertate jarvis", "hola jarvis", "hey jarvis", "ok jarvis")):
             self.wake_name_until = self.wake_word_until = 0.0
             self.wake_recognizer.Reset()
-        return detected
+            return True
+
+        has_wake = any(word in text for word in WAKE_WORDS)
+        has_name = any(word in text for word in NAME_WORDS)
+
+        # Si dijo cualquier palabra clave para despertar ("prendete", "despertate", "activa", "arriba")
+        if has_wake:
+            self.wake_name_until = self.wake_word_until = 0.0
+            self.wake_recognizer.Reset()
+            return True
+
+        if has_name:
+            self.wake_name_until = now + 2.5
+
+        # Si dijo "jarvis" solo y limpio
+        if text.strip() in ("jarvis", "hola jarvis", "hey jarvis"):
+            self.wake_name_until = self.wake_word_until = 0.0
+            self.wake_recognizer.Reset()
+            return True
+
+        return False
 
     def sleep_detected(self, frame):
         if self.sleep_recognizer.AcceptWaveform(frame):
             text = normalized(json.loads(self.sleep_recognizer.Result()).get("text", ""))
         else:
             text = normalized(json.loads(self.sleep_recognizer.PartialResult()).get("partial", ""))
-        detected = text in ("jarvis apagate", "jarvis dormite")
+        if not text:
+            return False
+
+        # No apagar si se está hablando de apagar la tele o luces
+        if any(dev in text for dev in ("tele", "television", "tv", "luz", "aire")):
+            return False
+
+        detected = any(w in text for w in (
+            "apagate", "apaga", "dormite", "duerme", "modo descanso",
+            "descanso", "a dormir", "a descansar", "silenciate", "silencio",
+            "reposo", "modo reposo"
+        ))
         if detected:
             self.sleep_recognizer.Reset()
         return detected
@@ -512,8 +556,13 @@ class LocalVoiceEngine:
                 gc.collect()
                 threading.Thread(target=unload_local_understanding, daemon=True).start()
                 clear_audio_queue()
-                report_status(stage="dormant")
+                report_status(stage="dormant", state="dormant")
                 return
+            elif voice_state == "awake":
+                self.state = "awake"
+                write_state(self.state)
+                report_status(stage="awake", state="awake")
+
             speak(response_text)
             clear_audio_queue()
             self.suppress_until = time.monotonic() + 0.9
@@ -585,11 +634,30 @@ class LocalVoiceEngine:
                             threading.Thread(target=unload_local_understanding, daemon=True).start()
                 if len(frame) != FRAME_BYTES or time.monotonic() < self.suppress_until:
                     continue
+
+                now = time.monotonic()
+                if now - self.last_state_check > 0.8:
+                    self.last_state_check = now
+                    disk_state = read_state()
+                    if disk_state != self.state:
+                        print(f"[Voz local] Estado sincronizado desde sistema: {disk_state}")
+                        self.state = disk_state
+                        if self.state == "dormant":
+                            stop_speaking()
+                            self.whisper = None
+                            gc.collect()
+                            threading.Thread(target=unload_local_understanding, daemon=True).start()
+                            clear_audio_queue()
+                            report_status(stage="dormant", state="dormant")
+                        else:
+                            threading.Thread(target=warm_local_understanding, daemon=True).start()
+                            report_status(stage="awake", state="awake")
+
                 if self.state == "dormant":
                     if self.wake_detected(frame):
                         self.state = "awake"
                         write_state(self.state)
-                        report_status(stage="awake")
+                        report_status(stage="awake", state="awake")
                         threading.Thread(target=warm_local_understanding, daemon=True).start()
                         speak("Estoy en línea. ¿Qué necesitás?")
                         clear_audio_queue()

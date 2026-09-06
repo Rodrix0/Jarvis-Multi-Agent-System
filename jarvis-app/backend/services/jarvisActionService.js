@@ -1,3 +1,5 @@
+const path = require('path');
+const fs = require('fs');
 const actionKernel = require('./actionKernelService');
 const memoryService = require('./memoryService');
 const modeService = require('./modeService');
@@ -87,27 +89,244 @@ function registerActions() {
         execute: async () => windowsControlService.clipboard.readClipboard()
     });
 
+    // Window & Tab Controls (Fast deterministic UI actions)
+    actionKernel.register({
+        id: 'window.minimize', name: 'Minimizar ventana', description: 'Minimiza la ventana activa.',
+        parameters: {}, permission: 'standard', examples: ['Minimiza', 'Minimizar ventana'],
+        execute: async () => windowsControlService.windowTab.minimizeActive()
+    });
+    actionKernel.register({
+        id: 'window.minimize-all', name: 'Minimizar todo / Mostrar escritorio', description: 'Minimiza todas las ventanas abiertas.',
+        parameters: {}, permission: 'standard', examples: ['Minimiza todo', 'Mostrar escritorio'],
+        execute: async () => windowsControlService.windowTab.minimizeAll()
+    });
+    actionKernel.register({
+        id: 'window.maximize', name: 'Maximizar ventana', description: 'Maximiza la ventana activa.',
+        parameters: {}, permission: 'standard', examples: ['Maximiza', 'Pantalla completa'],
+        execute: async () => windowsControlService.windowTab.maximizeActive()
+    });
+    actionKernel.register({
+        id: 'window.close', name: 'Cerrar ventana', description: 'Cierra la ventana o aplicación activa.',
+        parameters: {}, permission: 'standard', examples: ['Cerrar ventana', 'Cerra el programa'],
+        execute: async () => windowsControlService.windowTab.closeWindow()
+    });
+    actionKernel.register({
+        id: 'window.next', name: 'Cambiar de ventana', description: 'Cambia a la siguiente ventana abierta.',
+        parameters: {}, permission: 'standard', examples: ['Cambia de ventana', 'Siguiente ventana'],
+        execute: async () => windowsControlService.windowTab.nextWindow()
+    });
+    actionKernel.register({
+        id: 'tab.next', name: 'Siguiente pestaña', description: 'Avanza a la siguiente pestaña en el navegador o editor.',
+        parameters: {}, permission: 'standard', examples: ['Siguiente pestaña', 'Cambia de pestaña'],
+        execute: async () => windowsControlService.windowTab.nextTab()
+    });
+    actionKernel.register({
+        id: 'tab.prev', name: 'Pestaña anterior', description: 'Retrocede a la pestaña anterior en el navegador o editor.',
+        parameters: {}, permission: 'standard', examples: ['Pestaña anterior', 'Anterior pestaña'],
+        execute: async () => windowsControlService.windowTab.prevTab()
+    });
+    actionKernel.register({
+        id: 'tab.close', name: 'Cerrar pestaña', description: 'Cierra la pestaña actual.',
+        parameters: {}, permission: 'standard', examples: ['Cerrar pestaña', 'Cerra'],
+        execute: async () => windowsControlService.windowTab.closeTab()
+    });
+    actionKernel.register({
+        id: 'tab.new', name: 'Nueva pestaña', description: 'Abre una nueva pestaña.',
+        parameters: {}, permission: 'standard', examples: ['Nueva pestaña'],
+        execute: async () => windowsControlService.windowTab.newTab()
+    });
+    actionKernel.register({
+        id: 'tab.go-to', name: 'Ir a pestaña específica', description: 'Cambia a una pestaña específica por número (1 a 9).',
+        parameters: { index: 'Número de pestaña' }, permission: 'standard', examples: ['Andá a la pestaña 4', 'Pestaña 5', 'Ir a la pestaña 1'],
+        execute: async ({ index }) => windowsControlService.windowTab.goToTab(index)
+    });
+
+    // WhatsApp Messaging
+    actionKernel.register({
+        id: 'whatsapp.send', name: 'Enviar mensaje de WhatsApp', description: 'Envía un mensaje de WhatsApp a un contacto especificado.',
+        parameters: { contact: 'Nombre del contacto', message: 'Mensaje a enviar' }, permission: 'standard',
+        examples: ['Mandale un mensaje a Color Cartón que diga te amo', 'Enviá un mensaje a mamá que diga llego en 10', 'Un mensaje a Color Cartón que diga te amo'],
+        execute: async ({ contact, message }) => windowsControlService.whatsapp.sendMessage(contact, message)
+    });
+
+    // UI Automation (Semantic Windows Control)
+    const uiAutomationService = require('./windows/uiAutomationService');
+    actionKernel.register({
+        id: 'ui.click', name: 'Hacer clic semántico en botón', description: 'Hace clic en un botón o control de una ventana por su nombre visible sin depender de coordenadas fijas.',
+        parameters: { window: 'Título de la ventana', element: 'Nombre del botón o control' }, permission: 'standard',
+        examples: ['Hacé clic en Aceptar', 'Apretá el botón Descargar en Chrome', 'Hacé clic en Cerrar en el Bloc de notas'],
+        execute: async ({ window, element, options }) => {
+            const res = await uiAutomationService.clickElement(window, element, options);
+            return {
+                ok: true,
+                message: `Hice clic en "${element}" en la ventana "${window}". Método: ${res.method || 'UIAutomation'}.`,
+                data: res
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'ui.type', name: 'Escribir texto en campo', description: 'Escribe texto en un campo o caja de búsqueda de una ventana.',
+        parameters: { window: 'Título de la ventana', element: 'Nombre del campo de texto', text: 'Texto a ingresar' }, permission: 'standard',
+        examples: ['Escribí en el campo Buscar', 'Escribí en la barra de direcciones'],
+        execute: async ({ window, element, text, options }) => {
+            const res = await uiAutomationService.setText(window, element, text, options);
+            return {
+                ok: true,
+                message: `Escribí "${text}" en el campo "${element || 'principal'}" de "${window}".`,
+                data: res
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'ui.inspect', name: 'Inspeccionar controles de ventana', description: 'Lista los botones y campos visibles de una ventana.',
+        parameters: { window: 'Título de la ventana' }, permission: 'standard',
+        execute: async ({ window }) => {
+            const win = await uiAutomationService.findWindow(window);
+            if (!win) return { ok: false, message: `No encontré la ventana "${window}".` };
+            const hwnd = win.Hwnd || win.hwnd;
+            const res = await uiAutomationService._runBridge(['-Action', 'find-elements', '-Hwnd', String(hwnd)]);
+            return {
+                ok: true,
+                message: `Inspección completada: ${res.count || 0} controles encontrados.`,
+                window: win,
+                elementsCount: res.count || 0,
+                elements: res.elements || []
+            };
+        }
+    });
+
+    // Autonomous Browser Subsystem (Playwright)
+    const browserService = require('./browser/browserService');
+    actionKernel.register({
+        id: 'browser.open', name: 'Abrir página web en navegador autónomo', description: 'Navega a un sitio web en el navegador autónomo Playwright.',
+        parameters: { url: 'URL del sitio web' }, permission: 'standard',
+        execute: async ({ url, options }) => {
+            const res = await browserService.openPage(url, options);
+            return { ok: true, message: `Página "${res.title}" cargada exitosamente.`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.click', name: 'Hacer clic en elemento web', description: 'Hace clic en un botón, enlace o elemento de la página web actual.',
+        parameters: { selector: 'Selector CSS o texto del elemento' }, permission: 'standard',
+        execute: async ({ selector, options }) => {
+            const res = await browserService.click(selector, options);
+            return { ok: true, message: `Clic ejecutado en "${selector}".`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.type', name: 'Escribir en formulario web', description: 'Escribe texto en un campo de texto o búsqueda web.',
+        parameters: { selector: 'Selector del campo', text: 'Texto a escribir' }, permission: 'standard',
+        execute: async ({ selector, text, options }) => {
+            const res = await browserService.write(selector, text, options);
+            return { ok: true, message: `Escribí en "${selector}".`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.get-text', name: 'Leer contenido web', description: 'Extrae el texto visible de la página o de un elemento.',
+        parameters: { selector: 'Selector opcional (por defecto toda la página)' }, permission: 'standard',
+        execute: async ({ selector, options }) => {
+            const res = await browserService.getText(selector || 'body', options);
+            return { ok: true, message: `Contenido extraído (${res.length} caracteres).`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.scroll', name: 'Desplazar página web', description: 'Hace scroll hacia abajo o arriba en la página web.',
+        parameters: { direction: 'down o up', amount: 'Píxeles' }, permission: 'standard',
+        execute: async ({ direction, amount, options }) => {
+            const res = await browserService.scroll(direction, amount, options);
+            return { ok: true, message: `Scroll realizado.`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.close', name: 'Cerrar navegador autónomo', description: 'Cierra la sesión del navegador autónomo.',
+        parameters: {}, permission: 'standard',
+        execute: async () => {
+            const res = await browserService.close();
+            return { ok: true, message: 'Navegador autónomo cerrado.', data: res };
+        }
+    });
+
+    // Advanced Web Research Subsystem
+    const researchService = require('./ai/researchService');
+    actionKernel.register({
+        id: 'research.query', name: 'Investigación web profunda', description: 'Realiza una investigación analítica multi-fuente con subconsultas y síntesis comparada.',
+        parameters: { question: 'Pregunta o tema a investigar', options: 'Opciones adicionales (timeout, maxSources)' }, permission: 'standard',
+        execute: async ({ question, query, options }) => {
+            const topic = question || query;
+            const res = await researchService.research(topic, options);
+            return {
+                ok: true,
+                message: `Investigación sobre "${topic}" completada con ${res.uniqueSources} fuentes analizadas.`,
+                data: res
+            };
+        }
+    });
+
+    // Vision Subsystem (Screen OCR & Error Diagnosis)
+    const visionService = require('./vision/visionService');
+    actionKernel.register({
+        id: 'vision.analyze-screen', name: 'Analizar pantalla y diagnosticar error', description: 'Captura la pantalla, extrae el texto por OCR e interpreta el error o contenido visible.',
+        parameters: { query: 'Pregunta o consulta del usuario', imagePath: 'Ruta de imagen opcional' }, permission: 'standard', examples: ['Fijate qué error salió', 'Qué dice la pantalla'],
+        execute: async ({ query, imagePath }) => {
+            const res = await visionService.analyzeScreen(query || '¿Qué error o situación aparece en pantalla?', imagePath);
+            return {
+                ok: true,
+                reply: res.reply,
+                message: res.reply,
+                context: res.context
+            };
+        }
+    });
+
     // File & Folder Operations with Rollback
     const fileOperationsService = require('./core/fileOperationsService');
+    const verificationService = require('./core/verificationService');
     actionKernel.register({
         id: 'file.create', name: 'Crear archivo o documento', description: 'Crea un archivo (.txt, .docx) o nota en el Escritorio o carpeta.',
         parameters: { fileName: 'Nombre del archivo', content: 'Contenido opcional', format: 'txt o docx', folderName: 'Carpeta opcional', topic: 'Tema opcional' }, permission: 'standard',
-        execute: async ({ fileName, content, format = 'txt', folderName, topic }) => fileOperationsService.createFile({ fileName, content, format, folderName, topic })
+        execute: async ({ fileName, content, format = 'txt', folderName, topic }) => fileOperationsService.createFile({ fileName, content, format, folderName, topic }),
+        verifier: async (output, { fileName, folderName }) => {
+            const target = output?.filePath || (folderName && fileName ? path.join(fileOperationsService.getDesktopPath(), folderName, fileName) : null);
+            if (target) {
+                return verificationService.verifyFileCreated(target, { timeoutMs: 2000 });
+            }
+            return { verified: true };
+        }
     });
     actionKernel.register({
         id: 'folder.create', name: 'Crear carpeta', description: 'Crea una carpeta en el Escritorio.',
         parameters: { folderName: 'Nombre de la carpeta' }, permission: 'standard',
-        execute: async ({ folderName }) => fileOperationsService.createFolder({ folderName })
+        execute: async ({ folderName }) => fileOperationsService.createFolder({ folderName }),
+        verifier: async (output, { folderName }) => {
+            const target = output?.folderPath || (folderName ? path.join(fileOperationsService.getDesktopPath(), folderName) : null);
+            if (target) {
+                return verificationService.verifyFolderCreated(target, { timeoutMs: 2000 });
+            }
+            return { verified: true };
+        }
     });
     actionKernel.register({
         id: 'folder.delete', name: 'Eliminar carpeta', description: 'Mueve una carpeta a la papelera segura de Jarvis.',
         parameters: { folderName: 'Nombre de la carpeta' }, permission: 'standard',
-        execute: async ({ folderName }) => fileOperationsService.deleteFolder(folderName)
+        execute: async ({ folderName }) => fileOperationsService.deleteFolder(folderName),
+        verifier: async (output, { folderName }) => {
+            if (folderName) {
+                const target = path.join(fileOperationsService.getDesktopPath(), folderName);
+                return verificationService.verifyDeleted(target, { timeoutMs: 2000 });
+            }
+            return { verified: true };
+        }
     });
     actionKernel.register({
         id: 'file.delete', name: 'Mover archivo a papelera segura', description: 'Mueve un archivo a la papelera segura de Jarvis.',
         parameters: { filePath: 'Ruta o nombre del archivo' }, permission: 'standard',
-        execute: async ({ filePath }) => trashService.moveToTrash(filePath)
+        execute: async ({ filePath }) => trashService.moveToTrash(filePath),
+        verifier: async (output, { filePath }) => {
+            if (filePath && filePath !== 'last_screenshot') {
+                return verificationService.verifyDeleted(filePath, { timeoutMs: 2000 });
+            }
+            return { verified: true };
+        }
     });
     actionKernel.register({
         id: 'file.restore', name: 'Restaurar archivo de papelera', description: 'Restaura un archivo previamente eliminado.',
@@ -149,13 +368,33 @@ function registerActions() {
 
     actionKernel.register({
         id: 'voice.wake', name: 'Despertar a Jarvis', description: 'Sale del modo descanso y acepta órdenes hasta que el usuario lo apague.',
-        parameters: {}, permission: 'standard', examples: ['Jarvis, prendete'],
-        execute: async () => ({ message: 'Estoy en línea. ¿Qué necesitás?', data: { voiceState: 'awake' }, evidence: { stateChanged: true } })
+        parameters: {}, permission: 'standard', examples: ['Jarvis, prendete', 'Prendete', 'Despertate'],
+        execute: async () => {
+            const statePath = path.join(__dirname, '..', 'data', 'local_voice_state.json');
+            let wasAwake = false;
+            try {
+                const cur = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+                if (cur && cur.state === 'awake') wasAwake = true;
+            } catch (_) {}
+            try {
+                fs.writeFileSync(statePath, JSON.stringify({ state: 'awake', updatedAt: Date.now() }, null, 2));
+            } catch (_) {}
+            if (wasAwake) {
+                return { message: 'Ya estoy en línea y escuchando. ¿Qué necesitás?', data: { voiceState: 'awake' }, evidence: { stateChanged: false } };
+            }
+            return { message: 'Estoy en línea. ¿Qué necesitás?', data: { voiceState: 'awake' }, evidence: { stateChanged: true } };
+        }
     });
     actionKernel.register({
         id: 'voice.sleep', name: 'Poner a Jarvis en descanso', description: 'Ignora órdenes normales y conserva solamente la escucha de la frase de activación.',
-        parameters: {}, permission: 'standard', examples: ['Jarvis, apagate'],
-        execute: async () => ({ message: 'Entendido, entrando en modo espera.', data: { voiceState: 'dormant' }, evidence: { stateChanged: true } })
+        parameters: {}, permission: 'standard', examples: ['Jarvis, apagate', 'Apagate', 'Dormite', 'Modo descanso'],
+        execute: async () => {
+            const statePath = path.join(__dirname, '..', 'data', 'local_voice_state.json');
+            try {
+                fs.writeFileSync(statePath, JSON.stringify({ state: 'dormant', updatedAt: Date.now() }, null, 2));
+            } catch (_) {}
+            return { message: 'Entendido, entrando en modo espera.', data: { voiceState: 'dormant' }, evidence: { stateChanged: true } };
+        }
     });
 
     actionKernel.register({
@@ -265,11 +504,18 @@ function registerActions() {
         description: 'Abre una aplicación detectada o un sitio conocido y comprueba si el lanzador aceptó la orden.',
         parameters: { appName: 'Aplicación o sitio' }, permission: 'desktop-control',
         examples: ['Abrí Spotify', 'Abrí Netflix en la computadora'],
+        retry: true,
         execute: async ({ appName }) => {
             const success = await systemService.openApp(appName, modeService.getActiveMode().id);
             return success
                 ? { message: `Abrí ${appName} en la computadora.`, evidence: { launcherAccepted: true, appName } }
                 : { ok: false, message: `No pude abrir ${appName}.`, evidence: { launcherAccepted: false, appName } };
+        },
+        verifier: async (output, { appName }) => {
+            return verificationService.verifyAppOpened(appName, {
+                timeoutMs: 4000,
+                retryFn: () => systemService.openApp(appName, modeService.getActiveMode().id)
+            });
         }
     });
 
@@ -467,12 +713,25 @@ async function resolve(text) {
     // Normalización fonética para términos comúnmente malinterpretados por STT
     clean = clean
         .replace(/\b(?:un\s+)?(?:tequi\s*te|tequiste|tequi|te\s+que\s+te|tequis|tx\s*t|t\s+x\s+t)\b/gi, 'txt')
-        .replace(/\b(crear|creame|crea|hacer|haceme|hace|generar|genera)\s+(?:un\s+)?tequila\b/gi, '$1 un txt');
+        .replace(/\b(crear|creame|crea|hacer|haceme|hace|generar|genera)\s+(?:un\s+)?tequila\b/gi, '$1 un txt')
+        .replace(/\bmini\s+misa\b/gi, 'minimiza')
+        .replace(/\bminimisa\b/gi, 'minimiza')
+        .replace(/\bmaxi\s+misa\b/gi, 'maximiza')
+        .replace(/\bmaximisa\b/gi, 'maximiza');
     const lower = normalize(clean);
 
-    // 1. Wake & Sleep
-    if (/^jarvis\s+(?:prendete|despertate|reactivate)$/.test(lower)) return { id: 'voice.wake', params: {} };
-    if (/^jarvis\s+(?:apagate|dormite|modo descanso|entra en modo descanso)$/.test(lower)) return { id: 'voice.sleep', params: {} };
+    // 1. Wake & Sleep (ignorar si es sobre tele, luces o apps externas)
+    const isDeviceTarget = /\b(?:tele|television|tv|pantalla|monitor|pc|computadora|luz|luces|aire)\b/i.test(lower);
+    if (!isDeviceTarget) {
+        if (/\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(lower)
+            || /^(?:buenas\s+noches(?:\s+jarvis)?|hasta\s+luego(?:\s+jarvis)?|chau\s+jarvis|adios\s+jarvis)$/i.test(lower)) {
+            return { id: 'voice.sleep', params: {} };
+        }
+        if (/\b(?:prende(?:te)?|encende(?:te)?|desperta(?:te)?|despierta|despiertate|reactiva(?:te)?|activa(?:te)?|arriba|levantate)\b/i.test(lower)
+            || /^(?:hola\s+jarvis|buen\s+dia\s+jarvis|buenas\s+jarvis|hey\s+jarvis|che\s+jarvis|ok\s+jarvis|jarvis)$/i.test(lower)) {
+            return { id: 'voice.wake', params: {} };
+        }
+    }
 
     // 2. Parada de Emergencia (Voz)
     if (/\b(?:detener todo|para todo|parar todo|abortar|emergencia|cancela todo|cancelar todo)\b/i.test(lower)) {
@@ -542,7 +801,7 @@ async function resolve(text) {
     }
 
     // 7.3 Eliminar carpeta
-    const delFolderMatch = lower.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:la\s+|esta\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|de\s+nombre\s+|titulada|de\s+)?\s*([a-zA-Z0-9_\-\.áéíóúñ ]+)$/i);
+    const delFolderMatch = clean.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:la\s+|esta\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|de\s+nombre\s+|titulada|de\s+)?\s*([a-zA-Z0-9_\-\.áéíóúÁÉÍÓÚñÑ ]+)$/i);
     if (delFolderMatch && delFolderMatch[1]) {
         let folderName = delFolderMatch[1].trim().replace(/^de\s+/i, '').replace(/[.!?]+$/, '').trim();
         if (folderName) {
@@ -603,7 +862,7 @@ async function resolve(text) {
     }
 
     // 7.8 Borrado de archivos generales
-    const delFileMatch = lower.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:el\s+archivo\s+|la\s+foto\s+|la\s+imagen\s+|el\s+documento\s+|el\s+|la\s+)?([a-zA-Z0-9_\-\.áéíóúñ ]+?)(?:\s+de\s+mi\s+escritorio|\s+del\s+escritorio)?$/i);
+    const delFileMatch = clean.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:el\s+archivo\s+|la\s+foto\s+|la\s+imagen\s+|el\s+documento\s+|el\s+|la\s+)?([a-zA-Z0-9_\-\.áéíóúÁÉÍÓÚñÑ ]+?)(?:\s+de\s+mi\s+escritorio|\s+del\s+escritorio)?$/i);
     if (delFileMatch && delFileMatch[1]) {
         let target = delFileMatch[1].trim();
         if (target) {
@@ -612,7 +871,7 @@ async function resolve(text) {
     }
 
     // 7.9 Restaurar archivos
-    const restoreFileMatch = lower.match(/^(?:recuper(?:ar|[aá]|ame)|restaur(?:ar|[aá]|ame))\s+(?:el\s+archivo\s+|la\s+carpeta\s+)?([a-zA-Z0-9_\-\.áéíóúñ ]+?)(?:\s+de\s+la\s+papelera)?$/i);
+    const restoreFileMatch = clean.match(/^(?:recuper(?:ar|[aá]|ame)|restaur(?:ar|[aá]|ame))\s+(?:el\s+archivo\s+|la\s+carpeta\s+)?([a-zA-Z0-9_\-\.áéíóúÁÉÍÓÚñÑ ]+?)(?:\s+de\s+la\s+papelera)?$/i);
     if (restoreFileMatch && restoreFileMatch[1]) {
         return { id: 'file.restore', params: { identifier: restoreFileMatch[1].trim() } };
     }

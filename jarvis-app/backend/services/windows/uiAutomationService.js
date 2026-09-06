@@ -1,0 +1,206 @@
+/**
+ * UI Automation Service for Windows
+ * Permite interactuar semánticamente con ventanas, botones, campos de texto y controles
+ * mediante Microsoft UI Automation nativo, utilizando coordenadas dinámicas únicamente
+ * como fallback inteligente.
+ */
+
+const { execFile } = require('child_process');
+const path = require('path');
+
+const BRIDGE_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'uiAutomationBridge.ps1');
+
+class UiAutomationService {
+    constructor() {
+        this.scriptPath = BRIDGE_SCRIPT;
+    }
+
+    /**
+     * Ejecuta una acción en el puente PowerShell y parsea el JSON resultante.
+     */
+    _runBridge(args, timeoutMs = 12000) {
+        return new Promise((resolve, reject) => {
+            const psArgs = [
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', this.scriptPath,
+                ...args
+            ];
+
+            execFile('powershell.exe', psArgs, { timeout: timeoutMs, encoding: 'utf8' }, (error, stdout, stderr) => {
+                if (error && !stdout) {
+                    return reject(new Error(`[UIAutomation] Error ejecutando comando: ${error.message} (${stderr || ''})`));
+                }
+                try {
+                    const raw = (stdout || '').trim();
+                    // Extraer únicamente el bloque JSON si hubiera algún mensaje previo
+                    const jsonStart = raw.indexOf('{');
+                    const jsonEnd = raw.lastIndexOf('}');
+                    if (jsonStart !== -1 && jsonEnd !== -1) {
+                        const parsed = JSON.parse(raw.substring(jsonStart, jsonEnd + 1));
+                        return resolve(parsed);
+                    }
+                    return resolve({ ok: false, error: 'No se obtuvo respuesta JSON del puente UI Automation.', raw });
+                } catch (parseErr) {
+                    return reject(new Error(`[UIAutomation] Error parseando respuesta JSON: ${parseErr.message}. Raw: ${stdout}`));
+                }
+            });
+        });
+    }
+
+    /**
+     * Lista todas las ventanas abiertas en el escritorio interactivo actual.
+     */
+    async listWindows() {
+        const res = await this._runBridge(['-Action', 'list-windows']);
+        if (!res.ok) throw new Error(res.error || 'Error listando ventanas.');
+        return res.windows || [];
+    }
+
+    /**
+     * Busca una ventana por título (subcadena o regex).
+     */
+    async findWindow(titleOrPattern) {
+        const res = await this._runBridge(['-Action', 'find-window', '-TitlePattern', String(titleOrPattern || '')]);
+        if (!res.ok) throw new Error(res.error || `Error buscando ventana '${titleOrPattern}'.`);
+        return res.matched ? res.window : null;
+    }
+
+    /**
+     * Resuelve el target de una ventana (puede ser HWND numérico, objeto ventana o string de título).
+     */
+    async _resolveHwnd(windowTarget) {
+        if (!windowTarget) throw new Error('Se requiere especificar la ventana destino.');
+        if (typeof windowTarget === 'number') return windowTarget;
+        if (typeof windowTarget === 'object' && (windowTarget.Hwnd || windowTarget.hwnd)) {
+            return windowTarget.Hwnd || windowTarget.hwnd;
+        }
+        if (typeof windowTarget === 'string') {
+            const found = await this.findWindow(windowTarget);
+            if (!found) throw new Error(`No se encontró ninguna ventana activa con el título: '${windowTarget}'.`);
+            return found.Hwnd || found.hwnd;
+        }
+        throw new Error(`Tipo de ventana destino inválido: ${typeof windowTarget}`);
+    }
+
+    /**
+     * Busca un botón específico dentro de una ventana por su nombre visible o AutomationId.
+     */
+    async findButton(windowTarget, nameOrPattern, options = {}) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const args = ['-Action', 'find-elements', '-Hwnd', String(hwnd), '-ControlType', 'Button'];
+        if (nameOrPattern) args.push('-NamePattern', String(nameOrPattern));
+        if (options.automationId) args.push('-AutomationId', String(options.automationId));
+
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || `Error buscando botón '${nameOrPattern}'.`);
+        return (res.elements && res.elements.length > 0) ? res.elements[0] : null;
+    }
+
+    /**
+     * Busca un campo de texto editable (Edit) dentro de una ventana.
+     */
+    async findTextBox(windowTarget, nameOrPattern = '', options = {}) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const args = ['-Action', 'find-elements', '-Hwnd', String(hwnd), '-ControlType', 'Edit'];
+        if (nameOrPattern) args.push('-NamePattern', String(nameOrPattern));
+        if (options.automationId) args.push('-AutomationId', String(options.automationId));
+
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || `Error buscando campo de texto '${nameOrPattern}'.`);
+        return (res.elements && res.elements.length > 0) ? res.elements[0] : null;
+    }
+
+    /**
+     * Hace clic en un elemento. Intenta InvokePattern / TogglePattern primero,
+     * y utiliza coordenadas del centro de su BoundingRectangle como fallback.
+     */
+    async clickElement(windowTarget, elementTarget, options = {}) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const name = typeof elementTarget === 'string' ? elementTarget : (elementTarget?.name || '');
+        const autoId = (typeof elementTarget === 'object' && elementTarget?.automationId) ? elementTarget.automationId : (options.automationId || '');
+        const cType = options.controlType || (typeof elementTarget === 'object' && elementTarget?.controlType) || 'Any';
+
+        const args = ['-Action', 'click-element', '-Hwnd', String(hwnd)];
+        if (name) args.push('-NamePattern', String(name));
+        if (autoId) args.push('-AutomationId', String(autoId));
+        if (cType) args.push('-ControlType', String(cType));
+
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || `Error haciendo clic en elemento '${name || autoId}'.`);
+        return res;
+    }
+
+    /**
+     * Escribe texto en un campo de texto (ValuePattern directo o SetFocus + SendKeys).
+     */
+    async setText(windowTarget, elementTarget, text, options = {}) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const name = typeof elementTarget === 'string' ? elementTarget : (elementTarget?.name || '');
+        const autoId = (typeof elementTarget === 'object' && elementTarget?.automationId) ? elementTarget.automationId : (options.automationId || '');
+
+        const args = ['-Action', 'set-text', '-Hwnd', String(hwnd), '-Text', String(text)];
+        if (name) args.push('-NamePattern', String(name));
+        if (autoId) args.push('-AutomationId', String(autoId));
+
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || `Error escribiendo texto en '${name || autoId}'.`);
+        return res;
+    }
+
+    /**
+     * Selecciona una opción en una lista, menú o pestaña (SelectionItemPattern).
+     */
+    async selectOption(windowTarget, optionName, options = {}) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const args = ['-Action', 'select-option', '-Hwnd', String(hwnd), '-Option', String(optionName)];
+
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || `Error seleccionando opción '${optionName}'.`);
+        return res;
+    }
+
+    /**
+     * Espera a que aparezca una ventana hasta alcanzar el timeout.
+     */
+    async waitForWindow(titleOrPattern, timeoutMs = 8000, intervalMs = 500) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            const win = await this.findWindow(titleOrPattern);
+            if (win) return win;
+            await new Promise(r => setTimeout(r, intervalMs));
+        }
+        return null;
+    }
+
+    /**
+     * Espera a que aparezca un elemento específico en la ventana.
+     */
+    async waitForElement(windowTarget, criteria, timeoutMs = 8000, intervalMs = 500) {
+        const start = Date.now();
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const name = typeof criteria === 'string' ? criteria : criteria.name;
+        const cType = criteria.controlType || 'Any';
+        const autoId = criteria.automationId || '';
+
+        while (Date.now() - start < timeoutMs) {
+            const args = ['-Action', 'find-elements', '-Hwnd', String(hwnd), '-ControlType', cType];
+            if (name) args.push('-NamePattern', String(name));
+            if (autoId) args.push('-AutomationId', String(autoId));
+
+            try {
+                const res = await this._runBridge(args);
+                if (res.ok && res.elements && res.elements.length > 0) {
+                    return res.elements[0];
+                }
+            } catch (_) {}
+
+            await new Promise(r => setTimeout(r, intervalMs));
+        }
+        return null;
+    }
+}
+
+const uiAutomationService = new UiAutomationService();
+module.exports = uiAutomationService;
