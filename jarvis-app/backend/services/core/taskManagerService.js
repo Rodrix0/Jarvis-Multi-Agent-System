@@ -72,13 +72,20 @@ class TaskManagerService extends EventEmitter {
         resumeFn = null,
         abortController = null,
         childProcess = null,
-        metadata = {}
+        metadata = {},
+        correlationId = null,
+        goalId = null,
+        planId = null
     } = {}) {
         const id = `task_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
         const createdAt = new Date().toISOString();
+        const corrId = correlationId || metadata.correlationId || `corr_${id}`;
 
         const task = {
             id,
+            correlationId: corrId,
+            goalId: goalId || metadata.goalId || null,
+            planId: planId || metadata.planId || null,
             type,
             description,
             priority,
@@ -93,7 +100,7 @@ class TaskManagerService extends EventEmitter {
             startedAt: null,
             finishedAt: null,
             error: null,
-            metadata: { ...metadata },
+            metadata: { ...metadata, correlationId: corrId, goalId, planId },
             handle: {
                 cancelFn,
                 pauseFn,
@@ -612,6 +619,9 @@ class TaskManagerService extends EventEmitter {
     sanitizeTask(task) {
         return {
             id: task.id,
+            correlationId: task.correlationId || task.metadata?.correlationId || task.id,
+            goalId: task.goalId || task.metadata?.goalId || null,
+            planId: task.planId || task.metadata?.planId || null,
             type: task.type,
             description: task.description,
             status: task.status,
@@ -628,6 +638,27 @@ class TaskManagerService extends EventEmitter {
             error: task.error,
             metadata: task.metadata
         };
+    }
+
+    getTaskByCorrelationId(correlationId) {
+        if (!correlationId) return null;
+        for (const task of this.tasks.values()) {
+            if (task.correlationId === correlationId || task.metadata?.correlationId === correlationId) {
+                return this.sanitizeTask(task);
+            }
+        }
+        return null;
+    }
+
+    getTasksByGoalId(goalId) {
+        if (!goalId) return [];
+        const matches = [];
+        for (const task of this.tasks.values()) {
+            if (task.goalId === goalId || task.metadata?.goalId === goalId) {
+                matches.push(this.sanitizeTask(task));
+            }
+        }
+        return matches;
     }
 
     _trimHistory() {

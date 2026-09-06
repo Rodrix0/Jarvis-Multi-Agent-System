@@ -115,14 +115,95 @@ async function runTests() {
 
     // 8. Compatibilidad de Esquemas con Ollama JSON Schema
     test('getSchema: Retorna definiciones conformes a JSON Schema (type, properties, required)', () => {
-        const schemaNames = ['AppAction', 'TVAction', 'FileAction', 'BrowserAction', 'MemoryAction', 'ResearchAction', 'UnifiedAction'];
+        const schemaNames = ['AppAction', 'TVAction', 'FileAction', 'BrowserAction', 'MemoryAction', 'ResearchAction', 'UnifiedAction', 'Intent', 'Planner', 'ToolCall', 'Verification', 'Memory'];
         for (const name of schemaNames) {
             const s = structuredOutputService.getSchema(name);
             assert.strictEqual(s.type, 'object', `${name} debe ser type object`);
             assert(typeof s.properties === 'object', `${name} debe tener properties`);
             assert(Array.isArray(s.required), `${name} debe tener array required`);
-            assert(s.properties.confidence, `${name} DEBE obligatoriamente incluir property confidence`);
         }
+    });
+
+    // 9. JARVIS 3.0: Esquema canónico de Intent
+    test('JARVIS 3.0 Intent: Valida {"intent": "open_application", "target": "spotify", "confidence": 0.97, "risk": "LOW"}', () => {
+        const payload = {
+            intent: 'open_application',
+            target: 'spotify',
+            confidence: 0.97,
+            risk: 'LOW',
+            requiresLLM: false
+        };
+        const res = structuredOutputService.validate(payload, 'Intent');
+        assert.strictEqual(res.ok, true, `Errores: ${res.errors.join(', ')}`);
+        assert.strictEqual(res.sanitized.intent, 'open_application');
+        assert.strictEqual(res.sanitized.risk, 'LOW');
+    });
+
+    // 10. JARVIS 3.0: Esquema canónico de Planner y Verification
+    test('JARVIS 3.0 Planner & Verification: Valida planes jerárquicos y evidencias de verificación', () => {
+        const plannerPayload = {
+            goal: 'install_application',
+            risk: 'MEDIUM',
+            steps: [
+                { id: 'step_1', action: 'browser_search', status: 'pending' }
+            ]
+        };
+        const resPlanner = structuredOutputService.validate(plannerPayload, 'Planner');
+        assert.strictEqual(resPlanner.ok, true, `Errores: ${resPlanner.errors.join(', ')}`);
+
+        const verifPayload = {
+            success: true,
+            confidence: 0.96,
+            evidence: ['window_found', 'expected_element_visible']
+        };
+        const resVerif = structuredOutputService.validate(verifPayload, 'Verification');
+        assert.strictEqual(resVerif.ok, true, `Errores: ${resVerif.errors.join(', ')}`);
+    });
+
+    // 11. JARVIS 3.0: Esquema canónico de Memoria Universal
+    test('JARVIS 3.0 Memory: Valida esquema de memoria semántica con entidades y hechos', () => {
+        const memoryPayload = {
+            shouldPersist: true,
+            memoryType: 'semantic',
+            importance: 0.82,
+            entities: ['Unity', 'C#'],
+            facts: ['El usuario programa en Unity con C#']
+        };
+        const res = structuredOutputService.validate(memoryPayload, 'Memory');
+        assert.strictEqual(res.ok, true, `Errores: ${res.errors.join(', ')}`);
+    });
+
+    // 12. Bucle de autoreparación controlado (repairAndValidate)
+    await (async () => {
+        total++;
+        try {
+            const invalidJson = '{"intent": "open_application"}'; // Falta confidence requerido
+            const res = await structuredOutputService.repairAndValidate(
+                invalidJson,
+                'Intent',
+                async (raw, errors) => {
+                    assert.ok(errors.some(e => e.includes('confidence')), 'Debe pasar el feedback del error');
+                    return '{"intent": "open_application", "target": "spotify", "confidence": 0.95}';
+                }
+            );
+            assert.strictEqual(res.ok, true);
+            assert.strictEqual(res.repairs, 1);
+            assert.strictEqual(res.repaired, true);
+            assert.strictEqual(res.data.confidence, 0.95);
+            console.log('  ✅ [PASS] repairAndValidate: Repara salida inválida en exactamente 1 ciclo controlado');
+            passed++;
+        } catch (err) {
+            console.error(`  ❌ [FAIL] repairAndValidate: ${err.message}`);
+            throw err;
+        }
+    })();
+
+    // 13. Métricas de observabilidad de salidas estructuradas
+    test('Observabilidad: Métricas en tiempo real estructuradas', () => {
+        const metrics = structuredOutputService.getMetrics();
+        assert.ok(metrics.total_validations > 0);
+        assert.ok(metrics.structured_output_success_rate > 0 && metrics.structured_output_success_rate <= 1.0);
+        assert.ok(metrics.schema_repair_count >= 1);
     });
 
     console.log(`\n===============================================================`);

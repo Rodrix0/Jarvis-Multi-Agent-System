@@ -110,6 +110,51 @@ async function runTests() {
         assert(!toolNames.some(t => t.startsWith('spotify_')));
     });
 
+    // 8. JARVIS 3.0 Metadatos normalizados de herramienta (Sección 60)
+    test('Herramientas normalizadas con atributos completos Sección 60', () => {
+        const tool = toolRegistryService.getTool('windows_set_volume');
+        assert.ok(tool, 'windows_set_volume debe estar registrada');
+        assert.strictEqual(tool.name, 'windows_set_volume');
+        assert.strictEqual(typeof tool.description, 'string');
+        assert.strictEqual(typeof tool.schema, 'object');
+        assert.ok(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(tool.risk), `Risk no válido: ${tool.risk}`);
+        assert.ok(Array.isArray(tool.permissions), 'Permissions debe ser un array');
+        assert.strictEqual(tool.category, 'windows');
+        assert.strictEqual(typeof tool.availability, 'boolean');
+        assert.ok(['HEALTHY', 'DEGRADED', 'UNAVAILABLE'].includes(tool.health), `Health no válido: ${tool.health}`);
+        assert.strictEqual(typeof tool.latency, 'number');
+        assert.ok(Array.isArray(tool.fallbacks), 'Fallbacks debe ser un array');
+    });
+
+    // 9. Búsqueda por categoría y obtención individual
+    test('Búsqueda de herramientas por categoría y obtención individual', () => {
+        const browserTools = toolRegistryService.listToolsByCategory('browser');
+        assert.ok(browserTools.length > 0, 'Debe haber herramientas en categoría browser');
+        for (const t of browserTools) {
+            assert.strictEqual(t.category, 'browser');
+        }
+
+        const spotifyTool = toolRegistryService.getTool('spotify_play');
+        assert.ok(spotifyTool);
+        assert.strictEqual(spotifyTool.category, 'spotify');
+    });
+
+    // 10. Gestión de salud y latencia de herramientas
+    test('Registro de latencia y actualización de salud de herramienta', () => {
+        const initialTool = toolRegistryService.getTool('file_create');
+        assert.ok(initialTool);
+
+        toolRegistryService.recordToolLatency('file_create', 150);
+        assert.strictEqual(toolRegistryService.getTool('file_create').latency, 150);
+
+        toolRegistryService.setToolHealth('file_create', 'DEGRADED');
+        assert.strictEqual(toolRegistryService.getTool('file_create').health, 'DEGRADED');
+
+        // Restaurar estado saludable
+        toolRegistryService.setToolHealth('file_create', 'HEALTHY');
+        assert.strictEqual(toolRegistryService.getTool('file_create').health, 'HEALTHY');
+    });
+
     console.log(`\n===============================================================`);
     console.log(`🎉 TODOS LOS TESTS DE TOOL REGISTRY PASARON EXITOSAMENTE: ${passed}/${total} (100%)`);
     console.log(`===============================================================\n`);

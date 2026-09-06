@@ -19,14 +19,71 @@ class ToolRegistryService {
      * Registra un módulo temático con sus herramientas y patrones semánticos de activación.
      */
     registerModule(moduleId, { name, description, keywords = [], patterns = [], tools = [] }) {
+        const normalizedTools = tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            schema: t.schema || {
+                type: 'object',
+                properties: t.parameters || {},
+                required: t.required || []
+            },
+            risk: t.risk || 'LOW',
+            permissions: t.permissions || [],
+            category: t.category || moduleId.toLowerCase(),
+            availability: t.availability !== false,
+            health: t.health || 'HEALTHY',
+            latency: typeof t.latency === 'number' ? t.latency : 0,
+            fallbacks: t.fallbacks || [],
+            parameters: t.parameters || {},
+            required: t.required || []
+        }));
+
         this.modules.set(moduleId.toLowerCase(), {
             id: moduleId.toLowerCase(),
             name,
             description,
             keywords: keywords.map(k => k.toLowerCase()),
             patterns,
-            tools
+            tools: normalizedTools
         });
+    }
+
+    getTool(toolName) {
+        if (!toolName) return null;
+        for (const m of this.modules.values()) {
+            const found = m.tools.find(t => t.name === toolName);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    listToolsByCategory(category) {
+        if (!category) return [];
+        const catLower = category.toLowerCase();
+        const results = [];
+        for (const m of this.modules.values()) {
+            for (const t of m.tools) {
+                if (t.category.toLowerCase() === catLower) {
+                    results.push(t);
+                }
+            }
+        }
+        return results;
+    }
+
+    recordToolLatency(toolName, latencyMs) {
+        const tool = this.getTool(toolName);
+        if (tool) {
+            tool.latency = Math.round(Number(latencyMs) || 0);
+        }
+    }
+
+    setToolHealth(toolName, health = 'HEALTHY') {
+        const tool = this.getTool(toolName);
+        if (tool) {
+            tool.health = health;
+            tool.availability = health !== 'UNAVAILABLE' && health !== 'DEAD';
+        }
     }
 
     /**
