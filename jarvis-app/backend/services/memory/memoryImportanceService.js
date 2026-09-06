@@ -14,11 +14,11 @@ class MemoryImportanceService {
     constructor() {
         // Patrones de Ruido y Estados Transitorios (Importancia: 0.00 - 0.20 -> DESCARTAR)
         this.transientNoisePatterns = [
-            /\b(?:tengo\s+(?:sueno|hambre|frio|calor|sed|fiaca|pereza))\b/i,
-            /\b(?:estoy\s+(?:cansado|aburrido|comiendo|almorzando|cenando|durmiendo|yendo))\b/i,
-            /\b(?:que\s+(?:calor|frio|lindo\s+dia|tiempo\s+loco))\b/i,
+            /\b(?:tengo\s+(?:mucho\s+|re\s+|tanto\s+|un\s+poco\s+de\s+)?(?:sueno|sueño|hambre|frio|frío|calor|sed|fiaca|pereza))\b/i,
+            /\b(?:estoy\s+(?:muy\s+|re\s+|un\s+poco\s+)?(?:cansado|aburrido|comiendo|almorzando|cenando|durmiendo|yendo))\b/i,
+            /\b(?:que\s+(?:calor|frio|frío|lindo\s+dia|lindo\s+día|tiempo\s+loco))\b/i,
             /\b(?:jaja|jeje|jajaja|lol|xd|gracias|muchas\s+gracias|de\s+nada|ok|dale|bueno|listo)\b/i,
-            /\b(?:hola|chau|adios|buenas|hasta\s+luego|nos\s+vemos)\b/i
+            /\b(?:hola|chau|adios|adiós|buenas|hasta\s+luego|nos\s+vemos)\b/i
         ];
 
         // Patrones Permanentes / Identidad / Hardware / Inmutables (Importancia: 0.75 - 1.00 -> PERMANENTE)
