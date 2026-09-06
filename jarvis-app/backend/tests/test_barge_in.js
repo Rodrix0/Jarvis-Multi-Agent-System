@@ -209,6 +209,20 @@ async function main() {
         assert.strictEqual(metrics.isSpeaking, false);
     });
 
+    console.log('\n--- BLOQUE 6: Multi-Channel Response Formatter (Voz, Pantalla, Log) ---');
+
+    runTest('Formateo multicanal adapta salida para voz limpia (<25 palabras) y pantalla', () => {
+        const rawResponse = '```javascript\nconst x = 10;\n```\nAquí está el resultado: **Éxito**. Para más información visita https://example.com/docs.';
+        const formatted = bargeInService.formatResponse(rawResponse, { traceId: 'tr-123' });
+
+        assert.ok(formatted.voice, 'Debe generar salida para voz');
+        assert.ok(!formatted.voice.includes('```'), 'Voz no debe tener bloques de código');
+        assert.ok(!formatted.voice.includes('**'), 'Voz no debe tener asteriscos de markdown');
+        assert.ok(!formatted.voice.includes('https://'), 'Voz no debe leer URLs crudas');
+        assert.strictEqual(formatted.screen.content, rawResponse, 'Pantalla debe conservar el markdown original');
+        assert.strictEqual(formatted.audit.traceId, 'tr-123', 'Auditoría debe incluir traceId');
+    });
+
     console.log('===============================================================');
     console.log(`🏁 TESTS FINALIZADOS: ${passedTests}/${totalTests} EXITOSOS (${Math.round((passedTests/totalTests)*100)}%)`);
     console.log('===============================================================');

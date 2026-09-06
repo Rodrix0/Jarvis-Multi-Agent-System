@@ -252,6 +252,14 @@ class BargeInService extends EventEmitter {
             lastBargeIn: null
         };
     }
+
+    /**
+     * Formatea una respuesta de salida en canales diferenciados (Voz/TTS, Pantalla, Auditoría).
+     */
+    formatResponse(rawText, metadata = {}) {
+        const multiChannelFormatter = require('./ai/multiChannelFormatter');
+        return multiChannelFormatter.formatAll(rawText, metadata);
+    }
 }
 
 const bargeInService = new BargeInService();
