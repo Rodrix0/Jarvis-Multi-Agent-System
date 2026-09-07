@@ -67,12 +67,17 @@ class ProcedureRegistryService {
         author = 'system',
         status = 'ACTIVE', // 'ACTIVE', 'CANDIDATE', 'DEPRECATED', 'ROLLED_BACK'
         version = 1,
-        canaryThreshold = 3 // ejecuciones canario requeridas para promoción automática
+        canaryThreshold = null, // deprecado en favor de riskLevel o fallback
+        riskLevel = 'LOW', // 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'
+        reversible = true,
+        confidence = 1.0,
+        approvedBy = null
     }) {
         if (!name || !Array.isArray(steps) || steps.length === 0) {
             throw new Error('Un procedimiento válido requiere nombre y al menos un paso.');
         }
 
+        const normalizedRisk = String(riskLevel || 'LOW').toUpperCase();
         const procId = id || `proc_${crypto.randomUUID().slice(0, 8)}`;
         const procedure = {
             id: procId,
@@ -90,7 +95,11 @@ class ProcedureRegistryService {
             author,
             status: status.toUpperCase(),
             version,
-            canaryThreshold,
+            canaryThreshold: canaryThreshold || (normalizedRisk === 'MEDIUM' ? 10 : 5),
+            riskLevel: normalizedRisk,
+            reversible: Boolean(reversible),
+            confidence: Number.isFinite(confidence) ? confidence : 1.0,
+            approvedBy: approvedBy || null,
             consecutiveFailures: 0,
             validationStatus: status.toUpperCase() === 'CANDIDATE' ? 'CANARY_TESTING' : 'VALIDATED',
             executionCount: 0,
@@ -107,10 +116,68 @@ class ProcedureRegistryService {
             procedureId: procId,
             name: procedure.name,
             status: procedure.status,
+            riskLevel: procedure.riskLevel,
             stepsCount: procedure.steps.length
         });
 
         return procedure;
+    }
+
+    /**
+     * Evalúa si un procedimiento cumple los criterios estrictos para auto-promoción a ACTIVE
+     */
+    canAutoPromote(proc) {
+        if (!proc || proc.status !== 'CANDIDATE') return false;
+
+        const total = proc.executionCount || 0;
+        if (total === 0) return false;
+
+        const successRate = proc.successCount / total;
+        const failureRate = proc.failureCount / total;
+        const confidence = Number.isFinite(proc.confidence) ? proc.confidence : 1.0;
+
+        // Confidence mínimo general para auto-promoción
+        if (confidence < 0.8) return false;
+
+        switch (proc.riskLevel) {
+            case 'LOW':
+                // LOW: mínimo 5 ejecuciones y successRate >= 90% (failureRate <= 10%)
+                return total >= 5 && successRate >= 0.90 && failureRate <= 0.10;
+
+            case 'MEDIUM':
+                // MEDIUM: mínimo 10 ejecuciones, successRate >= 95% y sólo si es reversible
+                return total >= 10 && successRate >= 0.95 && failureRate <= 0.05 && proc.reversible === true;
+
+            case 'HIGH':
+                // HIGH: nunca auto-promote; requiere aprobación humana
+                return false;
+
+            case 'CRITICAL':
+                // CRITICAL: prohibida la promoción autónoma
+                return false;
+
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Aprobación humana explícita para procedimientos HIGH o CRITICAL
+     */
+    approveProcedure(procId, approverName = 'admin') {
+        const proc = this.procedures.get(procId);
+        if (!proc) return false;
+        if (proc.riskLevel === 'CRITICAL') {
+            // Requiere validación de firma o autorización documentada
+            proc.approvedBy = approverName;
+            proc.status = 'ACTIVE';
+            proc.validationStatus = 'VALIDATED_MANUAL_CRITICAL';
+            this._saveProcedures();
+            eventBus.publish('PROCEDURE_PROMOTED_MANUALLY', { procedureId: procId, name: proc.name, approver: approverName, riskLevel: 'CRITICAL' });
+            return true;
+        }
+        proc.approvedBy = approverName;
+        return this.promoteProcedure(procId);
     }
 
     /**
@@ -174,7 +241,7 @@ class ProcedureRegistryService {
         proc.status = 'ACTIVE';
         proc.validationStatus = 'VALIDATED';
         this._saveProcedures();
-        eventBus.publish('PROCEDURE_PROMOTED', { procedureId: procId, name: proc.name });
+        eventBus.publish('PROCEDURE_PROMOTED', { procedureId: procId, name: proc.name, riskLevel: proc.riskLevel });
         return true;
     }
 
@@ -188,7 +255,7 @@ class ProcedureRegistryService {
         proc.validationStatus = 'REJECTED';
         proc.rollbackReason = reason;
         this._saveProcedures();
-        eventBus.publish('PROCEDURE_ROLLED_BACK', { procedureId: procId, name: proc.name, reason });
+        eventBus.publish('PROCEDURE_ROLLED_BACK', { procedureId: procId, name: proc.name, reason, riskLevel: proc.riskLevel });
         return true;
     }
 
@@ -206,15 +273,15 @@ class ProcedureRegistryService {
             proc.successCount = (proc.successCount || 0) + 1;
             proc.consecutiveFailures = 0;
 
-            // Auto-promoción de candidatos tras alcanzar el umbral de canario sin errores
-            if (proc.status === 'CANDIDATE' && proc.successCount >= (proc.canaryThreshold || 3)) {
+            // Auto-promoción de candidatos evaluando nivel de riesgo, muestra, successRate y reversibilidad
+            if (proc.status === 'CANDIDATE' && this.canAutoPromote(proc)) {
                 this.promoteProcedure(procId);
             }
         } else {
             proc.failureCount = (proc.failureCount || 0) + 1;
             proc.consecutiveFailures = (proc.consecutiveFailures || 0) + 1;
 
-            // Auto-rollback inmediato si un canario falla 2 veces consecutivas o si un activo supera 3 fallos seguidos
+            // Auto-rollback si un candidato falla consecutivamente o si un activo supera el umbral
             const maxAllowed = proc.status === 'CANDIDATE' ? 2 : 3;
             if (proc.consecutiveFailures >= maxAllowed) {
                 this.rollbackProcedure(procId, `Auto-rollback por ${proc.consecutiveFailures} fallas consecutivas: ${error || 'Error no especificado'}`);

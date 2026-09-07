@@ -57,34 +57,143 @@ async function runOperationalLearningV2Suite() {
     }
 
     // -------------------------------------------------------------
-    // TEST 2: Canary Testing & Auto-Promoción a ACTIVE
+    // TEST 2: Canary Testing & Auto-Promoción LOW Risk (min 5 runs, successRate >= 90%)
     // -------------------------------------------------------------
-    console.log('\n--- TEST 2: Ejecución Canario & Auto-Promoción Exitosa ---');
+    console.log('\n--- TEST 2: Auto-Promoción LOW Risk (5 ejecuciones, >=90% éxito) ---');
     try {
         const id = 'proc_canary_compress_report';
         
-        // Ejecución 1 exitosa
+        // Ejecución 1 a 4 exitosas -> no debe promoverse aún (requiere mínimo 5)
+        for (let i = 1; i <= 4; i++) {
+            procedureRegistry.recordExecution(id, true);
+            let p = procedureRegistry.getProcedure(id);
+            assert.strictEqual(p.status, 'CANDIDATE', `En ejecución ${i} no debe promoverse aún`);
+            assert.strictEqual(p.successCount, i);
+        }
+
+        // Ejecución 5 exitosa -> total 5, successRate 100% -> auto-promueve a ACTIVE
         procedureRegistry.recordExecution(id, true);
         let p = procedureRegistry.getProcedure(id);
-        assert.strictEqual(p.status, 'CANDIDATE');
-        assert.strictEqual(p.successCount, 1);
-
-        // Ejecución 2 exitosa
-        procedureRegistry.recordExecution(id, true);
-        p = procedureRegistry.getProcedure(id);
-        assert.strictEqual(p.status, 'CANDIDATE');
-        assert.strictEqual(p.successCount, 2);
-
-        // Ejecución 3 exitosa -> debe auto-promover a ACTIVE
-        procedureRegistry.recordExecution(id, true);
-        p = procedureRegistry.getProcedure(id);
-        assert.strictEqual(p.status, 'ACTIVE', 'Debe promoverse automáticamente a ACTIVE tras 3 éxitos');
+        assert.strictEqual(p.status, 'ACTIVE', 'Debe promoverse automáticamente a ACTIVE tras 5 éxitos en LOW risk');
         assert.strictEqual(p.validationStatus, 'VALIDATED');
-        assert.strictEqual(p.successCount, 3);
+        assert.strictEqual(p.successCount, 5);
 
-        recordResult('Auto-Promoción Canario', 'Promovido a ACTIVE tras alcanzar el umbral canary de 3 éxitos', 'PASS');
+        recordResult('Auto-Promoción LOW Risk', 'Promovido a ACTIVE tras alcanzar 5 éxitos (successRate >= 90%)', 'PASS');
     } catch (err) {
-        recordResult('Auto-Promoción Canario', err.message, 'FAIL');
+        recordResult('Auto-Promoción LOW Risk', err.message, 'FAIL');
+    }
+
+    // -------------------------------------------------------------
+    // TEST 2B: Auto-Promoción MEDIUM Risk (min 10 runs, >=95% éxito, reversible = true)
+    // -------------------------------------------------------------
+    console.log('\n--- TEST 2B: Auto-Promoción MEDIUM Risk (10 ejecuciones, >=95%, reversible) ---');
+    try {
+        // Caso A: Reversible -> debe promoverse tras 10 éxitos
+        const medProc = procedureRegistry.registerProcedure({
+            id: 'proc_med_sync_backup',
+            name: 'Sincronizar Backup Reversible',
+            trigger: 'sincronizar backup',
+            status: 'CANDIDATE',
+            riskLevel: 'MEDIUM',
+            reversible: true,
+            steps: [{ actionId: 'system.file', params: { action: 'backup' } }]
+        });
+
+        for (let i = 1; i <= 9; i++) {
+            procedureRegistry.recordExecution('proc_med_sync_backup', true);
+            let p = procedureRegistry.getProcedure('proc_med_sync_backup');
+            assert.strictEqual(p.status, 'CANDIDATE', `En paso ${i} debe seguir CANDIDATE`);
+        }
+
+        // Ejecución 10 exitosa -> promueve a ACTIVE
+        procedureRegistry.recordExecution('proc_med_sync_backup', true);
+        let p = procedureRegistry.getProcedure('proc_med_sync_backup');
+        assert.strictEqual(p.status, 'ACTIVE', 'Debe promoverse a ACTIVE con 10 ejecuciones y reversible=true');
+        recordResult('MEDIUM Risk Reversible', 'Promovido tras 10 ejecuciones exitosas (successRate 100%)', 'PASS');
+
+        // Caso B: No Reversible -> NUNCA debe auto-promoverse
+        const medNonRev = procedureRegistry.registerProcedure({
+            id: 'proc_med_non_rev',
+            name: 'Modificación No Reversible',
+            trigger: 'modificar configuracion fija',
+            status: 'CANDIDATE',
+            riskLevel: 'MEDIUM',
+            reversible: false,
+            steps: [{ actionId: 'system.config', params: { set: 'key' } }]
+        });
+
+        for (let i = 1; i <= 15; i++) {
+            procedureRegistry.recordExecution('proc_med_non_rev', true);
+        }
+        let pNonRev = procedureRegistry.getProcedure('proc_med_non_rev');
+        assert.strictEqual(pNonRev.status, 'CANDIDATE', 'MEDIUM no reversible no debe auto-promoverse');
+        recordResult('MEDIUM Risk No Reversible', 'Bloqueada auto-promoción autónoma para MEDIUM no reversible', 'PASS');
+    } catch (err) {
+        recordResult('MEDIUM Risk Policies', err.message, 'FAIL');
+    }
+
+    // -------------------------------------------------------------
+    // TEST 2C: HIGH Risk - Nunca auto-promote, requiere aprobación humana
+    // -------------------------------------------------------------
+    console.log('\n--- TEST 2C: HIGH Risk (Nunca auto-promote, requiere aprobación humana) ---');
+    try {
+        const highProc = procedureRegistry.registerProcedure({
+            id: 'proc_high_deploy_service',
+            name: 'Desplegar Servicio Productivo',
+            trigger: 'desplegar produccion',
+            status: 'CANDIDATE',
+            riskLevel: 'HIGH',
+            reversible: false,
+            steps: [{ actionId: 'system.deploy', params: { target: 'prod' } }]
+        });
+
+        // 20 ejecuciones con 100% de éxito
+        for (let i = 1; i <= 20; i++) {
+            procedureRegistry.recordExecution('proc_high_deploy_service', true);
+        }
+
+        let pHigh = procedureRegistry.getProcedure('proc_high_deploy_service');
+        assert.strictEqual(pHigh.status, 'CANDIDATE', 'HIGH nunca debe auto-promoverse independientemente del conteo');
+        assert.strictEqual(pHigh.successCount, 20);
+
+        // Aprobación humana explícita requerida
+        const approved = procedureRegistry.approveProcedure('proc_high_deploy_service', 'Rodrigo_Admin');
+        assert.strictEqual(approved, true);
+        pHigh = procedureRegistry.getProcedure('proc_high_deploy_service');
+        assert.strictEqual(pHigh.status, 'ACTIVE');
+        assert.strictEqual(pHigh.approvedBy, 'Rodrigo_Admin');
+
+        recordResult('HIGH Risk Human Approval', 'Auto-promoción bloqueada; promovido únicamente con aprobación humana', 'PASS');
+    } catch (err) {
+        recordResult('HIGH Risk Human Approval', err.message, 'FAIL');
+    }
+
+    // -------------------------------------------------------------
+    // TEST 2D: CRITICAL Risk - Prohibida la promoción autónoma
+    // -------------------------------------------------------------
+    console.log('\n--- TEST 2D: CRITICAL Risk (Prohibida la promoción autónoma) ---');
+    try {
+        const critProc = procedureRegistry.registerProcedure({
+            id: 'proc_crit_kernel_wipe',
+            name: 'Acceso Directo a Kernel de Disco',
+            trigger: 'purgar particion',
+            status: 'CANDIDATE',
+            riskLevel: 'CRITICAL',
+            reversible: false,
+            steps: [{ actionId: 'system.disk', params: { wipe: true } }]
+        });
+
+        // 50 ejecuciones exitosas
+        for (let i = 1; i <= 50; i++) {
+            procedureRegistry.recordExecution('proc_crit_kernel_wipe', true);
+        }
+
+        let pCrit = procedureRegistry.getProcedure('proc_crit_kernel_wipe');
+        assert.strictEqual(pCrit.status, 'CANDIDATE', 'CRITICAL tiene terminantemente prohibida la promoción autónoma');
+
+        recordResult('CRITICAL Risk Autonomous Ban', 'Prohibida terminantemente la auto-promoción de procedimientos CRITICAL', 'PASS');
+    } catch (err) {
+        recordResult('CRITICAL Risk Autonomous Ban', err.message, 'FAIL');
     }
 
     // -------------------------------------------------------------
