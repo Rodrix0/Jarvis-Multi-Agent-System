@@ -77,9 +77,9 @@ class JarvisEventBus extends EventEmitter {
             this.eventHistory.shift();
         }
 
-        // 2. Emitir inmediatamente en memoria a todos los suscriptores
-        this.emit(eventName, eventData);
-        this.emit('*', eventData);
+        // 2. Emitir inmediatamente en memoria a todos los suscriptores de forma aislada
+        this.safeEmit(eventName, eventData);
+        this.safeEmit('*', eventData);
 
         // 3. Persistir en SQLite si es un evento crítico
         if (this.criticalEvents.has(eventName) && this.databaseService) {
@@ -127,6 +127,20 @@ class JarvisEventBus extends EventEmitter {
      */
     subscribeOnce(eventName, handler) {
         this.once(eventName, handler);
+    }
+
+    /**
+     * Emite un evento a los suscriptores capturando excepciones aisladas para no romper el bus
+     */
+    safeEmit(eventName, eventData) {
+        const rawListeners = this.rawListeners(eventName);
+        for (const listener of rawListeners) {
+            try {
+                listener.call(this, eventData);
+            } catch (err) {
+                console.warn(`[EventBus] Excepción en manejador para '${eventName}':`, err.message);
+            }
+        }
     }
 
     /**

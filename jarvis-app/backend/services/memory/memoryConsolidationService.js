@@ -42,7 +42,8 @@ class MemoryConsolidationService {
         const clustersByTopic = new Map();
 
         for (const mem of memories) {
-            const text = mem.value || mem.text || '';
+            if (!mem || typeof mem !== 'object') continue;
+            const text = String(mem.value || mem.text || '');
             const entities = hybridMemoryService.extractEntities(text);
 
             if (entities.length === 0) continue;
