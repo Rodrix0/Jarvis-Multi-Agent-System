@@ -33,6 +33,9 @@ const TASK_TYPES = {
 
 const RECOVERY_POLICIES = {
     RESUME: 'RESUME',
+    VERIFY_THEN_RESUME: 'VERIFY_THEN_RESUME',
+    FAIL_SAFE: 'FAIL_SAFE',
+    DO_NOT_RESUME: 'DO_NOT_RESUME',
     RETRY: 'RETRY',
     PROMPT_USER: 'PROMPT_USER',
     ABORT_ON_CRASH: 'ABORT_ON_CRASH'
@@ -57,7 +60,7 @@ class TaskManagerService extends EventEmitter {
     }
 
     /**
-     * Registra y crea una nueva tarea en el gestor con persistencia en SQLite.
+     * Registra y crea una nueva tarea en el gestor con persistencia en SQLite e idempotencia.
      */
     createTask({
         type = TASK_TYPES.GENERIC,
@@ -75,8 +78,32 @@ class TaskManagerService extends EventEmitter {
         metadata = {},
         correlationId = null,
         goalId = null,
-        planId = null
+        planId = null,
+        idempotencyKey = null
     } = {}) {
+        const effectiveIdempotencyKey = idempotencyKey || metadata.idempotencyKey || null;
+
+        // Comprobación de idempotencia: previene ejecuciones duplicadas de la misma mutación
+        if (effectiveIdempotencyKey) {
+            for (const existing of this.tasks.values()) {
+                if (existing.metadata?.idempotencyKey === effectiveIdempotencyKey && existing.status !== TASK_STATUS.FAILED && existing.status !== TASK_STATUS.CANCELLED) {
+                    return existing;
+                }
+            }
+            try {
+                const rows = this.databaseService.db.prepare(`
+                    SELECT * FROM persistent_tasks
+                    WHERE metadata_json LIKE ? AND status NOT IN ('FAILED', 'CANCELLED')
+                    ORDER BY created_at DESC LIMIT 1
+                `).all(`%"idempotencyKey":"${effectiveIdempotencyKey}"%`);
+                if (rows.length > 0) {
+                    const task = this.databaseService._deserializeTask(rows[0]);
+                    this.tasks.set(task.id, task);
+                    return task;
+                }
+            } catch (_) {}
+        }
+
         const id = `task_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
         const createdAt = new Date().toISOString();
         const corrId = correlationId || metadata.correlationId || `corr_${id}`;
@@ -100,7 +127,7 @@ class TaskManagerService extends EventEmitter {
             startedAt: null,
             finishedAt: null,
             error: null,
-            metadata: { ...metadata, correlationId: corrId, goalId, planId },
+            metadata: { ...metadata, correlationId: corrId, goalId, planId, idempotencyKey: effectiveIdempotencyKey },
             handle: {
                 cancelFn,
                 pauseFn,
@@ -506,6 +533,30 @@ class TaskManagerService extends EventEmitter {
                     break;
                 }
 
+                case RECOVERY_POLICIES.VERIFY_THEN_RESUME: {
+                    const handler = this.resumeHandlers.get(String(orphan.type).toLowerCase());
+                    if (handler) {
+                        try {
+                            await handler(inMemoryTask, orphan.checkpoint, { verify: true });
+                            finalStatus = TASK_STATUS.RUNNING;
+                        } catch (err) {
+                            console.warn(`[TaskManager] Verificación fallida para ${orphan.id}:`, err.message);
+                            finalStatus = TASK_STATUS.AWAITING_USER_CONFIRMATION;
+                            inMemoryTask.error = `Verificación fallida tras reinicio: ${err.message}`;
+                        }
+                    } else {
+                        finalStatus = TASK_STATUS.PAUSED;
+                    }
+                    break;
+                }
+
+                case RECOVERY_POLICIES.FAIL_SAFE: {
+                    finalStatus = TASK_STATUS.AWAITING_USER_CONFIRMATION;
+                    inMemoryTask.error = 'Detenida preventivamente por política FAIL_SAFE tras reinicio.';
+                    break;
+                }
+
+                case RECOVERY_POLICIES.DO_NOT_RESUME:
                 case RECOVERY_POLICIES.ABORT_ON_CRASH:
                 default: {
                     finalStatus = TASK_STATUS.CANCELLED;
