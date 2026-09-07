@@ -201,6 +201,22 @@ class UiAutomationService {
         return null;
     }
     /**
+     * Mueve y/o redimensiona una ventana a nuevas coordenadas en pantalla.
+     */
+    async moveWindow(windowTarget, bounds = {}) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const args = ['-Action', 'move-window', '-Hwnd', String(hwnd)];
+        if (bounds.x !== undefined) args.push('-X', String(bounds.x));
+        if (bounds.y !== undefined) args.push('-Y', String(bounds.y));
+        if (bounds.width !== undefined) args.push('-Width', String(bounds.width));
+        if (bounds.height !== undefined) args.push('-Height', String(bounds.height));
+
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || 'Error moviendo ventana.');
+        return res;
+    }
+
+    /**
      * Busca una colección de elementos que coincidan con los criterios dados.
      */
     async findElements(windowTarget, criteria = {}) {

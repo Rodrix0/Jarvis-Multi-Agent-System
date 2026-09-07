@@ -8,6 +8,10 @@ param (
     [string]$AutomationId = "",
     [string]$Text = "",
     [string]$Option = "",
+    [int]$X = -1,
+    [int]$Y = -1,
+    [int]$Width = -1,
+    [int]$Height = -1,
     [int]$TimeoutMs = 5000
 )
 
@@ -56,6 +60,23 @@ public class UiWin32 {
 
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
 
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
@@ -570,6 +591,42 @@ switch ($Action.ToLower()) {
             }
 
             Write-Output (@{ ok = $true; closed = $true; hwnd = $Hwnd } | ConvertTo-Json -Compress)
+            exit 0
+        } catch {
+            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
+            exit 1
+        }
+    }
+
+    "move-window" {
+        Ensure-Desktop
+        if ($Hwnd -le 0) {
+            Write-Output (@{ ok = $false; error = "Hwnd inválido o no especificado." } | ConvertTo-Json -Compress)
+            exit 1
+        }
+        try {
+            $rect = New-Object UiWin32+RECT
+            $hasRect = [UiWin32]::GetWindowRect([IntPtr]$Hwnd, [ref]$rect)
+            
+            $curW = if ($hasRect) { $rect.Right - $rect.Left } else { 800 }
+            $curH = if ($hasRect) { $rect.Bottom - $rect.Top } else { 600 }
+            $curX = if ($hasRect) { $rect.Left } else { 100 }
+            $curY = if ($hasRect) { $rect.Top } else { 100 }
+
+            $newX = if ($X -ge 0) { $X } else { $curX }
+            $newY = if ($Y -ge 0) { $Y } else { $curY }
+            $newW = if ($Width -gt 0) { $Width } else { $curW }
+            $newH = if ($Height -gt 0) { $Height } else { $curH }
+
+            $flags = [UiWin32]::SWP_NOZORDER -bor [UiWin32]::SWP_NOACTIVATE
+            $success = [UiWin32]::SetWindowPos([IntPtr]$Hwnd, [IntPtr]::Zero, $newX, $newY, $newW, $newH, $flags)
+
+            Write-Output (@{
+                ok = $true
+                moved = $success
+                bounds = @{ x = $newX; y = $newY; width = $newW; height = $newH }
+                hwnd = $Hwnd
+            } | ConvertTo-Json -Compress)
             exit 0
         } catch {
             Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
