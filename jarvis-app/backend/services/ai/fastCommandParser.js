@@ -225,8 +225,11 @@ class FastCommandParser {
         // 10. Modo descanso / Despertar (ignorar si el destino es un dispositivo externo como tele o luces)
         const isDevicePowerTarget = /\b(?:tele|television|tv|pantalla|monitor|pc|computadora|luz|luces|aire|ventilador|enchufe|switch|lampara)\b/i.test(clean);
         if (!isDevicePowerTarget) {
-            // 10.1 Poner a Jarvis en descanso / Apagar escucha
-            if (/\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(clean)
+            // 10.1 Poner a Jarvis en descanso / Apagar escucha (requiere mención de "Jarvis" para comandos cortos)
+            const mentionsJarvis = /\bjarvis\b/i.test(clean);
+            const isSleepCmd = /\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(clean);
+            const isNegatedSleep = /\bno\s+(?:te\s+)?apagu/i.test(clean);
+            if ((isSleepCmd && mentionsJarvis && !isNegatedSleep)
                 || /^(?:buenas\s+noches(?:\s+jarvis)?|hasta\s+luego(?:\s+jarvis)?|chau\s+jarvis|adios\s+jarvis)$/i.test(clean)) {
                 return { match: true, action: 'voice.sleep', params: {} };
             }

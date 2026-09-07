@@ -1368,7 +1368,10 @@ async function resolve(text) {
     // 1. Wake & Sleep (ignorar si es sobre tele, luces o apps externas)
     const isDeviceTarget = /\b(?:tele|television|tv|pantalla|monitor|pc|computadora|luz|luces|aire)\b/i.test(lower);
     if (!isDeviceTarget) {
-        if (/\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(lower)
+        const mentionsJarvis = /\bjarvis\b/i.test(clean);
+        const isSleepKeyword = /\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(lower);
+        const isNegated = /\bno\s+(?:te\s+)?apagu/i.test(lower);
+        if ((isSleepKeyword && mentionsJarvis && !isNegated)
             || /^(?:buenas\s+noches(?:\s+jarvis)?|hasta\s+luego(?:\s+jarvis)?|chau\s+jarvis|adios\s+jarvis)$/i.test(lower)) {
             return { id: 'voice.sleep', params: {} };
         }
@@ -1573,8 +1576,6 @@ async function resolve(text) {
         if (tvIntent.action === 'calibrate_volume') return { id: 'tv.calibrate-volume', params: { level: tvIntent.level } };
         if (tvIntent.action === 'learn_button') return { id: 'tv.learn-button', params: { button: tvIntent.button } };
         if (tvIntent.action === 'toggle_mute') return { id: 'tv.toggle-mute', params: {} };
-        if (tvIntent.action === 'enter_netflix') return { id: 'tv.enter-netflix', params: {} };
-        if (tvIntent.action === 'open_search') return { id: 'tv.open-search', params: {} };
 
         if (tvIntent.action === 'open_pc') return { id: 'system.open', params: { appName: 'Netflix' } };
         const broadLinkAvailable = await tvService.isAvailable();
@@ -1583,10 +1584,12 @@ async function resolve(text) {
             if (tvIntent.title) {
                 return { id: 'system.media-search', params: { platform: 'netflix', query: tvIntent.title } };
             }
-            if (['choose_device', 'netflix', 'continue_watching', 'search'].includes(tvIntent.action)) {
+            if (['choose_device', 'netflix', 'continue_watching', 'search', 'enter_netflix', 'open_search'].includes(tvIntent.action)) {
                 return { id: 'system.open', params: { appName: 'Netflix' } };
             }
         }
+        if (tvIntent.action === 'enter_netflix') return { id: 'tv.enter-netflix', params: {} };
+        if (tvIntent.action === 'open_search') return { id: 'tv.open-search', params: {} };
         return { id: 'tv.control', params: { intent: tvIntent } };
     }
     if (tvVoiceService.isSessionActive() && !tvVoiceService.switchesAwayFromTv(clean)) {
