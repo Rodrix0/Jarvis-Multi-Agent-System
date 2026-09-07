@@ -64,7 +64,10 @@ class ProcedureRegistryService {
         steps = [],
         preConditions = [],
         postConditions = [],
-        author = 'system'
+        author = 'system',
+        status = 'ACTIVE', // 'ACTIVE', 'CANDIDATE', 'DEPRECATED', 'ROLLED_BACK'
+        version = 1,
+        canaryThreshold = 3 // ejecuciones canario requeridas para promoción automática
     }) {
         if (!name || !Array.isArray(steps) || steps.length === 0) {
             throw new Error('Un procedimiento válido requiere nombre y al menos un paso.');
@@ -85,9 +88,14 @@ class ProcedureRegistryService {
             preConditions,
             postConditions,
             author,
-            validationStatus: 'VALIDATED',
+            status: status.toUpperCase(),
+            version,
+            canaryThreshold,
+            consecutiveFailures: 0,
+            validationStatus: status.toUpperCase() === 'CANDIDATE' ? 'CANARY_TESTING' : 'VALIDATED',
             executionCount: 0,
             successCount: 0,
+            failureCount: 0,
             createdAt: new Date().toISOString(),
             lastExecutedAt: null
         };
@@ -98,6 +106,7 @@ class ProcedureRegistryService {
         eventBus.publish('PROCEDURE_REGISTERED', {
             procedureId: procId,
             name: procedure.name,
+            status: procedure.status,
             stepsCount: procedure.steps.length
         });
 
@@ -113,42 +122,106 @@ class ProcedureRegistryService {
 
     /**
      * Busca un procedimiento por intención de disparo o coincidencia textual.
+     * Prioriza procedimientos 'ACTIVE' sobre 'CANDIDATE' a menos que se fuerce canary.
      */
-    findProcedureByTrigger(triggerText) {
+    findProcedureByTrigger(triggerText, allowCandidate = true) {
         if (!triggerText) return null;
         const norm = String(triggerText).toLowerCase().trim();
 
+        const matches = [];
         for (const p of this.procedures.values()) {
+            if (p.status === 'ROLLED_BACK' || p.status === 'DEPRECATED') continue;
+            if (!allowCandidate && p.status === 'CANDIDATE') continue;
+
             if (p.trigger && (norm.includes(p.trigger) || p.trigger.includes(norm))) {
-                return p;
-            }
-            if (norm.includes(p.name.toLowerCase())) {
-                return p;
+                matches.push(p);
+            } else if (norm.includes(p.name.toLowerCase())) {
+                matches.push(p);
             }
         }
-        return null;
+
+        if (matches.length === 0) return null;
+
+        // Ordenar: primero ACTIVE, luego por tasa de éxito
+        matches.sort((a, b) => {
+            if (a.status === 'ACTIVE' && b.status !== 'ACTIVE') return -1;
+            if (b.status === 'ACTIVE' && a.status !== 'ACTIVE') return 1;
+            const rateA = a.executionCount > 0 ? a.successCount / a.executionCount : 0;
+            const rateB = b.executionCount > 0 ? b.successCount / b.executionCount : 0;
+            return rateB - rateA;
+        });
+
+        return matches[0];
     }
 
     /**
      * Lista todos los procedimientos registrados.
      */
-    listProcedures() {
-        return Array.from(this.procedures.values());
+    listProcedures(filterStatus = null) {
+        let list = Array.from(this.procedures.values());
+        if (filterStatus) {
+            list = list.filter(p => p.status === filterStatus.toUpperCase());
+        }
+        return list;
     }
 
     /**
-     * Registra el resultado de una ejecución de procedimiento para optimización.
+     * Promueve un procedimiento candidato a activo formalmente.
      */
-    recordExecution(procId, success = true) {
+    promoteProcedure(procId) {
         const proc = this.procedures.get(procId);
-        if (proc) {
-            proc.executionCount = (proc.executionCount || 0) + 1;
-            if (success) {
-                proc.successCount = (proc.successCount || 0) + 1;
+        if (!proc) return false;
+        proc.status = 'ACTIVE';
+        proc.validationStatus = 'VALIDATED';
+        this._saveProcedures();
+        eventBus.publish('PROCEDURE_PROMOTED', { procedureId: procId, name: proc.name });
+        return true;
+    }
+
+    /**
+     * Realiza rollback de un procedimiento por fallos o regresión.
+     */
+    rollbackProcedure(procId, reason = 'Excessive failures during execution') {
+        const proc = this.procedures.get(procId);
+        if (!proc) return false;
+        proc.status = 'ROLLED_BACK';
+        proc.validationStatus = 'REJECTED';
+        proc.rollbackReason = reason;
+        this._saveProcedures();
+        eventBus.publish('PROCEDURE_ROLLED_BACK', { procedureId: procId, name: proc.name, reason });
+        return true;
+    }
+
+    /**
+     * Registra el resultado de una ejecución de procedimiento para optimización y canary testing.
+     */
+    recordExecution(procId, success = true, error = null) {
+        const proc = this.procedures.get(procId);
+        if (!proc) return;
+
+        proc.executionCount = (proc.executionCount || 0) + 1;
+        proc.lastExecutedAt = new Date().toISOString();
+
+        if (success) {
+            proc.successCount = (proc.successCount || 0) + 1;
+            proc.consecutiveFailures = 0;
+
+            // Auto-promoción de candidatos tras alcanzar el umbral de canario sin errores
+            if (proc.status === 'CANDIDATE' && proc.successCount >= (proc.canaryThreshold || 3)) {
+                this.promoteProcedure(procId);
             }
-            proc.lastExecutedAt = new Date().toISOString();
-            this._saveProcedures();
+        } else {
+            proc.failureCount = (proc.failureCount || 0) + 1;
+            proc.consecutiveFailures = (proc.consecutiveFailures || 0) + 1;
+
+            // Auto-rollback inmediato si un canario falla 2 veces consecutivas o si un activo supera 3 fallos seguidos
+            const maxAllowed = proc.status === 'CANDIDATE' ? 2 : 3;
+            if (proc.consecutiveFailures >= maxAllowed) {
+                this.rollbackProcedure(procId, `Auto-rollback por ${proc.consecutiveFailures} fallas consecutivas: ${error || 'Error no especificado'}`);
+            }
         }
+
+        this._saveProcedures();
     }
 }
 
