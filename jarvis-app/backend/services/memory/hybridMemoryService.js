@@ -256,6 +256,22 @@ class HybridMemoryService {
             };
         }
 
+        // Relevancia directa: si no coincide ni por vector, ni por texto, ni por entidades, el puntaje es 0
+        const directRelevance = Math.max(vectorScore, textScore, entityScore);
+        if (directRelevance === 0) {
+            return {
+                ...candidate,
+                score: 0.0,
+                breakdown: {
+                    vector: Math.round(vectorScore * 1000) / 1000,
+                    textMatch: Math.round(textScore * 1000) / 1000,
+                    recency: Math.round(recencyScore * 1000) / 1000,
+                    importance: Math.round(importanceScore * 1000) / 1000,
+                    entityMatch: Math.round(entityScore * 1000) / 1000
+                }
+            };
+        }
+
         const totalScore = (
             (vectorScore * effectiveWeights.vector) +
             (textScore * effectiveWeights.textMatch) +

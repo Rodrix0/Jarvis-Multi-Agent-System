@@ -319,24 +319,44 @@ class UniversalMemoryService {
         const limit = options.limit || 5;
         const targetTier = options.tier || null;
 
-        // Obtener candidatos de SQLite: Siempre incluir memorias CORE + las 250 más recientes
-        let sql = `
-            SELECT id, type as tier, tier as core_tier, key, value as text, source, confidence as importance, created_at, expires_at
-            FROM memory 
-            WHERE status = 'ACTIVE' AND tier = 'CORE'
-            UNION
-            SELECT id, type as tier, tier as core_tier, key, value as text, source, confidence as importance, created_at, expires_at
-            FROM (
-                SELECT id, type, tier, key, value, source, confidence, created_at, expires_at
-                FROM memory
-                WHERE status = 'ACTIVE'
-                ORDER BY created_at DESC
-                LIMIT 250
-            )
-        `;
+        // 1. Obtener candidatos léxicos relevantes vía FTS5 sobre toda la base histórica
+        const ftsCandidates = this.searchRawArchive(queryText, { limit: 100 });
+        const ftsIds = ftsCandidates.map(m => m.id);
+
+        // 2. Obtener candidatos de SQLite (Active Memory):
+        // FTS IDs coincidentes + Todos los CORE permanentes + Las 150 más recientes
         let rows = [];
         try {
-            rows = databaseService.db.prepare(sql).all();
+            let baseSql = `
+                SELECT id, type as tier, tier as core_tier, key, value as text, source, confidence as importance, created_at, expires_at
+                FROM memory 
+                WHERE status = 'ACTIVE' AND tier = 'CORE'
+                UNION
+                SELECT id, type as tier, tier as core_tier, key, value as text, source, confidence as importance, created_at, expires_at
+                FROM (
+                    SELECT id, type, tier, key, value, source, confidence, created_at, expires_at
+                    FROM memory
+                    WHERE status = 'ACTIVE'
+                    ORDER BY created_at DESC
+                    LIMIT 150
+                )
+            `;
+            rows = databaseService.db.prepare(baseSql).all();
+
+            if (ftsIds.length > 0) {
+                const existingSet = new Set(rows.map(r => r.id));
+                const missingFtsIds = ftsIds.filter(id => !existingSet.has(id));
+                if (missingFtsIds.length > 0) {
+                    const placeholders = missingFtsIds.map(() => '?').join(',');
+                    const ftsDbRows = databaseService.db.prepare(`
+                        SELECT id, type as tier, tier as core_tier, key, value as text, source, confidence as importance, created_at, expires_at
+                        FROM memory
+                        WHERE status = 'ACTIVE' AND id IN (${placeholders})
+                    `).all(...missingFtsIds);
+                    rows = rows.concat(ftsDbRows);
+                }
+            }
+
             if (targetTier) {
                 rows = rows.filter(r => r.tier === targetTier || r.core_tier === targetTier);
             }
@@ -353,9 +373,9 @@ class UniversalMemoryService {
         });
 
         // Ejecutar búsqueda híbrida ponderada
-        const scored = await hybridMemoryService.searchHybrid(queryText, {
+        let scored = await hybridMemoryService.searchHybrid(queryText, {
             candidates: validCandidates,
-            limit
+            limit: limit * 2
         });
 
         // Normalizar propiedades de score
@@ -392,8 +412,15 @@ class UniversalMemoryService {
                     });
                 }
             }
-            // Reordenar por finalScore / score
-            scored.sort((a, b) => (b.finalScore || b.score || 0) - (a.finalScore || a.score || 0));
+        }
+
+        // Reordenar por finalScore / score
+        scored.sort((a, b) => (b.finalScore || b.score || 0) - (a.finalScore || a.score || 0));
+
+        // Si existen resultados con relevancia positiva (> 0), filtrar recuerdos irrelevantes (score === 0)
+        const hasRelevant = scored.some(s => (s.finalScore || s.score || 0) > 0);
+        if (hasRelevant) {
+            scored = scored.filter(s => (s.finalScore || s.score || 0) > 0);
         }
 
         return scored.slice(0, limit);
