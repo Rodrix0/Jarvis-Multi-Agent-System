@@ -315,11 +315,100 @@ if _orig_remove:
     }
 
     /**
+     * Genera el preámbulo de seguridad en tiempo de ejecución para JavaScript/Node.js.
+     */
+    generateJavaScriptRuntimeGuard(rawPermissions = {}) {
+        const perms = this.normalizePermissions(rawPermissions);
+        const scratchNormalized = this.scratchDir.replace(/\\/g, '\\\\');
+        const downloadsNormalized = this.downloadsDir.replace(/\\/g, '\\\\');
+
+        return `
+// ====================================================================
+// JARVIS HARDENED SKILL JAVASCRIPT RUNTIME GUARD (PoLP Jail)
+// ====================================================================
+const _ALLOW_NETWORK = ${perms.network ? 'true' : 'false'};
+const _ALLOW_POWERSHELL = ${perms.powershell ? 'true' : 'false'};
+const _ALLOW_REGISTRY = ${perms.registry ? 'true' : 'false'};
+const _FS_WRITE_MODE = "${perms.filesystem_write}";
+const _FS_READ_MODE = "${perms.filesystem_read}";
+const _SCRATCH_DIR = "${scratchNormalized}".toLowerCase();
+const _DOWNLOADS_DIR = "${downloadsNormalized}".toLowerCase();
+
+const _CRITICAL_PREFIXES = [
+    "c:\\\\windows",
+    "c:\\\\program files",
+    "c:\\\\program files (x86)",
+    "c:\\\\programdata\\\\microsoft"
+];
+
+// 1. Interceptar require para módulos prohibidos
+const _Module = require('module');
+const _origRequire = _Module.prototype.require;
+
+_Module.prototype.require = function(id) {
+    if (!_ALLOW_NETWORK && ['http', 'https', 'net', 'dgram', 'tls', 'dns', 'axios', 'node-fetch', 'undici'].includes(id)) {
+        throw new Error(\`Acceso denegado: Modulo de red '\${id}' bloqueado (network=false).\`);
+    }
+    if (!_ALLOW_POWERSHELL && ['child_process', 'cluster'].includes(id)) {
+        throw new Error(\`Acceso denegado: Modulo de procesos '\${id}' bloqueado (powershell=false).\`);
+    }
+    return _origRequire.apply(this, arguments);
+};
+
+// 2. Interceptar fetch global
+if (typeof globalThis.fetch === 'function' && !_ALLOW_NETWORK) {
+    globalThis.fetch = function() {
+        return Promise.reject(new Error("Acceso denegado: Red global bloqueada (network=false)."));
+    };
+}
+
+// 3. Interceptar fs para control de escritura y path traversal
+const _fs = require('fs');
+const _path = require('path');
+
+function _isPathAllowedForWrite(target) {
+    if (!target) return false;
+    const norm = _path.resolve(String(target)).toLowerCase();
+    for (const crit of _CRITICAL_PREFIXES) {
+        if (norm.startsWith(crit)) return false;
+    }
+    if (_FS_WRITE_MODE === "full") return true;
+    if (_FS_WRITE_MODE === "scratch_only") return norm.startsWith(_SCRATCH_DIR);
+    if (_FS_WRITE_MODE === "downloads_only") return norm.startsWith(_DOWNLOADS_DIR) || norm.startsWith(_SCRATCH_DIR);
+    return false;
+}
+
+const _origWriteFileSync = _fs.writeFileSync;
+_fs.writeFileSync = function(file, data, options) {
+    if (!_isPathAllowedForWrite(file)) {
+        throw new Error(\`Acceso denegado: Escritura no autorizada en '\${file}' (filesystem_write=\${_FS_WRITE_MODE}).\`);
+    }
+    return _origWriteFileSync.apply(this, arguments);
+};
+
+const _origWriteFile = _fs.writeFile;
+_fs.writeFile = function(file, data, ...rest) {
+    if (!_isPathAllowedForWrite(file)) {
+        const cb = rest[rest.length - 1];
+        if (typeof cb === 'function') return cb(new Error(\`Acceso denegado: Escritura no autorizada en '\${file}'.\`));
+        throw new Error(\`Acceso denegado: Escritura no autorizada en '\${file}'.\`);
+    }
+    return _origWriteFile.apply(this, arguments);
+};
+// ====================================================================
+`;
+    }
+
+    /**
      * Prepara el código final protegido con el preámbulo de seguridad.
      */
     wrapCodeWithGuard(code, permissions = {}, language = 'python') {
         if (language === 'python') {
             const preamble = this.generatePythonRuntimeGuard(permissions);
+            return `${preamble}\n${code}`;
+        }
+        if (language === 'javascript' || language === 'node') {
+            const preamble = this.generateJavaScriptRuntimeGuard(permissions);
             return `${preamble}\n${code}`;
         }
         return code;
