@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'jarvis.db');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const CURRENT_SCHEMA_VERSION = 10;
+const CURRENT_SCHEMA_VERSION = 12;
 
 // Serialización canónica de JSON (claves ordenadas determinísticamente)
 function canonicalStringify(obj) {
@@ -412,6 +412,44 @@ class DatabaseService {
                     .run(11, new Date().toISOString());
                 this.db.exec('COMMIT;');
                 console.log('[Database] Migración v11 (structured_logs) aplicada con éxito.');
+            } catch (err) {
+                this.db.exec('ROLLBACK;');
+                throw err;
+            }
+        }
+
+        if (currentVer < 12) {
+            this.db.exec('BEGIN TRANSACTION;');
+            try {
+                this.db.exec(`
+                    CREATE VIRTUAL TABLE IF NOT EXISTS raw_archive_fts USING fts5(
+                        id UNINDEXED,
+                        tier UNINDEXED,
+                        content,
+                        source UNINDEXED,
+                        timestamp UNINDEXED
+                    );
+
+                    CREATE TABLE IF NOT EXISTS memory_conflict_history (
+                        id TEXT PRIMARY KEY,
+                        memory_key TEXT NOT NULL,
+                        previous_value TEXT NOT NULL,
+                        new_value TEXT NOT NULL,
+                        valid_from TEXT NOT NULL,
+                        valid_until TEXT NOT NULL,
+                        superseded_by TEXT,
+                        source TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_conflict_key ON memory_conflict_history (memory_key);
+                    CREATE INDEX IF NOT EXISTS idx_conflict_valid_from ON memory_conflict_history (valid_from);
+                `);
+
+                this.db.prepare('INSERT INTO schema_info (version, applied_at) VALUES (?, ?)')
+                    .run(12, new Date().toISOString());
+                this.db.exec('COMMIT;');
+                console.log('[Database] Migración v12 (raw_archive_fts & memory_conflict_history) aplicada con éxito.');
             } catch (err) {
                 this.db.exec('ROLLBACK;');
                 throw err;

@@ -139,7 +139,8 @@ class MemoryConsolidationService {
             domain,
             topic,
             tokensSaved,
-            sourceIds: memories.map(m => m.id)
+            sourceIds: memories.map(m => m.id),
+            source_ids: memories.map(m => m.id)
         };
     }
 

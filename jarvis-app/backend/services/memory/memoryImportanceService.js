@@ -62,6 +62,11 @@ class MemoryImportanceService {
         const clean = text.trim();
         const norm = clean.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
+        // 0. Detalles superficiales o descripciones visuales efímeras (0.10 - 0.20 -> ARCHIVE_ONLY)
+        if (/\b(?:icono|cursor|color\s+del|fondo\s+de)\b/i.test(norm) && /\b(?:era|fue|estaba|parecia)\s+(?:de\s+color\s+|color\s+)?(?:naranja|azul|rojo|verde|amarillo|negro|blanco|gris|celeste|violeta)\b/i.test(norm)) {
+            return 0.12;
+        }
+
         // 1. Detección de Ruido / Charlas Triviales
         for (const pattern of this.transientNoisePatterns) {
             if (pattern.test(clean) || pattern.test(norm)) {
@@ -114,18 +119,23 @@ class MemoryImportanceService {
     }
 
     /**
-     * Realiza el triaje automático: PERMANENT, EPISODIC o DISCARD.
+     * Realiza el triaje automático: PERMANENT, EPISODIC o ARCHIVE_ONLY (JARVIS 3.1).
+     * Regla: LOW IMPORTANCE !== DELETE.
+     * Los datos <= 0.25 no se promueven al working context pero se preservan en Raw Archive.
      */
     triageMemory(text, context = {}) {
-        const importance = this.evaluateImportance(text, context);
+        const importance = typeof context.confidence === 'number'
+            ? context.confidence
+            : this.evaluateImportance(text, context);
 
         if (importance <= 0.25) {
             return {
-                action: 'DISCARD',
+                action: 'ARCHIVE_ONLY',
                 importance,
-                ttlDays: 0,
-                tier: 'DO_NOT_PERSIST',
-                reason: 'Dato trivial, estado pasajero o charla de bajo valor informacional.'
+                ttlDays: null,
+                tier: 'ARCHIVE_ONLY',
+                promoteToWorkingMemory: false,
+                reason: 'Dato trivial, estado pasajero o charla de bajo valor informacional (conservado en Raw Archive permanente).'
             };
         }
 
