@@ -1368,10 +1368,9 @@ async function resolve(text) {
     // 1. Wake & Sleep (ignorar si es sobre tele, luces o apps externas)
     const isDeviceTarget = /\b(?:tele|television|tv|pantalla|monitor|pc|computadora|luz|luces|aire)\b/i.test(lower);
     if (!isDeviceTarget) {
-        const mentionsJarvis = /\bjarvis\b/i.test(clean);
         const isSleepKeyword = /\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(lower);
         const isNegated = /\bno\s+(?:te\s+)?apagu/i.test(lower);
-        if ((isSleepKeyword && mentionsJarvis && !isNegated)
+        if ((isSleepKeyword && !isNegated)
             || /^(?:buenas\s+noches(?:\s+jarvis)?|hasta\s+luego(?:\s+jarvis)?|chau\s+jarvis|adios\s+jarvis)$/i.test(lower)) {
             return { id: 'voice.sleep', params: {} };
         }
