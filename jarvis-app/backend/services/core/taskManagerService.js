@@ -492,7 +492,11 @@ class TaskManagerService extends EventEmitter {
                     if (handler) {
                         try {
                             const res = await handler(inMemoryTask, orphan.checkpoint);
-                            finalStatus = TASK_STATUS.RUNNING;
+                            if (inMemoryTask.status === TASK_STATUS.COMPLETED || (res && res.completed)) {
+                                finalStatus = TASK_STATUS.COMPLETED;
+                            } else {
+                                finalStatus = TASK_STATUS.RUNNING;
+                            }
                             resumeSuccess = true;
                         } catch (err) {
                             console.warn(`[TaskManager] Falló reanudación automática de ${orphan.id}:`, err.message);

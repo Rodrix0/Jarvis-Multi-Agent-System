@@ -217,6 +217,74 @@ async function runRecoverySuite() {
     }
 
     // -------------------------------------------------------------
+    // PRUEBA 7: Reanudación Real Multi-Paso (Paso 3 de 5 con Idempotencia)
+    // -------------------------------------------------------------
+    try {
+        console.log('\n--- TEST 7: Reanudación Exacta Multi-Paso (3/5) sin re-ejecución ---');
+        const pipelineId = `task_pipeline_5steps_${Date.now()}`;
+        
+        // Simulación: El proceso anterior ejecutó pasos 1, 2 y 3, y murió abruptamente
+        databaseService.savePersistentTask({
+            id: pipelineId,
+            type: 'five_step_pipeline',
+            description: 'Proceso de 5 pasos interrumpido en el paso 3',
+            status: TASK_STATUS.RUNNING,
+            progress: 60,
+            recovery_policy: RECOVERY_POLICIES.RESUME,
+            checkpoint: {
+                lastCompletedStep: 3,
+                stepsExecuted: [1, 2, 3],
+                accumulatedResult: ['data1', 'data2', 'data3']
+            }
+        });
+
+        // Registrar checkpoints previos en SQLite
+        databaseService.saveTaskCheckpoint(pipelineId, 1, 'Paso 1: Ingesta', { step: 1 });
+        databaseService.saveTaskCheckpoint(pipelineId, 2, 'Paso 2: Limpieza', { step: 2 });
+        databaseService.saveTaskCheckpoint(pipelineId, 3, 'Paso 3: Transformación', { step: 3 });
+
+        // Handler de reanudación en el nuevo proceso
+        const stepsRunInRecovery = [];
+        taskManager.registerResumeHandler('five_step_pipeline', async (task, cp) => {
+            const lastStep = cp ? (cp.step || cp.lastCompletedStep || cp.stepIndex || 0) : 0;
+            const startStep = lastStep + 1;
+            const accum = cp && cp.accumulatedResult ? [...cp.accumulatedResult] : ['data1', 'data2', 'data3'];
+
+            for (let step = startStep; step <= 5; step++) {
+                stepsRunInRecovery.push(step);
+                accum.push(`data${step}`);
+                taskManager.checkpoint(task.id, {
+                    stepIndex: step,
+                    stepName: `Paso ${step}`,
+                    data: { step, accumulatedResult: accum }
+                });
+                taskManager.updateProgress(task.id, Math.round((step / 5) * 100));
+            }
+
+            taskManager.completeTask(task.id, { finalResult: accum });
+            return { ok: true, completed: true };
+        });
+
+        // Ejecutar recuperación
+        await taskManager.recoverOrphanTasks({ silent: true });
+
+        // Validar idempotencia: pasos 1, 2 y 3 NO se ejecutaron de nuevo
+        assert.deepStrictEqual(stepsRunInRecovery, [4, 5], 'Solo deben ejecutarse los pasos 4 y 5');
+        
+        // Validar estado final
+        const finalTask = databaseService.getPersistentTask(pipelineId);
+        assert.strictEqual(finalTask.status, TASK_STATUS.COMPLETED, 'El estado final debe ser COMPLETED');
+        assert.strictEqual(finalTask.progress, 100, 'El progreso final debe ser 100%');
+
+        const allCps = databaseService.getTaskCheckpoints(pipelineId);
+        assert.strictEqual(allCps.length, 5, 'Deben existir exactamente 5 checkpoints en SQLite');
+
+        logPass('Reanudación Multi-Paso (3/5)', 'Reanudó en paso 4 y 5 sin re-ejecutar pasos 1, 2, 3');
+    } catch (err) {
+        logFail('Reanudación Multi-Paso (3/5)', err);
+    }
+
+    // -------------------------------------------------------------
     // RESUMEN
     // -------------------------------------------------------------
     console.log('\n===============================================================');
