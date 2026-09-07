@@ -260,6 +260,136 @@ while True:
     }
 
     // -------------------------------------------------------------
+    // VECTOR 6: Reparse Point / Symlink Escape (Windows Junctions)
+    // -------------------------------------------------------------
+    console.log('\n--- VECTOR 6: Reparse Point / Symlink Escape ---');
+    try {
+        const attackCode = `
+import os
+try:
+    os.symlink("../../data", "escape_symlink")
+    print("SYMLINK_CREATED")
+except Exception as e:
+    print(f"BLOCKED: {e}")
+`;
+        const res = await sandboxService.executeSkill({
+            name: 'attack_symlink_escape',
+            code: attackCode,
+            trustLevel: 'untrusted',
+            language: 'python',
+            permissions: { filesystem_write: 'scratch_only' }
+        });
+
+        assert.ok(!res.output || !res.output.includes('SYMLINK_CREATED'), 'No debió crearse symlink hacia el host');
+        assert.ok(
+            res.status === 'PERMISSION_DENIED_STATIC' ||
+            res.status === 'PERMISSION_DENIED_RUNTIME' ||
+            !res.ok ||
+            (res.output && res.output.includes('BLOCKED')),
+            'Creación de enlace simbólico debe ser denegada'
+        );
+
+        recordSecurityResult({
+            vector: 'Windows Junction / Symlink Escape',
+            permission: 'filesystem_write=scratch_only',
+            expected: 'Bloqueo estático o runtime de symlinks/reparse points',
+            outcome: res.status || 'BLOCKED',
+            status: 'SECURE'
+        });
+    } catch (err) {
+        recordSecurityResult({
+            vector: 'Windows Junction / Symlink Escape',
+            permission: 'filesystem_write=scratch_only',
+            expected: 'Bloqueo',
+            outcome: err.message,
+            status: 'VULNERABLE'
+        });
+    }
+
+    // -------------------------------------------------------------
+    // VECTOR 7: Sophisticated Path Traversal (ADS & Encodings)
+    // -------------------------------------------------------------
+    console.log('\n--- VECTOR 7: Sophisticated Path Traversal (ADS & Encodings) ---');
+    try {
+        const attackCode = `
+# Intento de Alternate Data Stream (NTFS) para ocultar payloads
+with open("test_file.txt:hidden_payload", "w") as f:
+    f.write("MALICIOUS_STREAM")
+`;
+        const res = await sandboxService.executeSkill({
+            name: 'attack_ads_traversal',
+            code: attackCode,
+            trustLevel: 'untrusted',
+            language: 'python',
+            permissions: { filesystem_write: 'scratch_only' }
+        });
+
+        assert.ok(
+            res.status === 'PERMISSION_DENIED_STATIC' ||
+            res.status === 'PERMISSION_DENIED_RUNTIME' ||
+            !res.ok,
+            'ADS debe ser interceptado'
+        );
+
+        recordSecurityResult({
+            vector: 'Alternate Data Streams (file.txt:stream)',
+            permission: 'filesystem_write=scratch_only',
+            expected: 'Detección estática o bloqueo de stream en runtime',
+            outcome: res.status,
+            status: 'SECURE'
+        });
+    } catch (err) {
+        recordSecurityResult({
+            vector: 'Alternate Data Streams',
+            permission: 'filesystem_write=scratch_only',
+            expected: 'Bloqueo',
+            outcome: err.message,
+            status: 'VULNERABLE'
+        });
+    }
+
+    // -------------------------------------------------------------
+    // VECTOR 8: Principle of Least Privilege Destructive Commands
+    // -------------------------------------------------------------
+    console.log('\n--- VECTOR 8: Principle of Least Privilege Destructive Commands ---');
+    try {
+        const attackCode = `
+import os
+os.system("vssadmin delete shadows /all /quiet")
+os.system("format d: /q /y")
+`;
+        const res = await sandboxService.executeSkill({
+            name: 'attack_destructive_commands',
+            code: attackCode,
+            trustLevel: 'untrusted',
+            language: 'python',
+            permissions: { powershell: true } // Incluso si se solicitara powershell
+        });
+
+        assert.ok(
+            res.status === 'PERMISSION_DENIED_STATIC' ||
+            !res.ok,
+            'Comandos destructivos del sistema deben ser denegados incondicionalmente'
+        );
+
+        recordSecurityResult({
+            vector: 'Destructive Commands (vssadmin/format)',
+            permission: 'PoLP Policy Enforcement',
+            expected: 'Interdicción absoluta de comandos de destrucción de SO',
+            outcome: res.status,
+            status: 'SECURE'
+        });
+    } catch (err) {
+        recordSecurityResult({
+            vector: 'Destructive Commands',
+            permission: 'PoLP Policy Enforcement',
+            expected: 'Bloqueo',
+            outcome: err.message,
+            status: 'VULNERABLE'
+        });
+    }
+
+    // -------------------------------------------------------------
     // REPORTE DE SEGURIDAD FINAL
     // -------------------------------------------------------------
     console.log('\n===============================================================');

@@ -169,7 +169,61 @@ class SkillPermissionService {
             }
         }
 
-        // 4. Verificación de ESCRITURA EN DISCO (si es 'none')
+        // 4. Verificación de COMANDOS DESTRUCTIVOS (PoLP inquebrantable)
+        const destructivePatterns = [
+            /\b(?:format\s+[a-z]:)/i,
+            /\b(?:del\s+(?:\/[a-z\s]+)?(?:\*|\/s|\/q))/i,
+            /\b(?:reg\s+delete)/i,
+            /\b(?:vssadmin(?:\.exe)?\s+delete)/i,
+            /\b(?:diskpart(?:\.exe)?)/i,
+            /\b(?:bcdedit(?:\.exe)?)/i,
+            /\b(?:rmdir\s+\/[sq])/i
+        ];
+        for (const dp of destructivePatterns) {
+            if (dp.test(text)) {
+                violations.push({
+                    permission: 'destructive_command',
+                    reason: 'Comando destructivo del sistema prohibido por política de Least Privilege (PoLP).'
+                });
+                break;
+            }
+        }
+
+        // 5. Verificación de SYMLINKS / JUNCTIONS (Reparse Points Escape)
+        if (perms.filesystem_write !== 'full') {
+            const symlinkPatterns = [
+                /(?:os\.(?:symlink|link))/i,
+                /(?:mklink(?:\.exe)?)/i,
+                /(?:fs\.(?:symlink|link))/i
+            ];
+            for (const sp of symlinkPatterns) {
+                if (sp.test(text)) {
+                    violations.push({
+                        permission: 'reparse_point_symlink',
+                        reason: 'Creación de enlaces simbólicos o junctions prohibida en sandbox.'
+                    });
+                    break;
+                }
+            }
+        }
+
+        // 6. Verificación de PATH TRAVERSAL SOFISTICADO (Null byte, ADS, Double Encoding)
+        const traversalPatterns = [
+            /(?:\x00|\\x00|\\0)/,
+            /(?:%2e%2e|%252e%252e|\.\.%2f|\.\.%5c)/i,
+            /(?:['"][^'"]+\.[a-zA-Z0-9]{1,5}:[a-zA-Z0-9_.-]+['"])/i // Alternate Data Streams (ADS) en literales de archivo
+        ];
+        for (const tp of traversalPatterns) {
+            if (tp.test(text)) {
+                violations.push({
+                    permission: 'path_traversal_encoding',
+                    reason: 'Patrón de evasión por codificación, null byte o Alternate Data Stream (ADS) detectado.'
+                });
+                break;
+            }
+        }
+
+        // 7. Verificación de ESCRITURA EN DISCO (si es 'none')
         if (perms.filesystem_write === 'none') {
             const writePatterns = [
                 /(?:open\s*\([^,]+,[^)]*['"][wa\+x][^)]*\))/i,
@@ -259,15 +313,34 @@ if not _ALLOW_POWERSHELL:
     except Exception:
         pass
 
-# 3. Interceptación y Confinamiento de Sistema de Archivos
+# 3. Interceptación y Confinamiento de Sistema de Archivos y Reparse Points (Junctions)
 _orig_open = open
 _orig_remove = getattr(os, 'remove', None)
 _orig_unlink = getattr(os, 'unlink', None)
 
+# Bloqueo total de creación de Symlinks / Junctions
+def _blocked_symlink(*args, **kwargs):
+    raise PermissionError("Acceso denegado: Creacion de symlinks o junctions no autorizada en sandbox.")
+try:
+    os.symlink = _blocked_symlink
+    os.link = _blocked_symlink
+except Exception:
+    pass
+
 def _is_path_allowed_for_write(target):
     if not target:
         return False
-    norm = os.path.abspath(target).lower()
+    target_str = str(target)
+    if chr(0) in target_str or '%2e' in target_str.lower():
+        return False
+    # Bloqueo de Alternate Data Streams (ADS) en NTFS
+    if len(target_str) > 2 and ':' in target_str[2:]:
+        return False
+    # Resolución estricta de junctions, symlinks y enlaces canónicos
+    try:
+        norm = os.path.realpath(target).lower()
+    except Exception:
+        norm = os.path.abspath(target).lower()
     for crit in _CRITICAL_PREFIXES:
         if norm.startswith(crit):
             return False
@@ -285,11 +358,16 @@ def _guarded_open(file, mode='r', *args, **kwargs):
     target = str(file) if not isinstance(file, int) else None
     
     if target:
+        if chr(0) in target or '%2e' in target.lower() or (len(target) > 2 and ':' in target[2:]):
+            raise PermissionError(f"Acceso denegado: Caracteres sospechosos, null bytes o ADS en '{target}'.")
         if is_write:
             if not _is_path_allowed_for_write(target):
                 raise PermissionError(f"Acceso denegado: Escritura no autorizada en ruta '{target}' (filesystem_write={_FS_WRITE_MODE}).")
         else:
-            norm = os.path.abspath(target).lower()
+            try:
+                norm = os.path.realpath(target).lower()
+            except Exception:
+                norm = os.path.abspath(target).lower()
             for crit in _CRITICAL_PREFIXES:
                 if norm.startswith(crit) and not norm.startswith(_SCRATCH_DIR):
                     raise PermissionError(f"Acceso denegado: Lectura de rutas del sistema bloqueada '{target}'.")
