@@ -117,30 +117,48 @@ class UniversalMemoryService {
     searchRawArchive(queryText, options = {}) {
         const limit = options.limit || 10;
         try {
-            const sanitized = queryText.replace(/['"*^(){}[\]]/g, ' ').trim();
+            const sanitized = queryText.replace(/['"*^(){}[\]¿?¡!]/g, ' ').trim();
             if (!sanitized) return [];
 
-            const words = sanitized.split(/\s+/).filter(w => w.length > 1);
-            if (words.length === 0) return [];
-            const ftsQuery = words.map(w => `"${w}"*`).join(' OR ');
+            const stopWords = new Set([
+                'que', 'el', 'la', 'los', 'las', 'un', 'una', 'de', 'en', 'por', 'para',
+                'con', 'se', 'te', 'me', 'mi', 'su', 'era', 'es', 'fue', 'al', 'del',
+                'como', 'cual', 'cuando', 'donde', 'quien', 'acordas', 'acuerdas', 'recordas'
+            ]);
+
+            const words = sanitized.split(/\s+/)
+                .map(w => w.toLowerCase())
+                .filter(w => w.length > 2 && !stopWords.has(w));
+
+            const effectiveWords = words.length > 0
+                ? words
+                : sanitized.split(/\s+/).filter(w => w.length > 2);
+
+            if (effectiveWords.length === 0) return [];
+            const ftsQuery = effectiveWords.map(w => `"${w}"*`).join(' OR ');
 
             const rows = databaseService.db.prepare(`
                 SELECT id, tier, content as text, source, timestamp as created_at, rank
                 FROM raw_archive_fts
                 WHERE raw_archive_fts MATCH ?
-                ORDER BY rank
+                ORDER BY rank ASC
                 LIMIT ?
             `).all(ftsQuery, limit);
 
-            return rows.map(r => ({
-                id: r.id,
-                tier: r.tier || 'RAW_ARCHIVE',
-                text: r.text || r.content,
-                source: r.source,
-                created_at: r.created_at || r.timestamp,
-                fromArchive: true,
-                score: Math.max(0.1, 1.0 / (1.0 + Math.abs(r.rank || 1)))
-            }));
+            return rows.map(r => {
+                // En FTS5 bm25, rank es negativo donde más negativo = mayor coincidencia léxica
+                const rawRank = typeof r.rank === 'number' ? r.rank : 0;
+                const normalizedScore = 1.0 / (1.0 + Math.exp(rawRank));
+                return {
+                    id: r.id,
+                    tier: r.tier || 'RAW_ARCHIVE',
+                    text: r.text || r.content,
+                    source: r.source,
+                    created_at: r.created_at || r.timestamp,
+                    fromArchive: true,
+                    score: Math.max(0.1, Math.min(1.0, normalizedScore))
+                };
+            });
         } catch (err) {
             console.warn('[UniversalMemory] Error en FTS searchRawArchive:', err.message);
             return [];
@@ -301,22 +319,27 @@ class UniversalMemoryService {
         const limit = options.limit || 5;
         const targetTier = options.tier || null;
 
-        // Obtener candidatos de SQLite (Active Memory)
+        // Obtener candidatos de SQLite: Siempre incluir memorias CORE + las 250 más recientes
         let sql = `
             SELECT id, type as tier, tier as core_tier, key, value as text, source, confidence as importance, created_at, expires_at
             FROM memory 
-            WHERE status = 'ACTIVE'
+            WHERE status = 'ACTIVE' AND tier = 'CORE'
+            UNION
+            SELECT id, type as tier, tier as core_tier, key, value as text, source, confidence as importance, created_at, expires_at
+            FROM (
+                SELECT id, type, tier, key, value, source, confidence, created_at, expires_at
+                FROM memory
+                WHERE status = 'ACTIVE'
+                ORDER BY created_at DESC
+                LIMIT 250
+            )
         `;
-        const params = [];
-        if (targetTier) {
-            sql += ` AND type = ?`;
-            params.push(targetTier);
-        }
-        sql += ` ORDER BY created_at DESC LIMIT 250`;
-
         let rows = [];
         try {
-            rows = databaseService.db.prepare(sql).all(...params);
+            rows = databaseService.db.prepare(sql).all();
+            if (targetTier) {
+                rows = rows.filter(r => r.tier === targetTier || r.core_tier === targetTier);
+            }
         } catch (err) {
             console.error('[UniversalMemory] Error consultando SQLite:', err.message);
             rows = [];
@@ -335,9 +358,16 @@ class UniversalMemoryService {
             limit
         });
 
+        // Normalizar propiedades de score
+        for (const item of scored) {
+            if (item.finalScore === undefined) {
+                item.finalScore = item.score;
+            }
+        }
+
         // Detectar si la consulta es histórica o si la confianza es baja para activar Raw Archive FTS
         const isHistoricalQuery = /\b(?:cuando hablamos|hace meses|hace tiempo|te acordas|te acuerdas|que te dije|que habiamos dicho|antes|historico|icono era|recordas|antiguo)\b/i.test(queryText);
-        const topScore = scored.length > 0 ? (scored[0].finalScore || 0) : 0;
+        const topScore = scored.length > 0 ? (scored[0].finalScore || scored[0].score || 0) : 0;
 
         if (options.includeArchive || isHistoricalQuery || topScore < 0.35) {
             const archiveMatches = this.searchRawArchive(queryText, { limit });
@@ -345,9 +375,11 @@ class UniversalMemoryService {
 
             for (const match of archiveMatches) {
                 if (!existingIds.has(match.id)) {
+                    const matchScore = match.score || 0.40;
                     scored.push({
                         ...match,
-                        finalScore: match.score || 0.40,
+                        score: matchScore,
+                        finalScore: matchScore,
                         scoreBreakdown: {
                             vector: 0,
                             bm25: 0.8,
@@ -360,8 +392,8 @@ class UniversalMemoryService {
                     });
                 }
             }
-            // Reordenar por finalScore
-            scored.sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
+            // Reordenar por finalScore / score
+            scored.sort((a, b) => (b.finalScore || b.score || 0) - (a.finalScore || a.score || 0));
         }
 
         return scored.slice(0, limit);

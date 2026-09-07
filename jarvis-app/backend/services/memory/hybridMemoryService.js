@@ -132,6 +132,7 @@ class HybridMemoryService {
         if (candidate.confidence && typeof candidate.confidence === 'number') {
             return Math.max(0.0, Math.min(1.0, candidate.confidence));
         }
+        if (candidate.core_tier === 'CORE' || candidate.tier === 'CORE') return 0.95;
         if (candidate.tier === 'SENSITIVE') return 0.90;
         if (candidate.tier === 'PERSONAL') return 0.80;
         return 0.50; // Default medio equilibrado
