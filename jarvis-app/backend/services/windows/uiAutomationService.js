@@ -268,6 +268,36 @@ class UiAutomationService {
         evidence.durationMs = Date.now() - start;
         return evidence;
     }
+
+    /**
+     * Obtiene el texto de un elemento dentro de una ventana (ValuePattern, TextPattern o Name).
+     */
+    async getText(windowTarget, criteria = {}) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const name = typeof criteria === 'string' ? criteria : (criteria.name || '');
+        const autoId = criteria.automationId || '';
+        const cType = criteria.controlType || (typeof criteria === 'string' ? 'Any' : (criteria.controlType || 'Any'));
+
+        const args = ['-Action', 'get-text', '-Hwnd', String(hwnd)];
+        if (name) args.push('-NamePattern', String(name));
+        if (autoId) args.push('-AutomationId', String(autoId));
+        if (cType) args.push('-ControlType', String(cType));
+
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || 'Error leyendo texto del elemento.');
+        return res.text || '';
+    }
+
+    /**
+     * Cierra una ventana usando WindowPattern.Close() con fallback a WM_CLOSE.
+     */
+    async closeWindow(windowTarget) {
+        const hwnd = await this._resolveHwnd(windowTarget);
+        const args = ['-Action', 'close-window', '-Hwnd', String(hwnd)];
+        const res = await this._runBridge(args);
+        if (!res.ok) throw new Error(res.error || `Error cerrando ventana HWND ${hwnd}.`);
+        return res;
+    }
 }
 
 const uiAutomationService = new UiAutomationService();

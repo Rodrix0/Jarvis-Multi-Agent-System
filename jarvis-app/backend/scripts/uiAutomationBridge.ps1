@@ -54,6 +54,9 @@ public class UiWin32 {
     [DllImport("user32.dll")]
     public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
 
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
 
@@ -124,8 +127,15 @@ function Format-Element($elem) {
         $cur = $elem.Current
         $rect = $cur.BoundingRectangle
         $hasCoords = ($rect.X -ne [double]::PositiveInfinity -and $rect.Width -gt 0)
+        $val = $null
+        try {
+            $vp = $elem.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            if ($vp) { $val = $vp.Current.Value }
+        } catch {}
+
         return @{
             name = $cur.Name
+            value = $val
             automationId = $cur.AutomationId
             controlType = $cur.ControlType.ProgrammaticName.Replace("ControlType.", "")
             className = $cur.ClassName
@@ -458,6 +468,108 @@ switch ($Action.ToLower()) {
                 method = $methodUsed
                 selectedOption = $Option
             } | ConvertTo-Json -Depth 3 -Compress)
+            exit 0
+        } catch {
+            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
+            exit 1
+        }
+    }
+
+    "get-text" {
+        Ensure-Desktop
+        if ($Hwnd -le 0) {
+            Write-Output (@{ ok = $false; error = "Hwnd inválido o no especificado." } | ConvertTo-Json -Compress)
+            exit 1
+        }
+        try {
+            $rootElem = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
+            $condition = [System.Windows.Automation.Condition]::TrueCondition
+            if ($ControlType -and $ControlType -ne "Any") {
+                $typeField = [System.Windows.Automation.ControlType].GetField($ControlType)
+                if ($typeField) {
+                    $cType = $typeField.GetValue($null)
+                    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $cType)
+                }
+            }
+
+            $elements = $rootElem.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+            $target = $null
+            foreach ($el in $elements) {
+                try {
+                    $name = $el.Current.Name
+                    $autoId = $el.Current.AutomationId
+                    if (-not $NamePattern -and -not $AutomationId) {
+                        $target = $el
+                        break
+                    }
+                    if ($NamePattern -and $name -and ($name -like "*$NamePattern*" -or $name -match [regex]::Escape($NamePattern))) {
+                        $target = $el
+                        break
+                    }
+                    if ($AutomationId -and $autoId -and ($autoId -eq $AutomationId)) {
+                        $target = $el
+                        break
+                    }
+                } catch {}
+            }
+
+            if (-not $target) {
+                Write-Output (@{ ok = $false; error = "Elemento no encontrado para lectura de texto." } | ConvertTo-Json -Compress)
+                exit 1
+            }
+
+            $extractedText = ""
+            try {
+                $vp = $target.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+                if ($vp) { $extractedText = $vp.Current.Value }
+            } catch {}
+
+            if (-not $extractedText) {
+                try {
+                    $tp = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+                    if ($tp) { $extractedText = $tp.DocumentRange.GetText(-1) }
+                } catch {}
+            }
+
+            if (-not $extractedText) {
+                $extractedText = $target.Current.Name
+            }
+
+            Write-Output (@{
+                ok = $true
+                text = $extractedText
+                element = (Format-Element $target)
+            } | ConvertTo-Json -Depth 3 -Compress)
+            exit 0
+        } catch {
+            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
+            exit 1
+        }
+    }
+
+    "close-window" {
+        Ensure-Desktop
+        if ($Hwnd -le 0) {
+            Write-Output (@{ ok = $false; error = "Hwnd inválido o no especificado." } | ConvertTo-Json -Compress)
+            exit 1
+        }
+        try {
+            $rootElem = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
+            $closed = $false
+            try {
+                $winPattern = $rootElem.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+                if ($winPattern) {
+                    $winPattern.Close()
+                    $closed = $true
+                }
+            } catch {}
+
+            if (-not $closed) {
+                [UiWin32]::PostMessage([IntPtr]$Hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+                $closed = $true
+            }
+
+            Write-Output (@{ ok = $true; closed = $true; hwnd = $Hwnd } | ConvertTo-Json -Compress)
             exit 0
         } catch {
             Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
