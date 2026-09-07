@@ -45,6 +45,12 @@ class BrowserService {
             throw new Error('No se encontró Google Chrome ni Microsoft Edge instalado en el sistema.');
         }
 
+        if (this.browser && (!this.browser.isConnected || !this.browser.isConnected())) {
+            this.browser = null;
+            this.context = null;
+            this.activePage = null;
+        }
+
         if (!this.browser) {
             const headless = options.headless !== undefined ? options.headless : true;
             this.browser = await chromium.launch({
@@ -311,6 +317,95 @@ class BrowserService {
             ok: true,
             url: this.activePage.url()
         };
+    }
+
+    /**
+     * Selecciona una opción en un <select> HTML.
+     */
+    async selectOption(selector, value, options = {}) {
+        await this.ensureBrowser(options);
+        const locator = this.activePage.locator(selector).first();
+        await locator.selectOption(value, { timeout: options.timeout || 8000 });
+        return { ok: true, selector, value };
+    }
+
+    /**
+     * Marca un checkbox.
+     */
+    async check(selector, options = {}) {
+        await this.ensureBrowser(options);
+        const locator = this.activePage.locator(selector).first();
+        await locator.check({ timeout: options.timeout || 8000 });
+        return { ok: true, selector, checked: true };
+    }
+
+    /**
+     * Desmarca un checkbox.
+     */
+    async uncheck(selector, options = {}) {
+        await this.ensureBrowser(options);
+        const locator = this.activePage.locator(selector).first();
+        await locator.uncheck({ timeout: options.timeout || 8000 });
+        return { ok: true, selector, checked: false };
+    }
+
+    /**
+     * Espera a que un selector esté presente y visible en el DOM.
+     */
+    async waitForSelector(selector, options = {}) {
+        await this.ensureBrowser(options);
+        const locator = this.activePage.locator(selector).first();
+        await locator.waitFor({ state: options.state || 'visible', timeout: options.timeout || 10000 });
+        return { ok: true, selector };
+    }
+
+    /**
+     * Lista todas las pestañas abiertas en el contexto actual.
+     */
+    async listTabs() {
+        if (!this.context) return [];
+        const pages = this.context.pages();
+        const tabs = [];
+        for (let i = 0; i < pages.length; i++) {
+            const p = pages[i];
+            tabs.push({
+                index: i,
+                url: p.url(),
+                title: await p.title().catch(() => ''),
+                isActive: p === this.activePage
+            });
+        }
+        return tabs;
+    }
+
+    /**
+     * Cambia la pestaña activa por índice o coincidencia de URL/Título.
+     */
+    async switchTab(target) {
+        if (!this.context) throw new Error('No hay contexto de navegador activo.');
+        const pages = this.context.pages();
+        if (pages.length === 0) throw new Error('No hay pestañas abiertas.');
+
+        if (typeof target === 'number') {
+            if (target >= 0 && target < pages.length) {
+                this.activePage = pages[target];
+                await this.activePage.bringToFront().catch(() => {});
+                return { ok: true, index: target, url: this.activePage.url() };
+            }
+            throw new Error(`Índice de pestaña fuera de rango: ${target}`);
+        }
+
+        for (let i = 0; i < pages.length; i++) {
+            const p = pages[i];
+            const title = await p.title().catch(() => '');
+            if (p.url().includes(target) || title.includes(target)) {
+                this.activePage = p;
+                await this.activePage.bringToFront().catch(() => {});
+                return { ok: true, index: i, url: this.activePage.url(), title };
+            }
+        }
+
+        throw new Error(`No se encontró ninguna pestaña que coincida con: ${target}`);
     }
 
     /**
