@@ -1,4 +1,3 @@
-# PowerShell UI Automation Bridge for Jarvis
 param (
     [string]$Action = "list-windows",
     [string]$TitlePattern = "",
@@ -22,626 +21,576 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Windows.Automation;
 
-public class UiWin32 {
-    [DllImport("user32.dll")]
-    public static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetThreadDesktop(IntPtr hDesktop);
-
-    [DllImport("user32.dll")]
-    public static extern bool CloseDesktop(IntPtr hDesktop);
-
-    [DllImport("user32.dll")]
-    public static extern bool EnumDesktopWindows(IntPtr hDesktop, EnumWindowsProc lpfn, IntPtr lParam);
+public class NativeBridge {
+    [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+    [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool SetThreadDesktop(IntPtr hDesktop);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool CloseDesktop(IntPtr hDesktop);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool EnumDesktopWindows(IntPtr hDesktop, EnumWindowsProc lpfn, IntPtr lParam);
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-
-    [DllImport("user32.dll")]
-    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-
-    [DllImport("user32.dll")]
-    public static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetCursorPos(int x, int y);
-
-    [DllImport("user32.dll")]
-    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
-
-    [DllImport("user32.dll")]
-    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [DllImport("user32.dll")]
-    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool EnumWindows(EnumWindowsProc lpfn, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+    [DllImport("user32.dll")] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
-
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
+    public const uint WM_CLOSE = 0x0010;
 
-    public class WindowEntry {
-        public long Hwnd;
-        public string Title;
-        public string ClassName;
-        public uint ProcessId;
+    public static string EscapeJson(string s) {
+        if (s == null) return "";
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n");
     }
 
-    public static List<WindowEntry> GetDesktopWindows() {
-        var list = new List<WindowEntry>();
-        IntPtr hDesk = OpenInputDesktop(0, false, 0x01ff);
+    public static string FormatElemJson(AutomationElement el) {
+        if (el == null) return "null";
+        try {
+            var cur = el.Current;
+            var r = cur.BoundingRectangle;
+            bool hasCoords = (r.X != double.PositiveInfinity && r.Width > 0);
+            string val = null;
+            try {
+                object vpObj;
+                if (el.TryGetCurrentPattern(ValuePattern.Pattern, out vpObj)) {
+                    val = ((ValuePattern)vpObj).Current.Value;
+                }
+            } catch {}
+
+            string cType = cur.ControlType.ProgrammaticName.Replace("ControlType.", "");
+            string boundsJson = hasCoords ? string.Format("{{\"x\":{0},\"y\":{1},\"width\":{2},\"height\":{3},\"centerX\":{4},\"centerY\":{5}}}",
+                (int)r.X, (int)r.Y, (int)r.Width, (int)r.Height, (int)(r.X + r.Width/2), (int)(r.Y + r.Height/2)) : "null";
+
+            return string.Format("{{\"name\":\"{0}\",\"value\":{1},\"automationId\":\"{2}\",\"controlType\":\"{3}\",\"className\":\"{4}\",\"isEnabled\":{5},\"isOffscreen\":{6},\"bounds\":{7}}}",
+                EscapeJson(cur.Name), val == null ? "null" : ("\"" + EscapeJson(val) + "\""), EscapeJson(cur.AutomationId), cType, EscapeJson(cur.ClassName),
+                cur.IsEnabled ? "true" : "false", cur.IsOffscreen ? "true" : "false", boundsJson);
+        } catch {
+            return "null";
+        }
+    }
+
+    public static T RunInDesktop<T>(Func<T> action) {
+        T result = default(T);
+        Exception exOccurred = null;
+        Thread t = new Thread(() => {
+            IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01ff);
+            if (hDesk == IntPtr.Zero) hDesk = OpenInputDesktop(0, false, 0x01ff);
+            if (hDesk != IntPtr.Zero) {
+                SetThreadDesktop(hDesk);
+            }
+            try {
+                result = action();
+            } catch (Exception ex) {
+                exOccurred = ex;
+            } finally {
+                if (hDesk != IntPtr.Zero) CloseDesktop(hDesk);
+            }
+        });
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+        t.Join();
+        if (exOccurred != null) throw exOccurred;
+        return result;
+    }
+
+    public static string ListWindowsJson() {
+        var sb = new StringBuilder();
+        sb.Append("{\"ok\":true,\"windows\":[");
+        bool first = true;
+
+        IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01ff);
+        if (hDesk == IntPtr.Zero) hDesk = OpenInputDesktop(0, false, 0x01ff);
+
         if (hDesk != IntPtr.Zero) {
-            SetThreadDesktop(hDesk);
+            EnumDesktopWindows(hDesk, (hWnd, lParam) => {
+                if (IsWindowVisible(hWnd)) {
+                    var titleBuf = new StringBuilder(512);
+                    int len = GetWindowText(hWnd, titleBuf, 512);
+                    if (len > 0) {
+                        var classBuf = new StringBuilder(256);
+                        GetClassName(hWnd, classBuf, 256);
+                        uint pid;
+                        GetWindowThreadProcessId(hWnd, out pid);
+                        if (!first) sb.Append(",");
+                        sb.AppendFormat("{{\"Hwnd\":{0},\"Title\":\"{1}\",\"ClassName\":\"{2}\",\"ProcessId\":{3}}}",
+                            (long)hWnd, EscapeJson(titleBuf.ToString()), EscapeJson(classBuf.ToString()), pid);
+                        first = false;
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+            CloseDesktop(hDesk);
+        } else {
+            EnumWindows((hWnd, lParam) => {
+                if (IsWindowVisible(hWnd)) {
+                    var titleBuf = new StringBuilder(512);
+                    int len = GetWindowText(hWnd, titleBuf, 512);
+                    if (len > 0) {
+                        var classBuf = new StringBuilder(256);
+                        GetClassName(hWnd, classBuf, 256);
+                        uint pid;
+                        GetWindowThreadProcessId(hWnd, out pid);
+                        if (!first) sb.Append(",");
+                        sb.AppendFormat("{{\"Hwnd\":{0},\"Title\":\"{1}\",\"ClassName\":\"{2}\",\"ProcessId\":{3}}}",
+                            (long)hWnd, EscapeJson(titleBuf.ToString()), EscapeJson(classBuf.ToString()), pid);
+                        first = false;
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+        sb.Append("]}");
+        return sb.ToString();
+    }
+
+    public static string FindWindowJson(string pattern) {
+        string clean = pattern ?? "";
+        if (clean.StartsWith("/") && clean.Contains("/")) {
+            var m = Regex.Match(clean, "^/(.+)/[a-z]*$");
+            if (m.Success) clean = m.Groups[1].Value;
         }
 
-        EnumDesktopWindows(hDesk, (hWnd, lParam) => {
-            if (IsWindowVisible(hWnd)) {
-                var sb = new StringBuilder(512);
-                int len = GetWindowText(hWnd, sb, 512);
-                if (len > 0) {
-                    var cb = new StringBuilder(256);
-                    GetClassName(hWnd, cb, 256);
-                    uint pid;
-                    GetWindowThreadProcessId(hWnd, out pid);
-                    list.Add(new WindowEntry {
-                        Hwnd = (long)hWnd,
-                        Title = sb.ToString(),
-                        ClassName = cb.ToString(),
-                        ProcessId = pid
-                    });
-                }
-            }
-            return true;
-        }, IntPtr.Zero);
+        IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01ff);
+        if (hDesk == IntPtr.Zero) hDesk = OpenInputDesktop(0, false, 0x01ff);
 
+        var matched = new List<string>();
         if (hDesk != IntPtr.Zero) {
+            EnumDesktopWindows(hDesk, (hWnd, lParam) => {
+                if (IsWindowVisible(hWnd)) {
+                    var titleBuf = new StringBuilder(512);
+                    int len = GetWindowText(hWnd, titleBuf, 512);
+                    if (len > 0) {
+                        string title = titleBuf.ToString();
+                        bool isMatch = false;
+                        if (string.IsNullOrEmpty(clean)) isMatch = true;
+                        else {
+                            try {
+                                if (Regex.IsMatch(title, clean, RegexOptions.IgnoreCase)) isMatch = true;
+                            } catch {
+                                if (title.IndexOf(clean, StringComparison.OrdinalIgnoreCase) >= 0) isMatch = true;
+                            }
+                        }
+                        if (isMatch) {
+                            var classBuf = new StringBuilder(256);
+                            GetClassName(hWnd, classBuf, 256);
+                            uint pid;
+                            GetWindowThreadProcessId(hWnd, out pid);
+                            matched.Add(string.Format("{{\"Hwnd\":{0},\"Title\":\"{1}\",\"ClassName\":\"{2}\",\"ProcessId\":{3}}}",
+                                (long)hWnd, EscapeJson(title), EscapeJson(classBuf.ToString()), pid));
+                        }
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
             CloseDesktop(hDesk);
         }
-        return list;
+
+        if (matched.Count > 0) {
+            matched.Sort((a, b) => {
+                bool aApp = a.Contains("\"ClassName\":\"ApplicationFrameWindow\"");
+                bool bApp = b.Contains("\"ClassName\":\"ApplicationFrameWindow\"");
+                if (aApp && !bApp) return -1;
+                if (!aApp && bApp) return 1;
+                return 0;
+            });
+            return string.Format("{{\"ok\":true,\"matched\":true,\"window\":{0},\"candidates\":[{1}]}}",
+                matched[0], string.Join(",", matched.ToArray()));
+        } else {
+            return "{\"ok\":true,\"matched\":false,\"window\":null,\"candidates\":[]}";
+        }
     }
 
-    public static void SimulateClick(int x, int y) {
-        SetCursorPos(x, y);
-        System.Threading.Thread.Sleep(50);
-        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-        System.Threading.Thread.Sleep(50);
-        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+    public static string FindElementsJson(long hwnd, string controlType, string namePattern, string autoId) {
+        return RunInDesktop(() => {
+            try {
+                ShowWindow((IntPtr)hwnd, 9);
+                SetForegroundWindow((IntPtr)hwnd);
+                AutomationElement root = AutomationElement.FromHandle((IntPtr)hwnd);
+                if (root == null) return "{\"ok\":true,\"count\":0,\"elements\":[]}";
+
+                Condition cond = Condition.TrueCondition;
+                if (!string.IsNullOrEmpty(controlType) && controlType != "Any") {
+                    var f = typeof(ControlType).GetField(controlType);
+                    if (f != null) cond = new PropertyCondition(AutomationElement.ControlTypeProperty, (ControlType)f.GetValue(null));
+                }
+
+                var elements = root.FindAll(TreeScope.Descendants, cond);
+                var list = new List<string>();
+                foreach (AutomationElement el in elements) {
+                    try {
+                        string name = el.Current.Name ?? "";
+                        string aid = el.Current.AutomationId ?? "";
+                        bool matchName = true;
+                        if (!string.IsNullOrEmpty(namePattern)) {
+                            matchName = (name.IndexOf(namePattern, StringComparison.OrdinalIgnoreCase) >= 0 || Regex.IsMatch(name, Regex.Escape(namePattern), RegexOptions.IgnoreCase));
+                        }
+                        bool matchId = true;
+                        if (!string.IsNullOrEmpty(autoId)) {
+                            matchId = (aid == autoId || aid.IndexOf(autoId, StringComparison.OrdinalIgnoreCase) >= 0);
+                        }
+                        if (matchName && matchId) {
+                            string elemJson = FormatElemJson(el);
+                            if (elemJson != "null") list.Add(elemJson);
+                        }
+                    } catch {}
+                }
+
+                return string.Format("{{\"ok\":true,\"count\":{0},\"elements\":[{1}]}}", list.Count, string.Join(",", list.ToArray()));
+            } catch (ElementNotAvailableException) {
+                return "{\"ok\":true,\"count\":0,\"elements\":[]}";
+            } catch (Exception ex) {
+                return string.Format("{{\"ok\":false,\"error\":\"{0}\"}}", EscapeJson(ex.Message));
+            }
+        });
+    }
+
+    public static string ClickElementJson(long hwnd, string namePattern, string autoId, string controlType) {
+        return RunInDesktop(() => {
+            try {
+                ShowWindow((IntPtr)hwnd, 9);
+                SetForegroundWindow((IntPtr)hwnd);
+                AutomationElement root = AutomationElement.FromHandle((IntPtr)hwnd);
+                if (root == null) return "{\"ok\":false,\"error\":\"Window not found\"}";
+
+                Condition cond = Condition.TrueCondition;
+                if (!string.IsNullOrEmpty(controlType) && controlType != "Any") {
+                    var f = typeof(ControlType).GetField(controlType);
+                    if (f != null) cond = new PropertyCondition(AutomationElement.ControlTypeProperty, (ControlType)f.GetValue(null));
+                }
+
+                var elements = root.FindAll(TreeScope.Descendants, cond);
+                AutomationElement target = null;
+                foreach (AutomationElement el in elements) {
+                    try {
+                        string name = el.Current.Name ?? "";
+                        string aid = el.Current.AutomationId ?? "";
+                        if (!string.IsNullOrEmpty(autoId) && aid == autoId) { target = el; break; }
+                        if (!string.IsNullOrEmpty(namePattern) && (name.IndexOf(namePattern, StringComparison.OrdinalIgnoreCase) >= 0 || Regex.IsMatch(name, Regex.Escape(namePattern), RegexOptions.IgnoreCase))) {
+                            target = el;
+                            break;
+                        }
+                    } catch {}
+                }
+
+                if (target == null) return string.Format("{{\"ok\":false,\"error\":\"Element not found: name='{0}', id='{1}'\"}}", EscapeJson(namePattern), EscapeJson(autoId));
+
+                string methodUsed = "none";
+                object invObj;
+                if (target.TryGetCurrentPattern(InvokePattern.Pattern, out invObj)) {
+                    ((InvokePattern)invObj).Invoke();
+                    methodUsed = "InvokePattern";
+                } else {
+                    object togObj;
+                    if (target.TryGetCurrentPattern(TogglePattern.Pattern, out togObj)) {
+                        ((TogglePattern)togObj).Toggle();
+                        methodUsed = "TogglePattern";
+                    } else {
+                        var r = target.Current.BoundingRectangle;
+                        if (r.X != double.PositiveInfinity && r.Width > 0) {
+                            int cx = (int)(r.X + r.Width/2);
+                            int cy = (int)(r.Y + r.Height/2);
+                            SetCursorPos(cx, cy);
+                            Thread.Sleep(50);
+                            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                            Thread.Sleep(50);
+                            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+                            methodUsed = string.Format("CoordinateFallback ({0}, {1})", cx, cy);
+                        }
+                    }
+                }
+
+                return string.Format("{{\"ok\":true,\"element\":{0},\"method\":\"{1}\"}}", FormatElemJson(target), methodUsed);
+            } catch (ElementNotAvailableException) {
+                return "{\"ok\":false,\"error\":\"Element not available\"}";
+            } catch (Exception ex) {
+                return string.Format("{{\"ok\":false,\"error\":\"{0}\"}}", EscapeJson(ex.Message));
+            }
+        });
+    }
+
+    public static string GetTextJson(long hwnd, string namePattern, string autoId, string controlType) {
+        return RunInDesktop(() => {
+            try {
+                ShowWindow((IntPtr)hwnd, 9);
+                SetForegroundWindow((IntPtr)hwnd);
+                AutomationElement root = AutomationElement.FromHandle((IntPtr)hwnd);
+                if (root == null) return "{\"ok\":false,\"error\":\"Window not found\"}";
+
+                Condition cond = Condition.TrueCondition;
+                if (!string.IsNullOrEmpty(controlType) && controlType != "Any") {
+                    var f = typeof(ControlType).GetField(controlType);
+                    if (f != null) cond = new PropertyCondition(AutomationElement.ControlTypeProperty, (ControlType)f.GetValue(null));
+                }
+
+                var elements = root.FindAll(TreeScope.Descendants, cond);
+                AutomationElement target = null;
+                if (string.IsNullOrEmpty(namePattern) && string.IsNullOrEmpty(autoId)) {
+                    // If controlType is Any, prefer Edit or Document if available
+                    if (controlType == "Any" || string.IsNullOrEmpty(controlType)) {
+                        foreach (AutomationElement el in elements) {
+                            try {
+                                string ct = el.Current.ControlType.ProgrammaticName;
+                                if (ct.Contains("Edit") || ct.Contains("Document")) {
+                                    target = el;
+                                    break;
+                                }
+                            } catch {}
+                        }
+                    }
+                    if (target == null && elements.Count > 0) target = elements[0];
+                } else {
+                    foreach (AutomationElement el in elements) {
+                        try {
+                            string name = el.Current.Name ?? "";
+                            string aid = el.Current.AutomationId ?? "";
+                            if (!string.IsNullOrEmpty(autoId) && aid == autoId) { target = el; break; }
+                            if (!string.IsNullOrEmpty(namePattern) && (name.IndexOf(namePattern, StringComparison.OrdinalIgnoreCase) >= 0 || Regex.IsMatch(name, Regex.Escape(namePattern), RegexOptions.IgnoreCase))) {
+                                target = el;
+                                break;
+                            }
+                        } catch {}
+                    }
+                }
+
+                if (target == null) return "{\"ok\":false,\"error\":\"Element not found for get-text\"}";
+
+                string text = "";
+                try {
+                    object vpObj;
+                    if (target.TryGetCurrentPattern(ValuePattern.Pattern, out vpObj)) text = ((ValuePattern)vpObj).Current.Value;
+                } catch {}
+
+                if (string.IsNullOrEmpty(text)) {
+                    try {
+                        object tpObj;
+                        if (target.TryGetCurrentPattern(TextPattern.Pattern, out tpObj)) text = ((TextPattern)tpObj).DocumentRange.GetText(-1);
+                    } catch {}
+                }
+
+                if (string.IsNullOrEmpty(text)) {
+                    text = target.Current.Name ?? "";
+                }
+
+                return string.Format("{{\"ok\":true,\"text\":\"{0}\",\"element\":{1}}}", EscapeJson(text), FormatElemJson(target));
+            } catch (ElementNotAvailableException) {
+                return "{\"ok\":false,\"error\":\"Element not available\"}";
+            } catch (Exception ex) {
+                return string.Format("{{\"ok\":false,\"error\":\"{0}\"}}", EscapeJson(ex.Message));
+            }
+        });
+    }
+
+    public static string SetTextJson(long hwnd, string namePattern, string autoId, string text) {
+        return RunInDesktop(() => {
+            try {
+                ShowWindow((IntPtr)hwnd, 9);
+                SetForegroundWindow((IntPtr)hwnd);
+                AutomationElement root = AutomationElement.FromHandle((IntPtr)hwnd);
+                if (root == null) return "{\"ok\":false,\"error\":\"Window not found\"}";
+
+                var orCond = new OrCondition(
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document)
+                );
+
+                var elements = root.FindAll(TreeScope.Descendants, orCond);
+                AutomationElement target = null;
+                if (string.IsNullOrEmpty(namePattern) && string.IsNullOrEmpty(autoId)) {
+                    if (elements.Count > 0) target = elements[0];
+                } else {
+                    foreach (AutomationElement el in elements) {
+                        try {
+                            string name = el.Current.Name ?? "";
+                            string aid = el.Current.AutomationId ?? "";
+                            if (!string.IsNullOrEmpty(autoId) && aid == autoId) { target = el; break; }
+                            if (!string.IsNullOrEmpty(namePattern) && (name.IndexOf(namePattern, StringComparison.OrdinalIgnoreCase) >= 0 || Regex.IsMatch(name, Regex.Escape(namePattern), RegexOptions.IgnoreCase))) {
+                                target = el;
+                                break;
+                            }
+                        } catch {}
+                    }
+                }
+
+                if (target == null) return "{\"ok\":false,\"error\":\"Editable element not found\"}";
+
+                string method = "none";
+                try {
+                    object vpObj;
+                    if (target.TryGetCurrentPattern(ValuePattern.Pattern, out vpObj)) {
+                        ((ValuePattern)vpObj).SetValue(text);
+                        method = "ValuePattern";
+                    }
+                } catch {}
+
+                if (method == "none") {
+                    target.SetFocus();
+                    Thread.Sleep(100);
+                    System.Windows.Forms.SendKeys.SendWait("^{A}");
+                    System.Windows.Forms.SendKeys.SendWait("{BACKSPACE}");
+                    System.Windows.Forms.SendKeys.SendWait(text);
+                    method = "SendKeysFallback";
+                }
+
+                return string.Format("{{\"ok\":true,\"method\":\"{0}\",\"textSet\":\"{1}\",\"element\":{2}}}",
+                    method, EscapeJson(text), FormatElemJson(target));
+            } catch (ElementNotAvailableException) {
+                return "{\"ok\":false,\"error\":\"Element not available\"}";
+            } catch (Exception ex) {
+                return string.Format("{{\"ok\":false,\"error\":\"{0}\"}}", EscapeJson(ex.Message));
+            }
+        });
+    }
+
+    public static string CloseWindowJson(long hwnd) {
+        return RunInDesktop(() => {
+            bool closed = false;
+            try {
+                AutomationElement root = AutomationElement.FromHandle((IntPtr)hwnd);
+                if (root != null) {
+                    object wpObj;
+                    if (root.TryGetCurrentPattern(WindowPattern.Pattern, out wpObj)) {
+                        ((WindowPattern)wpObj).Close();
+                        closed = true;
+                    }
+                }
+            } catch {}
+
+            if (!closed) {
+                PostMessage((IntPtr)hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                closed = true;
+            }
+
+            return string.Format("{{\"ok\":true,\"closed\":{0},\"hwnd\":{1}}}", closed ? "true" : "false", hwnd);
+        });
+    }
+
+    public static string SelectOptionJson(long hwnd, string option) {
+        return RunInDesktop(() => {
+            SetForegroundWindow((IntPtr)hwnd);
+            AutomationElement root = AutomationElement.FromHandle((IntPtr)hwnd);
+            if (root == null) return "{\"ok\":false,\"error\":\"Window not found\"}";
+
+            var elements = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+            AutomationElement target = null;
+            foreach (AutomationElement el in elements) {
+                try {
+                    string name = el.Current.Name ?? "";
+                    if (!string.IsNullOrEmpty(name) && (name == option || name.IndexOf(option, StringComparison.OrdinalIgnoreCase) >= 0 || Regex.IsMatch(name, Regex.Escape(option), RegexOptions.IgnoreCase))) {
+                        target = el;
+                        break;
+                    }
+                } catch {}
+            }
+
+            if (target == null) return string.Format("{{\"ok\":false,\"error\":\"Option '{0}' not found\"}}", EscapeJson(option));
+
+            string method = "none";
+            object selObj;
+            if (target.TryGetCurrentPattern(SelectionItemPattern.Pattern, out selObj)) {
+                ((SelectionItemPattern)selObj).Select();
+                method = "SelectionItemPattern";
+            } else {
+                object invObj;
+                if (target.TryGetCurrentPattern(InvokePattern.Pattern, out invObj)) {
+                    ((InvokePattern)invObj).Invoke();
+                    method = "InvokePattern";
+                } else {
+                    var r = target.Current.BoundingRectangle;
+                    if (r.X != double.PositiveInfinity && r.Width > 0) {
+                        int cx = (int)(r.X + r.Width/2);
+                        int cy = (int)(r.Y + r.Height/2);
+                        SetCursorPos(cx, cy);
+                        Thread.Sleep(50);
+                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                        Thread.Sleep(50);
+                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+                        method = string.Format("CoordinateFallback ({0}, {1})", cx, cy);
+                    }
+                }
+            }
+
+            return string.Format("{{\"ok\":true,\"method\":\"{0}\",\"selectedOption\":\"{1}\",\"element\":{2}}}",
+                method, EscapeJson(option), FormatElemJson(target));
+        });
+    }
+
+    public static string MoveWindowJson(long hwnd, int x, int y, int width, int height) {
+        return RunInDesktop(() => {
+            RECT r = new RECT();
+            bool hasRect = GetWindowRect((IntPtr)hwnd, out r);
+            int curW = hasRect ? (r.Right - r.Left) : 800;
+            int curH = hasRect ? (r.Bottom - r.Top) : 600;
+            int curX = hasRect ? r.Left : 100;
+            int curY = hasRect ? r.Top : 100;
+
+            int newX = x >= 0 ? x : curX;
+            int newY = y >= 0 ? y : curY;
+            int newW = width > 0 ? width : curW;
+            int newH = height > 0 ? height : curH;
+
+            bool moved = SetWindowPos((IntPtr)hwnd, IntPtr.Zero, newX, newY, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
+            return string.Format("{{\"ok\":true,\"moved\":{0},\"bounds\":{{\"x\":{1},\"y\":{2},\"width\":{3},\"height\":{4}}},\"hwnd\":{5}}}",
+                moved ? "true" : "false", newX, newY, newW, newH, hwnd);
+        });
     }
 }
 "@
 
-Add-Type -TypeDefinition $csharp -ErrorAction SilentlyContinue
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-
-function Ensure-Desktop {
-    $hDesk = [UiWin32]::OpenInputDesktop(0, $false, 0x01ff)
-    if ($hDesk -ne [IntPtr]::Zero) {
-        $null = [UiWin32]::SetThreadDesktop($hDesk)
-    }
-}
-
-function Format-Element($elem) {
-    if (-not $elem) { return $null }
-    try {
-        $cur = $elem.Current
-        $rect = $cur.BoundingRectangle
-        $hasCoords = ($rect.X -ne [double]::PositiveInfinity -and $rect.Width -gt 0)
-        $val = $null
-        try {
-            $vp = $elem.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-            if ($vp) { $val = $vp.Current.Value }
-        } catch {}
-
-        return @{
-            name = $cur.Name
-            value = $val
-            automationId = $cur.AutomationId
-            controlType = $cur.ControlType.ProgrammaticName.Replace("ControlType.", "")
-            className = $cur.ClassName
-            isEnabled = $cur.IsEnabled
-            isOffscreen = $cur.IsOffscreen
-            bounds = @{
-                x = if ($hasCoords) { [int]$rect.X } else { $null }
-                y = if ($hasCoords) { [int]$rect.Y } else { $null }
-                width = if ($hasCoords) { [int]$rect.Width } else { $null }
-                height = if ($hasCoords) { [int]$rect.Height } else { $null }
-                centerX = if ($hasCoords) { [int]($rect.X + ($rect.Width / 2)) } else { $null }
-                centerY = if ($hasCoords) { [int]($rect.Y + ($rect.Height / 2)) } else { $null }
-            }
-        }
-    } catch {
-        return @{ error = $_.Exception.Message }
-    }
-}
+Add-Type -TypeDefinition $csharp -ReferencedAssemblies "UIAutomationClient", "UIAutomationTypes", "WindowsBase", "System.Windows.Forms" -ErrorAction SilentlyContinue
 
 switch ($Action.ToLower()) {
     "list-windows" {
-        $wins = [UiWin32]::GetDesktopWindows()
-        $result = @{ ok = $true; windows = $wins }
-        Write-Output ($result | ConvertTo-Json -Depth 3 -Compress)
+        Write-Output ([NativeBridge]::ListWindowsJson())
         exit 0
     }
-
     "find-window" {
-        $wins = [UiWin32]::GetDesktopWindows()
-        $matched = @()
-        $cleanPattern = $TitlePattern
-        if ($cleanPattern -match '^/(.+)/[a-z]*$') {
-            $cleanPattern = $matches[1]
-        }
-        foreach ($w in $wins) {
-            if (-not $cleanPattern) {
-                $matched += $w
-            } elseif ($w.Title -match $cleanPattern -or $w.Title -like "*$cleanPattern*") {
-                $matched += $w
-            }
-        }
-        $result = @{
-            ok = $true
-            matched = ($matched.Count -gt 0)
-            window = if ($matched.Count -gt 0) { $matched[0] } else { $null }
-            candidates = $matched
-        }
-        Write-Output ($result | ConvertTo-Json -Depth 3 -Compress)
+        Write-Output ([NativeBridge]::FindWindowJson($TitlePattern))
         exit 0
     }
-
     "find-elements" {
-        Ensure-Desktop
-        if ($Hwnd -le 0) {
-            Write-Output (@{ ok = $false; error = "Hwnd inválido o no especificado." } | ConvertTo-Json -Compress)
-            exit 1
-        }
-        try {
-            $rootElem = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
-            if (-not $rootElem) {
-                Write-Output (@{ ok = $false; error = "No se pudo obtener AutomationElement para el Hwnd $Hwnd." } | ConvertTo-Json -Compress)
-                exit 1
-            }
-
-            $condition = [System.Windows.Automation.Condition]::TrueCondition
-            if ($ControlType -and $ControlType -ne "Any") {
-                $typeField = [System.Windows.Automation.ControlType].GetField($ControlType)
-                if ($typeField) {
-                    $cType = $typeField.GetValue($null)
-                    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $cType)
-                }
-            }
-
-            $elements = $rootElem.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-            $list = @()
-            foreach ($el in $elements) {
-                try {
-                    $name = $el.Current.Name
-                    $autoId = $el.Current.AutomationId
-                    
-                    $nameMatches = $true
-                    if ($NamePattern) {
-                        $nameMatches = ($name -and ($name -like "*$NamePattern*" -or $name -match [regex]::Escape($NamePattern)))
-                    }
-                    $idMatches = $true
-                    if ($AutomationId) {
-                        $idMatches = ($autoId -and ($autoId -eq $AutomationId -or $autoId -like "*$AutomationId*"))
-                    }
-
-                    if ($nameMatches -and $idMatches) {
-                        $formatted = Format-Element $el
-                        if ($formatted) { $list += $formatted }
-                    }
-                } catch {}
-            }
-
-            $result = @{
-                ok = $true
-                count = $list.Count
-                elements = $list
-            }
-            Write-Output ($result | ConvertTo-Json -Depth 4 -Compress)
-            exit 0
-        } catch {
-            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
-            exit 1
-        }
+        Write-Output ([NativeBridge]::FindElementsJson($Hwnd, $ControlType, $NamePattern, $AutomationId))
+        exit 0
     }
-
     "click-element" {
-        Ensure-Desktop
-        if ($Hwnd -le 0) {
-            Write-Output (@{ ok = $false; error = "Hwnd inválido." } | ConvertTo-Json -Compress)
-            exit 1
-        }
-        try {
-            [UiWin32]::SetForegroundWindow([IntPtr]$Hwnd)
-            $rootElem = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
-            
-            $condition = [System.Windows.Automation.Condition]::TrueCondition
-            if ($ControlType -and $ControlType -ne "Any") {
-                $typeField = [System.Windows.Automation.ControlType].GetField($ControlType)
-                if ($typeField) {
-                    $cType = $typeField.GetValue($null)
-                    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $cType)
-                }
-            }
-
-            $elements = $rootElem.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-            $target = $null
-            foreach ($el in $elements) {
-                try {
-                    $name = $el.Current.Name
-                    $autoId = $el.Current.AutomationId
-                    if ($NamePattern -and $name -and ($name -like "*$NamePattern*" -or $name -match [regex]::Escape($NamePattern))) {
-                        $target = $el
-                        break
-                    }
-                    if ($AutomationId -and $autoId -and ($autoId -eq $AutomationId)) {
-                        $target = $el
-                        break
-                    }
-                } catch {}
-            }
-
-            if (-not $target) {
-                Write-Output (@{ ok = $false; error = "Elemento '$NamePattern' no encontrado en la ventana." } | ConvertTo-Json -Compress)
-                exit 1
-            }
-
-            $methodUsed = "none"
-            # 1. Intentar InvokePattern
-            try {
-                $invokePattern = $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                if ($invokePattern) {
-                    $invokePattern.Invoke()
-                    $methodUsed = "InvokePattern"
-                }
-            } catch {}
-
-            # 2. Intentar TogglePattern si no funcionó InvokePattern
-            if ($methodUsed -eq "none") {
-                try {
-                    $togglePattern = $target.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-                    if ($togglePattern) {
-                        $togglePattern.Toggle()
-                        $methodUsed = "TogglePattern"
-                    }
-                } catch {}
-            }
-
-            # 3. Fallback inteligente a coordenadas dinámicas del elemento
-            if ($methodUsed -eq "none") {
-                $rect = $target.Current.BoundingRectangle
-                if ($rect.X -ne [double]::PositiveInfinity -and $rect.Width -gt 0) {
-                    $cx = [int]($rect.X + ($rect.Width / 2))
-                    $cy = [int]($rect.Y + ($rect.Height / 2))
-                    [UiWin32]::SimulateClick($cx, $cy)
-                    $methodUsed = "CoordinateFallback ($cx, $cy)"
-                } else {
-                    Write-Output (@{ ok = $false; error = "El elemento no soporta patrones de invocación ni tiene coordenadas visibles." } | ConvertTo-Json -Compress)
-                    exit 1
-                }
-            }
-
-            Write-Output (@{
-                ok = $true
-                element = (Format-Element $target)
-                method = $methodUsed
-            } | ConvertTo-Json -Depth 3 -Compress)
-            exit 0
-        } catch {
-            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
-            exit 1
-        }
+        Write-Output ([NativeBridge]::ClickElementJson($Hwnd, $NamePattern, $AutomationId, $ControlType))
+        exit 0
     }
-
-    "set-text" {
-        Ensure-Desktop
-        if ($Hwnd -le 0) {
-            Write-Output (@{ ok = $false; error = "Hwnd inválido." } | ConvertTo-Json -Compress)
-            exit 1
-        }
-        try {
-            [UiWin32]::SetForegroundWindow([IntPtr]$Hwnd)
-            $rootElem = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
-
-            $editCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
-            $elements = $rootElem.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
-            $target = $null
-            foreach ($el in $elements) {
-                try {
-                    $name = $el.Current.Name
-                    $autoId = $el.Current.AutomationId
-                    if (-not $NamePattern -and -not $AutomationId) {
-                        # Si no se especifica, toma el primer campo editable
-                        $target = $el
-                        break
-                    }
-                    if ($NamePattern -and $name -and ($name -like "*$NamePattern*" -or $name -match [regex]::Escape($NamePattern))) {
-                        $target = $el
-                        break
-                    }
-                    if ($AutomationId -and $autoId -and ($autoId -eq $AutomationId)) {
-                        $target = $el
-                        break
-                    }
-                } catch {}
-            }
-
-            if (-not $target) {
-                Write-Output (@{ ok = $false; error = "Campo de texto '$NamePattern' no encontrado." } | ConvertTo-Json -Compress)
-                exit 1
-            }
-
-            $methodUsed = "none"
-            # 1. Intentar ValuePattern
-            try {
-                $valPattern = $target.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-                if ($valPattern -and -not $valPattern.Current.IsReadOnly) {
-                    $valPattern.SetValue($Text)
-                    $methodUsed = "ValuePattern"
-                }
-            } catch {}
-
-            # 2. Fallback a SetFocus + SendKeys
-            if ($methodUsed -eq "none") {
-                try {
-                    $target.SetFocus()
-                    Start-Sleep -Milliseconds 100
-                    [System.Windows.Forms.SendKeys]::SendWait("^{A}")
-                    [System.Windows.Forms.SendKeys]::SendWait("{BACKSPACE}")
-                    [System.Windows.Forms.SendKeys]::SendWait($Text)
-                    $methodUsed = "SendKeysFallback"
-                } catch {
-                    # Si forms no está, usar portapapeles
-                    Set-Clipboard -Value $Text
-                    [System.Windows.Forms.SendKeys]::SendWait("^{v}")
-                    $methodUsed = "ClipboardPasteFallback"
-                }
-            }
-
-            Write-Output (@{
-                ok = $true
-                element = (Format-Element $target)
-                method = $methodUsed
-                textSet = $Text
-            } | ConvertTo-Json -Depth 3 -Compress)
-            exit 0
-        } catch {
-            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
-            exit 1
-        }
-    }
-
-    "select-option" {
-        Ensure-Desktop
-        if ($Hwnd -le 0) {
-            Write-Output (@{ ok = $false; error = "Hwnd inválido." } | ConvertTo-Json -Compress)
-            exit 1
-        }
-        try {
-            [UiWin32]::SetForegroundWindow([IntPtr]$Hwnd)
-            $rootElem = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
-            
-            # Buscar elementos tipo ListItem o TabItem o MenuItem con el texto
-            $elements = $rootElem.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-            $target = $null
-            foreach ($el in $elements) {
-                try {
-                    $name = $el.Current.Name
-                    if ($name -and ($name -eq $Option -or $name -like "*$Option*" -or $name -match [regex]::Escape($Option))) {
-                        $target = $el
-                        break
-                    }
-                } catch {}
-            }
-
-            if (-not $target) {
-                Write-Output (@{ ok = $false; error = "Opción '$Option' no encontrada." } | ConvertTo-Json -Compress)
-                exit 1
-            }
-
-            $methodUsed = "none"
-            try {
-                $selPattern = $target.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
-                if ($selPattern) {
-                    $selPattern.Select()
-                    $methodUsed = "SelectionItemPattern"
-                }
-            } catch {}
-
-            if ($methodUsed -eq "none") {
-                try {
-                    $invokePattern = $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                    if ($invokePattern) {
-                        $invokePattern.Invoke()
-                        $methodUsed = "InvokePattern"
-                    }
-                } catch {}
-            }
-
-            if ($methodUsed -eq "none") {
-                $rect = $target.Current.BoundingRectangle
-                if ($rect.X -ne [double]::PositiveInfinity -and $rect.Width -gt 0) {
-                    $cx = [int]($rect.X + ($rect.Width / 2))
-                    $cy = [int]($rect.Y + ($rect.Height / 2))
-                    [UiWin32]::SimulateClick($cx, $cy)
-                    $methodUsed = "CoordinateFallback ($cx, $cy)"
-                }
-            }
-
-            Write-Output (@{
-                ok = $true
-                element = (Format-Element $target)
-                method = $methodUsed
-                selectedOption = $Option
-            } | ConvertTo-Json -Depth 3 -Compress)
-            exit 0
-        } catch {
-            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
-            exit 1
-        }
-    }
-
     "get-text" {
-        Ensure-Desktop
-        if ($Hwnd -le 0) {
-            Write-Output (@{ ok = $false; error = "Hwnd inválido o no especificado." } | ConvertTo-Json -Compress)
-            exit 1
-        }
-        try {
-            $rootElem = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
-            $condition = [System.Windows.Automation.Condition]::TrueCondition
-            if ($ControlType -and $ControlType -ne "Any") {
-                $typeField = [System.Windows.Automation.ControlType].GetField($ControlType)
-                if ($typeField) {
-                    $cType = $typeField.GetValue($null)
-                    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $cType)
-                }
-            }
-
-            $elements = $rootElem.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-            $target = $null
-            foreach ($el in $elements) {
-                try {
-                    $name = $el.Current.Name
-                    $autoId = $el.Current.AutomationId
-                    if (-not $NamePattern -and -not $AutomationId) {
-                        $target = $el
-                        break
-                    }
-                    if ($NamePattern -and $name -and ($name -like "*$NamePattern*" -or $name -match [regex]::Escape($NamePattern))) {
-                        $target = $el
-                        break
-                    }
-                    if ($AutomationId -and $autoId -and ($autoId -eq $AutomationId)) {
-                        $target = $el
-                        break
-                    }
-                } catch {}
-            }
-
-            if (-not $target) {
-                Write-Output (@{ ok = $false; error = "Elemento no encontrado para lectura de texto." } | ConvertTo-Json -Compress)
-                exit 1
-            }
-
-            $extractedText = ""
-            try {
-                $vp = $target.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-                if ($vp) { $extractedText = $vp.Current.Value }
-            } catch {}
-
-            if (-not $extractedText) {
-                try {
-                    $tp = $target.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-                    if ($tp) { $extractedText = $tp.DocumentRange.GetText(-1) }
-                } catch {}
-            }
-
-            if (-not $extractedText) {
-                $extractedText = $target.Current.Name
-            }
-
-            Write-Output (@{
-                ok = $true
-                text = $extractedText
-                element = (Format-Element $target)
-            } | ConvertTo-Json -Depth 3 -Compress)
-            exit 0
-        } catch {
-            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
-            exit 1
-        }
+        Write-Output ([NativeBridge]::GetTextJson($Hwnd, $NamePattern, $AutomationId, $ControlType))
+        exit 0
     }
-
+    "set-text" {
+        Write-Output ([NativeBridge]::SetTextJson($Hwnd, $NamePattern, $AutomationId, $Text))
+        exit 0
+    }
+    "select-option" {
+        Write-Output ([NativeBridge]::SelectOptionJson($Hwnd, $Option))
+        exit 0
+    }
     "close-window" {
-        Ensure-Desktop
-        if ($Hwnd -le 0) {
-            Write-Output (@{ ok = $false; error = "Hwnd inválido o no especificado." } | ConvertTo-Json -Compress)
-            exit 1
-        }
-        try {
-            $rootElem = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
-            $closed = $false
-            try {
-                $winPattern = $rootElem.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
-                if ($winPattern) {
-                    $winPattern.Close()
-                    $closed = $true
-                }
-            } catch {}
-
-            if (-not $closed) {
-                [UiWin32]::PostMessage([IntPtr]$Hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
-                $closed = $true
-            }
-
-            Write-Output (@{ ok = $true; closed = $true; hwnd = $Hwnd } | ConvertTo-Json -Compress)
-            exit 0
-        } catch {
-            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
-            exit 1
-        }
+        Write-Output ([NativeBridge]::CloseWindowJson($Hwnd))
+        exit 0
     }
-
     "move-window" {
-        Ensure-Desktop
-        if ($Hwnd -le 0) {
-            Write-Output (@{ ok = $false; error = "Hwnd inválido o no especificado." } | ConvertTo-Json -Compress)
-            exit 1
-        }
-        try {
-            $rect = New-Object UiWin32+RECT
-            $hasRect = [UiWin32]::GetWindowRect([IntPtr]$Hwnd, [ref]$rect)
-            
-            $curW = if ($hasRect) { $rect.Right - $rect.Left } else { 800 }
-            $curH = if ($hasRect) { $rect.Bottom - $rect.Top } else { 600 }
-            $curX = if ($hasRect) { $rect.Left } else { 100 }
-            $curY = if ($hasRect) { $rect.Top } else { 100 }
-
-            $newX = if ($X -ge 0) { $X } else { $curX }
-            $newY = if ($Y -ge 0) { $Y } else { $curY }
-            $newW = if ($Width -gt 0) { $Width } else { $curW }
-            $newH = if ($Height -gt 0) { $Height } else { $curH }
-
-            $flags = [UiWin32]::SWP_NOZORDER -bor [UiWin32]::SWP_NOACTIVATE
-            $success = [UiWin32]::SetWindowPos([IntPtr]$Hwnd, [IntPtr]::Zero, $newX, $newY, $newW, $newH, $flags)
-
-            Write-Output (@{
-                ok = $true
-                moved = $success
-                bounds = @{ x = $newX; y = $newY; width = $newW; height = $newH }
-                hwnd = $Hwnd
-            } | ConvertTo-Json -Compress)
-            exit 0
-        } catch {
-            Write-Output (@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress)
-            exit 1
-        }
+        Write-Output ([NativeBridge]::MoveWindowJson($Hwnd, $X, $Y, $Width, $Height))
+        exit 0
     }
-
     default {
-        Write-Output (@{ ok = $false; error = "Acción desconocida: '$Action'." } | ConvertTo-Json -Compress)
+        Write-Output "{\"ok\":false,\"error\":\"Unknown action: $Action\"}"
         exit 1
     }
 }

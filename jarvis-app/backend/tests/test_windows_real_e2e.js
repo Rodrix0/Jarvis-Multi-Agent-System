@@ -23,6 +23,7 @@
  */
 
 const assert = require('assert');
+const { spawn, execSync } = require('child_process');
 const uiAutomationService = require('../services/windows/uiAutomationService');
 
 const RUN_REAL_E2E = process.env.JARVIS_REAL_E2E === '1';
@@ -55,13 +56,21 @@ async function runRealSuite() {
     console.log('--- PRUEBA 1: Calculator Real E2E (37 × 19 = 703) ---');
     try {
         const t0 = performance.now();
-        const calcWin = await uiAutomationService.findWindow(/Calculadora|Calculator/i);
+        let calcWin = await uiAutomationService.findWindow(/Calculadora|Calculator/i);
+        if (!calcWin) {
+            try { execSync('cmd.exe /c start calc.exe'); } catch (_) {}
+            calcWin = await uiAutomationService.waitForWindow(/Calculadora|Calculator/i, 8000);
+        }
         assert.ok(calcWin, 'Ventana de Calculadora no encontrada en el escritorio interactivo');
 
         const hwnd = calcWin.Hwnd;
 
-        // Limpiar pantalla primero
-        await uiAutomationService.clickElement(hwnd, null, { automationId: 'clearButton' });
+        // Limpiar pantalla primero (doble clear + clearEntry para asegurar reset total a 0)
+        try { await uiAutomationService.clickElement(hwnd, null, { automationId: 'clearEntryButton' }); } catch (_) {}
+        await new Promise(r => setTimeout(r, 150));
+        try { await uiAutomationService.clickElement(hwnd, null, { automationId: 'clearButton' }); } catch (_) {}
+        await new Promise(r => setTimeout(r, 150));
+        try { await uiAutomationService.clickElement(hwnd, null, { automationId: 'clearButton' }); } catch (_) {}
         await new Promise(r => setTimeout(r, 200));
 
         // Secuencia UIA: 37 * 19 = 703
@@ -186,8 +195,68 @@ async function runRealSuite() {
     }
 
     // -------------------------------------------------------------
-    // RESUMEN FINAL
+    // PRUEBA 5: Notepad Real E2E (Abrir, Escribir, Leer y Cerrar sin guardar)
     // -------------------------------------------------------------
+    console.log('\n--- PRUEBA 5: Notepad Real E2E (UI Automation Completo) ---');
+    try {
+        const t0 = performance.now();
+        // 1. Abrir Notepad real
+        try { execSync('cmd.exe /c start notepad.exe'); } catch (_) {}
+        let notepadWin = await uiAutomationService.waitForWindow(/Bloc de notas|Notepad/i, 6000);
+        if (!notepadWin) {
+            try {
+                execSync('powershell -NoProfile -Command "Start-Process \'shell:AppsFolder\\Microsoft.WindowsNotepad_8wekyb3d8bbwe!App\'"');
+            } catch (_) {}
+            notepadWin = await uiAutomationService.waitForWindow(/Bloc de notas|Notepad/i, 8000);
+        }
+        assert.ok(notepadWin, 'Ventana de Notepad real debe ser detectada');
+
+        // 2. Localizar editor con UI Automation (sin coordenadas rígidas)
+        const editorElement = await uiAutomationService.waitForElement(notepadWin.Hwnd, { controlType: 'Document' }, 6000)
+            || await uiAutomationService.waitForElement(notepadWin.Hwnd, { controlType: 'Edit' }, 4000);
+        assert.ok(editorElement, 'Control de edición de texto debe ser localizado mediante UIA');
+
+        // 3. Escribir texto "JARVIS REAL E2E FINAL"
+        const testText = 'JARVIS REAL E2E FINAL';
+        await uiAutomationService.setText(notepadWin.Hwnd, editorElement, testText);
+
+        // 4. Leer el texto de vuelta desde la aplicación
+        const readBackText = await uiAutomationService.getText(notepadWin.Hwnd, { controlType: editorElement.controlType || 'Document' });
+        
+        // 5. Verificar coincidencia
+        assert.ok(readBackText && readBackText.includes(testText), `El texto leído ('${readBackText}') debe contener '${testText}'`);
+
+        // 6. Cerrar sin guardar
+        await uiAutomationService.closeWindow(notepadWin.Hwnd);
+        await new Promise(r => setTimeout(r, 600));
+
+        // Comprobar si la ventana sigue activa o si solicita confirmación
+        const stillOpen = await uiAutomationService.findWindow(/Bloc de notas|Notepad/i);
+        if (stillOpen) {
+            const dontSaveBtn = await uiAutomationService.findButton(stillOpen.Hwnd, /No guardar|Don't Save/i)
+                || await uiAutomationService.findButton(stillOpen.Hwnd, '', { automationId: 'SecondaryButton' });
+            if (dontSaveBtn) {
+                await uiAutomationService.clickElement(stillOpen.Hwnd, dontSaveBtn);
+            }
+        }
+
+        // Asegurar limpieza de procesos
+        await new Promise(r => setTimeout(r, 500));
+        try { execSync('taskkill /F /IM notepad.exe >nul 2>&1'); } catch (_) {}
+
+        const duration = Math.round(performance.now() - t0);
+        recordResult('Notepad Real E2E', 'PASS', {
+            opened: true,
+            typed: testText,
+            readBack: readBackText.trim(),
+            verifiedMatch: true,
+            closedWithoutSaving: true,
+            durationMs: duration
+        });
+    } catch (err) {
+        try { execSync('taskkill /F /IM notepad.exe >nul 2>&1'); } catch (_) {}
+        recordResult('Notepad Real E2E', 'FAIL', { error: err.message });
+    }
     console.log('\n===============================================================');
     console.log('📊 RESUMEN DE EJECUCIÓN REAL WINDOWS E2E (JARVIS 3.1.1)');
     console.log('===============================================================');

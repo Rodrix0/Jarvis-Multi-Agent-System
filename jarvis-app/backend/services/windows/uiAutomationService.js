@@ -41,7 +41,7 @@ class UiAutomationService {
                         const parsed = JSON.parse(raw.substring(jsonStart, jsonEnd + 1));
                         return resolve(parsed);
                     }
-                    return resolve({ ok: false, error: 'No se obtuvo respuesta JSON del puente UI Automation.', raw });
+                    return resolve({ ok: false, error: `No se obtuvo respuesta JSON del puente UI Automation. Raw: '${raw}' | Stderr: '${stderr || ''}'`, raw });
                 } catch (parseErr) {
                     return reject(new Error(`[UIAutomation] Error parseando respuesta JSON: ${parseErr.message}. Raw: ${stdout}`));
                 }
