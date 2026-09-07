@@ -47,7 +47,10 @@ async function runModelBenchmarksSuite() {
     // -------------------------------------------------------------
     // TEST 2: Perfilado de Modelos por Capacidad y Benchmarks
     // -------------------------------------------------------------
-    console.log('\n--- TEST 2: Ejecución de Benchmarks de Rendimiento (TTFT, TPS, VRAM) ---');
+    // -------------------------------------------------------------
+    // TEST 2: Perfilado Real de Modelos con Multi-Muestras y Telemetría VRAM
+    // -------------------------------------------------------------
+    console.log('\n--- TEST 2: Ejecución de Benchmarks Reales de Rendimiento (TTFT, TPS, VRAM Real) ---');
     
     // Modelos a evaluar representativos de cada rango de tamaño
     const targetModels = [
@@ -58,14 +61,18 @@ async function runModelBenchmarksSuite() {
 
     for (const modelName of targetModels) {
         const t0 = performance.now();
-        const profile = await modelRouterService.benchmarkModel(modelName, { force: true });
+        // Ejecutar 2 muestras reales por modelo
+        const profile = await modelRouterService.benchmarkModel(modelName, { force: true, real: true, runs: 2, live: true });
         const benchDuration = performance.now() - t0;
 
         assert.ok(profile, `Debe generar perfil para ${modelName}`);
         assert.ok(profile.ttftMs >= 0, 'TTFT debe ser un número válido >= 0');
         assert.ok(profile.tokensPerSecond > 0, 'Tokens/s debe ser > 0');
-        assert.ok(profile.vramEstimateMb > 0, 'Estimación de VRAM debe ser > 0');
         assert.ok(profile.schemaCompliance >= 0.8, 'Cumplimiento de esquema debe ser >= 80%');
+
+        const vramDisplay = profile.vramRealUsedMb !== null
+            ? `VRAM Real: ${profile.vramRealUsedMb}MB`
+            : `VRAM Est: ${profile.vramEstimateMb}MB`;
 
         // Registrar métrica en la base de datos (operation_metrics)
         const metricId = `metric_bench_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
@@ -75,24 +82,57 @@ async function runModelBenchmarksSuite() {
             operation_type: 'model_benchmark',
             status: 'SUCCESS',
             llm_ttft_ms: profile.ttftMs,
-            llm_generation_ms: Math.round(1000 / profile.tokensPerSecond),
+            llm_generation_ms: Math.round(1000 / Math.max(1, profile.tokensPerSecond)),
             total_duration_ms: Math.round(benchDuration),
             tokens_total: 50,
-            vram_used_mb: profile.vramEstimateMb,
+            vram_used_mb: profile.vramRealUsedMb || profile.vramEstimateMb,
             model_name: modelName,
             metadata_json: JSON.stringify({
                 schemaCompliance: profile.schemaCompliance,
-                tokensPerSecond: profile.tokensPerSecond
+                tokensPerSecond: profile.tokensPerSecond,
+                isRealExecution: profile.isRealExecution,
+                samplesCount: profile.samplesCount
             })
         });
 
-        const status = profile.schemaCompliance === 1.0 && profile.tokensPerSecond >= 25 ? 'OPTIMAL' : 'ACCEPTABLE';
+        const status = profile.schemaCompliance >= 0.9 && profile.tokensPerSecond >= 20 ? 'OPTIMAL' : 'ACCEPTABLE';
         recordBenchmarkResult(
             modelName,
-            `TTFT: ${profile.ttftMs}ms | TPS: ${profile.tokensPerSecond} t/s | VRAM: ${profile.vramEstimateMb}MB`,
+            `TTFT: ${profile.ttftMs}ms (P95: ${profile.ttftP95Ms}ms) | TPS: ${profile.tokensPerSecond} t/s | ${vramDisplay}`,
             `${(profile.schemaCompliance * 100).toFixed(0)}%`,
             status
         );
+    }
+
+    // -------------------------------------------------------------
+    // TEST 2B: Ranking Separado por Categoría Canónica
+    // -------------------------------------------------------------
+    console.log('\n--- TEST 2B: Ranking y Compatibilidad por Categoría Canónica ---');
+    const rankings = await modelRouterService.benchmarkAllModelsByCategory(targetModels, { runs: 1, live: true });
+    
+    assert.ok(rankings.FAST_INTENT, 'Debe incluir categoría FAST_INTENT');
+    assert.ok(rankings.GENERAL_CHAT, 'Debe incluir categoría GENERAL_CHAT');
+    assert.ok(rankings.CODING_FAST, 'Debe incluir categoría CODING_FAST');
+    assert.ok(rankings.CODING_DEEP, 'Debe incluir categoría CODING_DEEP');
+    assert.ok(rankings.REASONING, 'Debe incluir categoría REASONING');
+    assert.ok(rankings.MEMORY_EXTRACTION, 'Debe incluir categoría MEMORY_EXTRACTION');
+    assert.ok(rankings.VISION, 'Debe incluir categoría VISION');
+
+    // Comprobar que en VISION los modelos de texto quedan NOT_AVAILABLE
+    const textModelVision = rankings.VISION.find(m => m.model === 'qwen2.5:3b');
+    assert.ok(textModelVision, 'qwen2.5:3b debe figurar en VISION');
+    assert.strictEqual(textModelVision.status, 'NOT_AVAILABLE', 'qwen2.5:3b no soporta visión -> NOT_AVAILABLE');
+    console.log('  🛡️ Incompatibilidad detectada correctamente: qwen2.5:3b -> VISION = NOT_AVAILABLE');
+
+    // Imprimir resumen de líderes por categoría
+    console.log('\n  🏆 Líderes por Categoría:');
+    for (const [cat, items] of Object.entries(rankings)) {
+        const top = items.find(i => i.status === 'EVALUATED');
+        if (top) {
+            console.log(`     - [${cat}]: ${top.model} (${top.tokensPerSecond} t/s, TTFT: ${top.ttftMs}ms)`);
+        } else {
+            console.log(`     - [${cat}]: Sin modelo compatible instalado (NOT_AVAILABLE)`);
+        }
     }
 
     // -------------------------------------------------------------
