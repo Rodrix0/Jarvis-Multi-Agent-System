@@ -187,8 +187,14 @@ switch ($Action.ToLower()) {
     "find-window" {
         $wins = [UiWin32]::GetDesktopWindows()
         $matched = @()
+        $cleanPattern = $TitlePattern
+        if ($cleanPattern -match '^/(.+)/[a-z]*$') {
+            $cleanPattern = $matches[1]
+        }
         foreach ($w in $wins) {
-            if (-not $TitlePattern -or $w.Title -match [regex]::Escape($TitlePattern) -or $w.Title -like "*$TitlePattern*") {
+            if (-not $cleanPattern) {
+                $matched += $w
+            } elseif ($w.Title -match $cleanPattern -or $w.Title -like "*$cleanPattern*") {
                 $matched += $w
             }
         }
