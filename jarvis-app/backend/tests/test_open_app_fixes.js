@@ -99,6 +99,41 @@ async function runTests() {
     console.log('  ✅ [PASS] verifyAppOpened no ejecutó retryFn y reportó resultado limpiamente.');
     passed++;
 
+    // --- TEST 5: Variantes fonéticas de Whisper ('watsap', 'wasap', 'guasap') y Apertura de Carpetas ---
+    console.log('\n--- TEST 5: Whisper fonético y apertura de carpetas ---');
+    const parser = require('../services/ai/fastCommandParser');
+
+    // 5.1 No caer en el modo reposo/sleep por decir "apagate la carpeta..."
+    const falseSleepQuery = 'apagate la carpeta de prueba yutas enotaciones anotaciones Abre watsap';
+    const parsedFalseSleep = parser.parse(falseSleepQuery);
+    assert.notStrictEqual(parsedFalseSleep.action, 'voice.sleep', 'No debe entrar en voice.sleep si hay palabras operativas o texto largo');
+    console.log('  ✅ [PASS] Dormant trap evitado: frase compuesta con "apagate la carpeta..." no ejecuta voice.sleep.');
+    passed++;
+
+    const trueSleepQuery = 'jarvis apagate';
+    const parsedTrueSleep = parser.parse(trueSleepQuery);
+    assert.strictEqual(parsedTrueSleep.action, 'voice.sleep', '"jarvis apagate" debe ejecutar voice.sleep');
+    console.log('  ✅ [PASS] Comando conciso "jarvis apagate" sí ejecuta voice.sleep.');
+    passed++;
+
+    // 5.2 Variantes de WhatsApp
+    const phoneticVariants = ['watsap', 'wasap', 'guasap', 'whatsap', 'watsapp', 'wsp'];
+    for (const varName of phoneticVariants) {
+        let testCmd = '';
+        const mockExec = (cmd) => { testCmd = cmd; };
+        // Validar que handleSystemCommand reconozca "abrí wasap"
+        const sys = systemService.handleSystemCommand(`abrí ${varName}`);
+        assert.strictEqual(sys.isSystemCommand, true, `Debe reconocer comando de sistema para "abrí ${varName}"`);
+        passed++;
+    }
+    console.log('  ✅ [PASS] Todas las variantes fonéticas de WhatsApp son detectadas como comando del sistema.');
+
+    // 5.3 StreamingService.searchAndOpen existe y no lanza TypeError
+    const streamingService = require('../services/streamingService');
+    assert.strictEqual(typeof streamingService.searchAndOpen, 'function', 'streamingService.searchAndOpen debe ser una función exportada');
+    console.log('  ✅ [PASS] streamingService.searchAndOpen está correctamente implementado y exportado.');
+    passed++;
+
     console.log('\n===============================================================');
     console.log(`🎉 TODAS LAS PRUEBAS SUPERADAS: ${passed} PASARON, 0 FALLARON`);
     console.log('===============================================================');

@@ -112,8 +112,6 @@ async function searchAndList(query, type = 'auto') {
         const tipo = r.type === 'movie' ? '🎬 Pelicula' : '📺 Serie';
         message += `${i + 1}. ${r.name} (${r.year}) - ${tipo} ⭐${r.rating}\n`;
     });
-    message += `\nEscribi el numero para abrirlo (ej: "1")`;
-
     return {
         found: true,
         results: top,
@@ -121,9 +119,37 @@ async function searchAndList(query, type = 'auto') {
     };
 }
 
+/**
+ * Busca contenido y opcionalmente abre el primer resultado directamente en Stremio Web.
+ */
+async function searchAndOpen(query, type = 'auto', openFirst = true) {
+    const results = await searchContent(query, type);
+
+    if (results.length === 0) {
+        return {
+            found: false,
+            results: [],
+            message: `No encontré resultados para "${query}".`
+        };
+    }
+
+    const first = results[0];
+    if (openFirst) {
+        openInStremio(first.id, first.type);
+    }
+
+    return {
+        found: true,
+        results: results.slice(0, 5),
+        opened: first,
+        message: `Encontré "${first.name}" (${first.year}) ⭐${first.rating}. Abriendo en Stremio.`
+    };
+}
+
 module.exports = {
     searchContent,
     getDetails,
     openInStremio,
-    searchAndList
+    searchAndList,
+    searchAndOpen
 };

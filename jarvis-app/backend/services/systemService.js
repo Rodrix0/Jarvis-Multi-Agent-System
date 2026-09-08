@@ -282,6 +282,9 @@ function buildLaunchCommand(targetPath) {
     if (/^steam:\/\//i.test(cleanPath) || /^com\.epicgames\.launcher:\/\//i.test(cleanPath) || /^https?:\/\//i.test(cleanPath)) {
         return `start "" "${cleanPath}"`;
     }
+    if (fs.existsSync(cleanPath) && fs.statSync(cleanPath).isDirectory()) {
+        return `explorer "${cleanPath}"`;
+    }
     if (cleanPath.toLowerCase().endsWith('.exe') && fs.existsSync(cleanPath)) {
         const dir = path.dirname(cleanPath);
         return `cmd.exe /c start "" /d "${dir}" "${cleanPath}"`;
@@ -304,7 +307,53 @@ async function openApp(appName, modeId = 'productividad') {
         .replace(/\s+(?:en\s+(?:el\s+)?navegador|en\s+(?:la\s+)?compu|en\s+(?:la\s+)?computadora|en\s+(?:la\s+)?pc|en\s+(?:la\s+)?notebook|en\s+(?:la\s+)?laptop|en\s+chrome|por\s+favor)\s*$/gi, '')
         .trim();
 
-    if (isWebUrl(lowerApp)) {
+    // 0. Normalización fonética de variantes frecuentes de Whisper / transcripción
+    lowerApp = lowerApp.replace(/\b(?:watsap|wasap|guasap|whatsap|watsapp|wsp)\b/gi, 'whatsapp');
+
+    // 0b. Detección directa de apertura de carpetas (Desktop y carpetas de usuario)
+    if (platform === 'win32') {
+        const folderMatch = lowerApp.match(/^(?:(?:la\s+)?carpeta\s+(?:de\s+)?|directorio\s+(?:de\s+)?)(.+)$/i);
+        const folderQuery = folderMatch ? folderMatch[1].trim() : (lowerApp.startsWith('carpeta ') ? lowerApp.replace(/^carpeta\s+/i, '').trim() : null);
+        if (folderQuery) {
+            const userDirs = {
+                'descargas': path.join(os.homedir(), 'Downloads'),
+                'downloads': path.join(os.homedir(), 'Downloads'),
+                'documentos': path.join(os.homedir(), 'Documents'),
+                'documents': path.join(os.homedir(), 'Documents'),
+                'escritorio': path.join(os.homedir(), 'Desktop'),
+                'desktop': path.join(os.homedir(), 'Desktop'),
+                'imagenes': path.join(os.homedir(), 'Pictures'),
+                'fotos': path.join(os.homedir(), 'Pictures'),
+                'musica': path.join(os.homedir(), 'Music'),
+                'videos': path.join(os.homedir(), 'Videos')
+            };
+
+            const directPath = userDirs[folderQuery.toLowerCase()];
+            if (directPath && fs.existsSync(directPath)) {
+                command = `explorer "${directPath}"`;
+            } else {
+                // Buscar en el Escritorio del usuario
+                const desktopPath = path.join(os.homedir(), 'Desktop');
+                if (fs.existsSync(desktopPath)) {
+                    try {
+                        const items = fs.readdirSync(desktopPath, { withFileTypes: true });
+                        const matchDir = items.find(it => it.isDirectory() && it.name.toLowerCase() === folderQuery.toLowerCase());
+                        if (matchDir) {
+                            command = `explorer "${path.join(desktopPath, matchDir.name)}"`;
+                        } else {
+                            // Búsqueda parcial de carpeta en el escritorio
+                            const partialDir = items.find(it => it.isDirectory() && (it.name.toLowerCase().includes(folderQuery.toLowerCase()) || folderQuery.toLowerCase().includes(it.name.toLowerCase())));
+                            if (partialDir) {
+                                command = `explorer "${path.join(desktopPath, partialDir.name)}"`;
+                            }
+                        }
+                    } catch (_) {}
+                }
+            }
+        }
+    }
+
+    if (!command && isWebUrl(lowerApp)) {
         command = urlLaunchCommand(lowerApp, platform);
     }
 
@@ -328,6 +377,12 @@ async function openApp(appName, modeId = 'productividad') {
         'gemini': 'https://gemini.google.com',
         'whatsapp': 'https://web.whatsapp.com',
         'whatsapp web': 'https://web.whatsapp.com',
+        'watsap': 'https://web.whatsapp.com',
+        'wasap': 'https://web.whatsapp.com',
+        'guasap': 'https://web.whatsapp.com',
+        'whatsap': 'https://web.whatsapp.com',
+        'watsapp': 'https://web.whatsapp.com',
+        'wsp': 'https://web.whatsapp.com',
         'gmail': 'https://mail.google.com',
         'correo': 'https://mail.google.com',
         'hotmail': 'https://outlook.live.com',
@@ -358,16 +413,17 @@ async function openApp(appName, modeId = 'productividad') {
         'excel': 'start excel',
         'powerpoint': 'start powerpnt',
         'power point': 'start powerpnt',
-        'descargas': 'start "" "' + path.join(os.homedir(), 'Downloads') + '"',
-        'escritorio': 'start "" "' + path.join(os.homedir(), 'Desktop') + '"',
+        'descargas': 'explorer "' + path.join(os.homedir(), 'Downloads') + '"',
+        'escritorio': 'explorer "' + path.join(os.homedir(), 'Desktop') + '"',
         'explorador': 'start explorer',
         'archivos': 'start explorer'
     };
 
     // A. ¿Es un juego/programa nativo exacto?
-    for (const [key, cmd] of Object.entries(pcGamesMap)) {
-        if (command) break;
-        if (lowerApp === key || lowerApp === `el ${key}`) {
+    if (!command) {
+        for (const [key, cmd] of Object.entries(pcGamesMap)) {
+            if (command) break;
+            if (lowerApp === key || lowerApp === `el ${key}`) {
             command = platform === 'win32' ? cmd : `open "${key}"`;
             break;
         } else if (lowerApp.includes(key)) {
@@ -396,6 +452,7 @@ async function openApp(appName, modeId = 'productividad') {
             break;
         }
     }
+}
 
     // B. ¿Es una aplicación del núcleo de Windows?
     const localAppsMap = {
@@ -492,7 +549,8 @@ async function openApp(appName, modeId = 'productividad') {
     // Ejecutar orden en el Sistema Operativo
     return new Promise((resolve) => {
         exec(command, (error) => {
-            if (error) {
+            // En Windows, explorer.exe retorna exit code 1 por diseño aun cuando abre la ventana con éxito
+            if (error && !(platform === 'win32' && command.toLowerCase().startsWith('explorer') && error.code === 1)) {
                 console.error(`Error al abrir app: ${error.message}`);
                 resolve(false);
             } else {
