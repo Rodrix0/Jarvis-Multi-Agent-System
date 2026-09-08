@@ -1300,18 +1300,21 @@ function parsePreference(text) {
 
 function parseDesktopMediaSearch(text) {
     const clean = normalize(text);
-    const wantsSearch = /\b(busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar)\b/.test(clean);
-    if (!wantsSearch) return null;
     const wantsTv = /\b(tele|television|tv)\b/.test(clean);
-    const wantsComputer = /\b(compu|computadora|pc|notebook|laptop)\b/.test(clean);
+    if (wantsTv) return null;
+
     let platform = '';
-    if (/\byoutube\b/.test(clean) && !wantsTv) platform = 'youtube';
-    if (/\bnetflix\b/.test(clean) && wantsComputer && !wantsTv) platform = 'netflix';
+    if (/\byoutube\b/.test(clean)) platform = 'youtube';
+    if (/\bnetflix\b/.test(clean) && /\b(compu|computadora|pc|notebook|laptop)\b/.test(clean)) platform = 'netflix';
     if (!platform) return null;
+
+    const wantsSearch = /\b(busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar|por|en)\b/.test(clean);
+    if (!wantsSearch) return null;
 
     let query = clean
         .replace(/^.*?\b(?:busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar)\b\s*/, '')
         .replace(/\b(?:en|desde)\s+(?:mi\s+|la\s+)?(?:compu|computadora|pc|notebook|laptop)\b.*$/, '')
+        .replace(/^(?:por|en)\s+youtube\s+/i, '')
         .replace(/\b(?:en|por)\s+(?:youtube|netflix)\b/g, '')
         .replace(/\b(?:youtube|netflix)\b/g, '')
         .replace(/^\s*(?:el\s+canal|canal|la\s+pelicula|la\s+serie|pelicula|serie|video)\s+(?:de\s+)?/, '')
@@ -1463,18 +1466,24 @@ async function resolve(text) {
     }
 
     // 7.2 Crear carpeta sola
-    const createFolderMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|gener[aá]|generar)\s+(?:una\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|que\s+se\s+llame\s+|titulada|de\s+nombre\s+|de\s+)?\s*([a-zA-Z0-9_\-áéíóúÁÉÍÓÚñÑ ]+)$/i);
+    const createFolderMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|gener[aá]|generar)\s+(?:una\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|que\s+se\s+llame\s+|que\s+diga\s+|titulada|de\s+nombre\s+|de\s+)?\s*([a-zA-Z0-9_\-áéíóúÁÉÍÓÚñÑ ]+)$/i);
     if (createFolderMatch && createFolderMatch[1]) {
-        let folderName = createFolderMatch[1].trim().replace(/^de\s+/i, '').replace(/[.!?]+$/, '').trim();
+        let folderName = createFolderMatch[1].trim()
+            .replace(/^(?:llamada|que\s+se\s+llame|que\s+diga|titulada|de\s+nombre|nombre|de)\s+/i, '')
+            .replace(/[.!?]+$/, '')
+            .trim();
         if (folderName) {
             return { id: 'folder.create', params: { folderName } };
         }
     }
 
     // 7.3 Eliminar carpeta
-    const delFolderMatch = clean.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:la\s+|esta\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|de\s+nombre\s+|titulada|de\s+)?\s*([a-zA-Z0-9_\-\.áéíóúÁÉÍÓÚñÑ ]+)$/i);
+    const delFolderMatch = clean.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:la\s+|esta\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|de\s+nombre\s+|que\s+se\s+llame\s+|que\s+diga\s+|titulada|de\s+)?\s*([a-zA-Z0-9_\-\.áéíóúÁÉÍÓÚñÑ ]+)$/i);
     if (delFolderMatch && delFolderMatch[1]) {
-        let folderName = delFolderMatch[1].trim().replace(/^de\s+/i, '').replace(/[.!?]+$/, '').trim();
+        let folderName = delFolderMatch[1].trim()
+            .replace(/^(?:llamada|que\s+se\s+llame|que\s+diga|titulada|de\s+nombre|nombre|de)\s+/i, '')
+            .replace(/[.!?]+$/, '')
+            .trim();
         if (folderName) {
             return { id: 'folder.delete', params: { folderName } };
         }

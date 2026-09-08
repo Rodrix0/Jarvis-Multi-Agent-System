@@ -233,9 +233,10 @@ async function execute(id, params = {}, context = {}, options = {}) {
             }
         }
 
-        const isOk = output?.ok !== false && verified;
+        const hasExplicitError = output?.ok === false || (typeof action.verifier === 'function' && verificationResult?.error);
+        const isOk = !hasExplicitError;
 
-        // Retroalimentar al Circuit Breaker
+        // Retroalimentar al Circuit Breaker (solo por fallas técnicas reales o rechazos)
         if (breaker) {
             if (isOk) breaker.recordSuccess();
             else breaker.recordFailure();

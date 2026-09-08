@@ -72,14 +72,14 @@ function repairApplicationCommand(text) {
     // Vocabulario fonético de destinos, no de órdenes: Whisper puede traducir
     // marcas extranjeras aunque el verbo se haya entendido correctamente.
     const aliases = [
-        { app: 'WhatsApp', values: ['whatsapp', 'what s up', 'watsap', 'wasap', 'guasap'] },
+        { app: 'WhatsApp', values: ['whatsapp', 'what s up', 'watsap', 'wasap', 'guasap', 'whatsapps up', 'whatsapps', 'whatsap', 'watsapp', 'wsp'] },
         { app: 'Discord', values: ['discord', 'discor', 'niscor', 'niscord', 'g score', 'giscore', 'de ese'] },
         { app: 'Netflix', values: ['netflix', 'netfli', 'net free'] },
-        { app: 'YouTube', values: ['youtube', 'you tube', 'yutub'] },
+        { app: 'YouTube', values: ['youtube', 'you tube', 'yutub', 'yutubes', 'youtubes', 'yutube'] },
         { app: 'Spotify', values: ['spotify', 'spotifai'] },
         { app: 'Chrome', values: ['chrome', 'crom'] }
     ];
-    const destination = aliases.find(item => item.values.includes(heardApp));
+    const destination = aliases.find(item => item.values.some(v => heardApp === v || heardApp.startsWith(v + ' ')));
     return destination ? `Abrí ${destination.app}` : text;
 }
 

@@ -188,7 +188,7 @@ function findBestSystemMatch(rawQuery, discovered) {
     while (prev !== cleanApp) {
         prev = cleanApp;
         cleanApp = cleanApp
-            .replace(/^(abrir|abre|abrí|abr[ií]me|iniciar|inici[aá]|arrancar|arranc[aá]|lanza|ejecutar|ejecut[aá]|entrar a|entr[aá] a|entrar|entr[aá]|met[eé]te en|ir a|ve a|buscar|busca|buscar en|pon|pon[eé]|reproduce|abrirme|abrime|la carpeta|el archivo|el documento|el juego|la app|mi carpeta|mis|carpeta|archivo|documento|programa|juego|app|el|la|los|las|un|una|del|de)\s+/gi, '')
+            .replace(/^(abrir|abre|abra|abrí|abr[ií]me|abr[aá]me|iniciar|inici[aá]|arrancar|arranc[aá]|lanza|lanzar|ejecutar|ejecut[aá]|entrar a|entr[aá] a|entrar|entr[aá]|met[eé]te en|metete a|ir a|ve a|buscar|busca|buscar en|pon|pon[eé]|reproduce|abrirme|abrime|la aplicación de|la aplicacion de|la app de|la aplicación|la aplicacion|la app|aplicación|aplicacion|el programa de|el programa|programa|el juego de|el juego|juego|el archivo de|el archivo|archivo|el documento|documento|la carpeta de|la carpeta|carpeta|mi carpeta|mis|el|la|los|las|un|una|del|de)\s+/gi, '')
             .trim();
     }
 
@@ -494,7 +494,7 @@ async function openApp(appName, modeId = 'productividad') {
     // D. Búsqueda inteligente (Fuzzy, Diminutivos y Rutas del Sistema)
     if (!command) {
         const discovered = appDiscoveryService.getAppDictionary();
-        const bestMatch = findBestSystemMatch(appName, discovered);
+        const bestMatch = findBestSystemMatch(lowerApp, discovered) || findBestSystemMatch(appName, discovered);
 
         if (bestMatch && bestMatch.path) {
             console.log(`\n[Jarvis HDD] 🎯 Encontré coincidencia (score ${bestMatch.score}): ${bestMatch.name} -> ${bestMatch.path}`);
@@ -529,7 +529,7 @@ async function openApp(appName, modeId = 'productividad') {
                 } catch (e) {}
             }
 
-            const liveMatch = findBestSystemMatch(appName, liveDiscovered);
+            const liveMatch = findBestSystemMatch(lowerApp, liveDiscovered) || findBestSystemMatch(appName, liveDiscovered);
             if (liveMatch && liveMatch.path) {
                 console.log(`\n[Jarvis Live Search] 🎯 Encontré en escaneo directo: ${liveMatch.name} -> ${liveMatch.path}`);
                 command = buildLaunchCommand(liveMatch.path);
@@ -578,7 +578,8 @@ function handleSystemCommand(text) {
     }
 
     // 2. Extracción estándar de comandos del sistema
-    const match = lowerText.match(/(?:(?:que\s+)?(?:abr[aá]|abre|abrir|abr[ií]|abr[aá]me|abr[ií]me|abrirme|abr[ií]te|inici[aá]|iniciar|arranc[aá]|arrancar|lanz[aá]|lanzar|ejecut[aá]|ejecutar)|(?:pod[eé]s|podrias|puedes|quiero|necesito)\s+(?:abrir|iniciar|ejecutar)|ir a|ve a|metete a|metete en|pon|ponme|poneme|pon[eé]|coloca|colocame|jug[aá] a?|jugar a?)\s+(.+)/i);
+    const match = lowerText.match(/(?:(?:que\s+)?(?:abr[aá]|abre|abrir|abr[ií]|abr[aá]me|abr[ií]me|abrirme|abr[ií]te|inici[aá]|iniciar|arranc[aá]|arrancar|lanz[aá]|lanzar|ejecut[aá]|ejecutar)|(?:pod[eé]s|podrias|puedes|quiero|necesito)\s+(?:abrir|iniciar|ejecutar)|ir a|ve a|metete a|metete en|pon|ponme|poneme|pon[eé]|coloca|colocame|jug[aá] a?|jugar a?)\s+(.+)/i)
+        || lowerText.match(/^(?:y\s+)?(?:la\s+)?carpeta\s+(.+)/i);
 
     if (match) {
         let appToOpen = match[1].trim();

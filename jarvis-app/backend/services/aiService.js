@@ -619,7 +619,10 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
         if (llamaResponse.tool_calls && llamaResponse.tool_calls.length > 0) {
             const tool = llamaResponse.tool_calls[0].function;
             intent.action = tool.name;
-            const args = tool.arguments || {};
+            let args = tool.arguments || {};
+            if (typeof args === 'string') {
+                try { args = JSON.parse(args); } catch (_) { args = {}; }
+            }
             intent.target = args.target || "";
             intent.message = args.message || "";
             intent.data_type = args.data_type || "";
