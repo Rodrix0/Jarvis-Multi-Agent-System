@@ -81,22 +81,29 @@ foreach ($path in $pathsToScan) {
     }
 }
 
-# 3. Parsear elementos del Escritorio (carpetas, subcarpetas, archivos) hasta profundidad 3
+# 3. Parsear elementos del Escritorio (carpetas, ejecutables y accesos directos únicamente)
 $desktopPaths = @(
     "$env:USERPROFILE\Desktop",
     "C:\Users\Public\Desktop"
 )
 
+$excludedExts = @('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.mp4', '.mkv', '.avi', '.mp3', '.wav', '.zip', '.rar', '.7z', '.tar', '.gz', '.txt', '.pdf', '.docx', '.xlsx', '.pptx')
+
 foreach ($path in $desktopPaths) {
     if (Test-Path $path) {
         Get-ChildItem -Path $path -Recurse -Depth 3 | ForEach-Object {
+            $ext = $_.Extension.ToLowerInvariant()
+            if ($excludedExts -contains $ext) { return }
+
             $name = $_.BaseName
             $target = $_.FullName
-            Add-AppWithAliases $name $target
 
-            # Si es carpeta dentro de Juegos u otra carpeta, registrar también el nombre completo relativo
+            # Registrar si es contenedor (carpeta) o ejecutable/acceso directo
             if ($_.PSIsContainer) {
+                Add-AppWithAliases $name $target
                 Add-AppWithAliases $_.Name $target
+            } elseif ($ext -in @('.exe', '.lnk', '.url', '.bat', '.cmd')) {
+                Add-AppWithAliases $name $target
             }
         }
     }

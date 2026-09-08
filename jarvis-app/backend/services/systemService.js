@@ -254,9 +254,15 @@ function findBestSystemMatch(rawQuery, discovered) {
             }
         }
 
+        const isMediaOrDoc = /\.(png|jpe?g|gif|webp|bmp|svg|ico|mp4|mkv|avi|mp3|wav|zip|rar|7z|tar|gz|txt|pdf|docx?|xlsx?|pptx?)$/i.test(targetPath);
+        const userWantedFile = /\b(?:archivo|documento|texto|foto|imagen|captura|video|audio|cancion|musica|pdf|word|excel)\b/i.test(rawQuery);
+        const isExecutable = /\.(exe|lnk|url|bat|cmd)$/i.test(targetPath);
+
         if (score > 0) {
             if (userWantedFolder && isDirectory) score += 15;
-            if (targetPath.toLowerCase().includes('desktop')) score += 2;
+            if (isExecutable) score += 10;
+            if (isMediaOrDoc && !userWantedFile) score -= 60; // Penalizar severamente imágenes/documentos al buscar apps
+            if (targetPath.toLowerCase().includes('desktop') && !isMediaOrDoc) score += 2;
             if (/fc26\.exe$/i.test(targetPath)) score += 5;
             if (/anticheat|crash|report|unins|helper|installer/i.test(targetPath)) score -= 15;
         }
@@ -287,7 +293,16 @@ async function openApp(appName, modeId = 'productividad') {
     const platform = os.platform();
     let command = '';
     let lowerApp = String(appName || '').toLowerCase().trim();
-    lowerApp = lowerApp.replace(/^(abrir|abre|abrí|abr[ií]me|iniciar|inici[aá]|arrancar|arranc[aá]|lanza|ejecutar|ejecut[aá]|entrar a|entr[aá] a|entrar|entr[aá]|met[eé]te en|ir a|ve a|buscar|busca|buscar en|pon|pon[eé]|reproduce|abrirme el|abrime el|el|la|los|las|un|una)\s+/gi, '').trim();
+    let prev = '';
+    while (prev !== lowerApp) {
+        prev = lowerApp;
+        lowerApp = lowerApp
+            .replace(/^(abrir|abre|abra|abrí|abr[ií]me|abr[aá]me|iniciar|inici[aá]|arrancar|arranc[aá]|lanza|lanzar|ejecutar|ejecut[aá]|entrar a|entr[aá] a|entrar|entr[aá]|met[eé]te en|metete a|ir a|ve a|buscar|busca|buscar en|pon|pon[eé]|reproduce|abrirme|abrime|la aplicación de|la aplicacion de|la app de|la aplicación|la aplicacion|la app|el programa de|el programa|el juego de|el juego|el archivo de|el archivo|la carpeta de|la carpeta|mi carpeta|el|la|los|las|un|una|del|de)\s+/gi, '')
+            .trim();
+    }
+    lowerApp = lowerApp
+        .replace(/\s+(?:en\s+(?:el\s+)?navegador|en\s+(?:la\s+)?compu|en\s+(?:la\s+)?computadora|en\s+(?:la\s+)?pc|en\s+(?:la\s+)?notebook|en\s+(?:la\s+)?laptop|en\s+chrome|por\s+favor)\s*$/gi, '')
+        .trim();
 
     if (isWebUrl(lowerApp)) {
         command = urlLaunchCommand(lowerApp, platform);
@@ -407,11 +422,11 @@ async function openApp(appName, modeId = 'productividad') {
 
     // C. ¿Es una web conocida?
     if (!command) {
-        if (lowerApp.includes('chrome') || lowerApp.includes('google chrome')) {
+        if (lowerApp === 'chrome' || lowerApp === 'google chrome' || lowerApp === 'el chrome') {
             command = platform === 'win32' ? 'start chrome' : 'open -a "Google Chrome"';
         } else {
             for (const [siteName, url] of Object.entries(websiteMap)) {
-                if (lowerApp.includes(siteName) && lowerApp.length <= siteName.length + 8) {
+                if (lowerApp === siteName || lowerApp === `el ${siteName}` || lowerApp === `la ${siteName}` || (lowerApp.includes(siteName) && lowerApp.length <= siteName.length + 10)) {
                     command = platform === 'win32' ? `start "" "${url}"` : `open "${url}"`;
                     break;
                 }
@@ -441,12 +456,17 @@ async function openApp(appName, modeId = 'productividad') {
             ];
 
             const liveDiscovered = {};
+            const userWantedFile = /\b(?:archivo|documento|texto|foto|imagen|captura|video|audio|cancion|musica|pdf|word|excel)\b/i.test(appName);
+            const excludedExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.mp4', '.mkv', '.avi', '.mp3', '.wav', '.zip', '.rar', '.7z', '.tar', '.gz', '.txt', '.pdf', '.docx', '.xlsx', '.pptx'];
+
             for (const root of scanRoots) {
                 if (!fs.existsSync(root)) continue;
                 try {
                     const entries = fs.readdirSync(root, { withFileTypes: true });
                     for (const entry of entries) {
                         const full = path.join(root, entry.name);
+                        const ext = path.extname(entry.name).toLowerCase();
+                        if (!userWantedFile && excludedExts.includes(ext)) continue;
                         liveDiscovered[entry.name.toLowerCase()] = full;
                     }
                 } catch (e) {}
@@ -500,7 +520,7 @@ function handleSystemCommand(text) {
     }
 
     // 2. Extracción estándar de comandos del sistema
-    const match = lowerText.match(/(?:abre|abrir|abri|abrí|abrime|abríme|abrirme|inicia|iniciar|inici[aá]|arranca|arrancar|arranc[aá]|lanza|lanzar|lanz[aá]|ejecuta|ejecutar|ejecut[aá]|ir a|ve a|metete a|metete en|pon|ponme|poneme|pon[eé]|coloca|colocame|jug[aá] a?|jugar a?)\s+(.+)/i);
+    const match = lowerText.match(/(?:(?:que\s+)?(?:abr[aá]|abre|abrir|abr[ií]|abr[aá]me|abr[ií]me|abrirme|abr[ií]te|inici[aá]|iniciar|arranc[aá]|arrancar|lanz[aá]|lanzar|ejecut[aá]|ejecutar)|(?:pod[eé]s|podrias|puedes|quiero|necesito)\s+(?:abrir|iniciar|ejecutar)|ir a|ve a|metete a|metete en|pon|ponme|poneme|pon[eé]|coloca|colocame|jug[aá] a?|jugar a?)\s+(.+)/i);
 
     if (match) {
         let appToOpen = match[1].trim();

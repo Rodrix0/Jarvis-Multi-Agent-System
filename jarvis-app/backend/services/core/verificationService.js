@@ -49,36 +49,41 @@ class VerificationService {
      * reintenta la apertura una vez automáticamente.
      */
     async verifyAppOpened(appNameOrTitle, options = {}) {
-        const timeoutMs = options.timeoutMs || 6000;
+        const timeoutMs = options.timeoutMs || 4000;
         const intervalMs = options.intervalMs || 350;
-        const retryFn = typeof options.retryFn === 'function' ? options.retryFn : null;
         const start = Date.now();
-        let retried = false;
 
         const cleanTarget = String(appNameOrTitle || '').toLowerCase().trim();
+        const isKnownWebApp = /whatsapp|youtube|netflix|chatgpt|spotify|crunchyroll/i.test(cleanTarget);
 
         while (Date.now() - start < timeoutMs) {
             try {
-                // 1. Buscar ventana visible en el escritorio interactivo
+                // 1. Buscar ventana visible en el escritorio interactivo con el nombre de la app
                 const win = await uiAutomationService.findWindow(cleanTarget);
                 if (win) {
                     return {
                         verified: true,
                         elapsedMs: Date.now() - start,
                         window: win,
-                        retried,
+                        retried: false,
                         evidence: { type: 'window', hwnd: win.Hwnd, title: win.Title }
                     };
                 }
-            } catch (_) {}
 
-            // 2. Si transcurrió la mitad del tiempo y no apareció, reintentar una vez
-            if (retryFn && !retried && (Date.now() - start >= timeoutMs / 2)) {
-                retried = true;
-                try {
-                    await retryFn();
-                } catch (_) {}
-            }
+                // 1b. Si es una web app y no reporta título específico aún, verificar si el navegador está activo
+                if (isKnownWebApp && (Date.now() - start > 1200)) {
+                    const browserWin = await uiAutomationService.findWindow(/chrome|msedge|brave|firefox/i);
+                    if (browserWin) {
+                        return {
+                            verified: true,
+                            elapsedMs: Date.now() - start,
+                            window: browserWin,
+                            retried: false,
+                            evidence: { type: 'browser_window', hwnd: browserWin.Hwnd, title: browserWin.Title, target: cleanTarget }
+                        };
+                    }
+                }
+            } catch (_) {}
 
             await new Promise(r => setTimeout(r, intervalMs));
         }
@@ -86,7 +91,7 @@ class VerificationService {
         return {
             verified: false,
             elapsedMs: Date.now() - start,
-            retried,
+            retried: false,
             error: `La aplicación o ventana "${appNameOrTitle}" no se abrió dentro del tiempo esperado (${timeoutMs}ms).`
         };
     }

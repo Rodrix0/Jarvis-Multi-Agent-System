@@ -48,6 +48,7 @@ eventBus.setDatabaseService(databaseService);
 const app = express();
 let localVoiceStatus = { online: false, engine: 'Vosk + WebRTC VAD + faster-whisper', fullyLocal: true };
 let lastLocalSpeech = { text: '', at: 0 };
+let lastSocketSpeech = { text: '', at: 0 };
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
@@ -1103,6 +1104,13 @@ io.on('connection', (socket) => {
     // Evento de procesamiento de voz (cuando Jarvis escucha al usuario)
     socket.on('process_speech', async (data) => {
         const selectedVoice = voiceInputService.chooseTranscript(data);
+        const dupKey = voiceInputService.normalizeVoiceTranscript(selectedVoice.text).toLowerCase();
+        if (dupKey && dupKey === lastSocketSpeech.text && Date.now() - lastSocketSpeech.at < 1200) {
+            console.log(`[Socket] Comando duplicado ignorado por debounce: "${dupKey}"`);
+            return;
+        }
+        lastSocketSpeech = { text: dupKey, at: Date.now() };
+
         socket.emit('voice_status', {
             engine: 'Navegador · reconocimiento general',
             confidence: selectedVoice.confidence,

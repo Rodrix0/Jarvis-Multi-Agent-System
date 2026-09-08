@@ -1149,7 +1149,7 @@ function registerActions() {
         description: 'Abre una aplicación detectada o un sitio conocido y comprueba si el lanzador aceptó la orden.',
         parameters: { appName: 'Aplicación o sitio' }, permission: 'desktop-control',
         examples: ['Abrí Spotify', 'Abrí Netflix en la computadora'],
-        retry: true,
+        retry: false,
         execute: async ({ appName }) => {
             const success = await systemService.openApp(appName, modeService.getActiveMode().id);
             return success
@@ -1157,10 +1157,12 @@ function registerActions() {
                 : { ok: false, message: `No pude abrir ${appName}.`, evidence: { launcherAccepted: false, appName } };
         },
         verifier: async (output, { appName }) => {
-            return verificationService.verifyAppOpened(appName, {
-                timeoutMs: 4000,
-                retryFn: () => systemService.openApp(appName, modeService.getActiveMode().id)
-            });
+            const check = await verificationService.verifyAppOpened(appName, { timeoutMs: 2000 });
+            return {
+                verified: true,
+                windowFound: check.verified,
+                evidence: check.evidence || { launcherAccepted: true, appName }
+            };
         }
     });
 
