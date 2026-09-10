@@ -734,27 +734,38 @@ async function loadVoiceSettings() {
         voiceApi('/api/voice/local/status').catch(() => ({ online: false }))
     ]);
     voiceSettings = settings;
-    document.getElementById('voice-whisper-model').value = voiceSettings.whisperModel || 'turbo';
-    document.getElementById('voice-whisper-device').value = voiceSettings.whisperDevice || 'cuda';
-    document.getElementById('voice-confidence').value = voiceSettings.confidenceThreshold;
-    document.getElementById('voice-agreement').value = voiceSettings.agreementThreshold;
-    document.getElementById('voice-echo').checked = voiceSettings.echoCancellation;
-    document.getElementById('voice-noise').checked = voiceSettings.noiseSuppression;
-    document.getElementById('voice-gain').checked = voiceSettings.autoGainControl;
-    document.getElementById('voice-confirm').checked = voiceSettings.confirmUncertain;
-    document.getElementById('voice-local-context').checked = voiceSettings.localContextEnabled !== false;
+    const elModel = document.getElementById('voice-whisper-model');
+    if (elModel) elModel.value = voiceSettings.whisperModel || 'turbo';
+    const elDevice = document.getElementById('voice-whisper-device');
+    if (elDevice) elDevice.value = voiceSettings.whisperDevice || 'cuda';
+    const elConf = document.getElementById('voice-confidence');
+    if (elConf) elConf.value = voiceSettings.confidenceThreshold;
+    const elAgree = document.getElementById('voice-agreement');
+    if (elAgree) elAgree.value = voiceSettings.agreementThreshold;
+    const elEcho = document.getElementById('voice-echo');
+    if (elEcho) elEcho.checked = voiceSettings.echoCancellation;
+    const elNoise = document.getElementById('voice-noise');
+    if (elNoise) elNoise.checked = voiceSettings.noiseSuppression;
+    const elGain = document.getElementById('voice-gain');
+    if (elGain) elGain.checked = voiceSettings.autoGainControl;
+    const elConfirm = document.getElementById('voice-confirm');
+    if (elConfirm) elConfirm.checked = voiceSettings.confirmUncertain;
+    const elLocalCtx = document.getElementById('voice-local-context');
+    if (elLocalCtx) elLocalCtx.checked = voiceSettings.localContextEnabled !== false;
     renderLocalVoiceStatus(localStatus);
 }
 
 function renderLocalVoiceStatus(status = {}) {
     localVoiceOnline = status.online === true && (!status.lastSeenAt || Date.now() - Date.parse(status.lastSeenAt) < 15000);
     const box = document.getElementById('voice-engine-status');
-    box.textContent = localVoiceOnline
-        ? `Motor local activo · ${status.engine} · ${status.stage || status.state || 'listening'}${status.model ? ` · ${status.model}` : ''}`
-        : 'Motor local detenido · se usará el reconocimiento del navegador como respaldo';
-    box.classList.toggle('ready', localVoiceOnline);
-    box.classList.toggle('error', !localVoiceOnline);
-    if (Array.isArray(status.devices) && status.devices.length) {
+    if (box) {
+        box.textContent = localVoiceOnline
+            ? `Motor local activo · ${status.engine} · ${status.stage || status.state || 'listening'}${status.model ? ` · ${status.model}` : ''}`
+            : 'Motor local detenido · se usará el reconocimiento del navegador como respaldo';
+        box.classList.toggle('ready', localVoiceOnline);
+        box.classList.toggle('error', !localVoiceOnline);
+    }
+    if (microphoneSelect && Array.isArray(status.devices) && status.devices.length) {
         microphoneSelect.innerHTML = '';
         status.devices.forEach(device => {
             const option = document.createElement('option');
@@ -781,6 +792,7 @@ function stopVoiceMonitor() {
 }
 
 async function listMicrophones(requestPermission = false, startMonitor = false) {
+    if (!microphoneSelect) return;
     if (!navigator.mediaDevices?.getUserMedia) {
         microphoneSelect.innerHTML = '<option value="">Predeterminado de Windows</option>';
         return;
@@ -809,7 +821,7 @@ async function listMicrophones(requestPermission = false, startMonitor = false) 
 
 async function startVoiceMonitor() {
     stopVoiceMonitor();
-    const deviceId = microphoneSelect.value || voiceSettings?.microphoneId;
+    const deviceId = microphoneSelect?.value || voiceSettings?.microphoneId;
     voiceMonitorStream = await navigator.mediaDevices.getUserMedia({ audio: {
         ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
         echoCancellation: voiceSettings?.echoCancellation !== false,
@@ -827,7 +839,8 @@ async function startVoiceMonitor() {
         let sum = 0;
         for (const value of samples) sum += ((value - 128) / 128) ** 2;
         currentAudioLevel = Math.sqrt(sum / samples.length);
-        document.getElementById('voice-meter-bar').style.width = `${Math.min(100, currentAudioLevel * 600)}%`;
+        const meterBar = document.getElementById('voice-meter-bar');
+        if (meterBar) meterBar.style.width = `${Math.min(100, currentAudioLevel * 600)}%`;
     }, 250);
 }
 
@@ -836,12 +849,15 @@ async function loadMemory() {
         voiceApi('/api/memory'),
         voiceApi('/api/voice/learning')
     ]);
-    document.getElementById('voice-learning-status').textContent =
-        `${learning.phrases.length} órdenes verificadas · ${learning.vocabulary.length} términos aprendidos · ${learning.lexicon.length} palabras activas`;
+    const learningStatus = document.getElementById('voice-learning-status');
+    if (learningStatus) {
+        learningStatus.textContent =
+            `${learning.phrases?.length || 0} órdenes verificadas · ${learning.vocabulary?.length || 0} términos aprendidos · ${learning.lexicon?.length || 0} palabras activas`;
+    }
     renderMemoryList('memory-preferences', memory.preferences, item => `<strong>${escapeHtml(item.key)}</strong>: ${escapeHtml(item.value)}`, 'preferences', true);
     renderMemoryList('memory-corrections', memory.corrections, item => `<strong>${escapeHtml(item.from)}</strong> → ${escapeHtml(item.to)}`, 'corrections', true);
-    renderMemoryList('memory-conversations', [...memory.conversations].reverse().slice(0, 30), item => `<strong>${escapeHtml(item.role)}</strong> · ${escapeHtml(item.topic)}<br>${escapeHtml(item.text)}`, 'conversations');
-    renderMemoryList('memory-summaries', [...memory.summaries].reverse(), item => `<strong>${escapeHtml(item.topic)}</strong><br>${escapeHtml(item.text)}`, 'summaries');
+    renderMemoryList('memory-conversations', [...(memory.conversations || [])].reverse().slice(0, 30), item => `<strong>${escapeHtml(item.role)}</strong> · ${escapeHtml(item.topic)}<br>${escapeHtml(item.text)}`, 'conversations');
+    renderMemoryList('memory-summaries', [...(memory.summaries || [])].reverse(), item => `<strong>${escapeHtml(item.topic)}</strong><br>${escapeHtml(item.text)}`, 'summaries');
 }
 
 function escapeHtml(value) {
@@ -852,8 +868,10 @@ function escapeHtml(value) {
 
 function renderMemoryList(id, items, formatter, collection, editable = false) {
     const container = document.getElementById(id);
-    container.innerHTML = items.length ? '' : '<div class="memory-item">Sin datos.</div>';
-    items.forEach(item => {
+    if (!container) return;
+    const safeItems = Array.isArray(items) ? items : [];
+    container.innerHTML = safeItems.length ? '' : '<div class="memory-item">Sin datos.</div>';
+    safeItems.forEach(item => {
         const row = document.createElement('div');
         row.className = 'memory-item';
         row.innerHTML = `<span class="memory-item-actions">${editable ? '<button data-edit title="Corregir">✎</button>' : ''}<button data-delete title="Borrar">×</button></span>${formatter(item)}`;
@@ -884,17 +902,20 @@ function renderMemoryList(id, items, formatter, collection, editable = false) {
     });
 }
 
-document.getElementById('btn-open-brain-modal').addEventListener('click', async () => {
-    brainModal.classList.remove('hidden');
+document.getElementById('btn-open-brain-modal')?.addEventListener('click', async () => {
+    brainModal?.classList.remove('hidden');
     try { await loadVoiceSettings(); if (!localVoiceOnline) await listMicrophones(false, false); await loadMemory(); }
-    catch (error) { document.getElementById('voice-engine-status').textContent = error.message; }
+    catch (error) {
+        const statusBox = document.getElementById('voice-engine-status');
+        if (statusBox) statusBox.textContent = error.message;
+    }
 });
-document.getElementById('close-brain-modal').addEventListener('click', () => brainModal.classList.add('hidden'));
-document.getElementById('btn-refresh-mics').addEventListener('click', () => listMicrophones(true, true).catch(error => alert(error.message)));
-microphoneSelect.addEventListener('change', () => startVoiceMonitor().catch(error => alert(error.message)));
-document.getElementById('btn-refresh-memory').addEventListener('click', () => loadMemory().catch(error => alert(error.message)));
+document.getElementById('close-brain-modal')?.addEventListener('click', () => brainModal?.classList.add('hidden'));
+document.getElementById('btn-refresh-mics')?.addEventListener('click', () => listMicrophones(true, true).catch(error => alert(error.message)));
+microphoneSelect?.addEventListener('change', () => startVoiceMonitor().catch(error => alert(error.message)));
+document.getElementById('btn-refresh-memory')?.addEventListener('click', () => loadMemory().catch(error => alert(error.message)));
 
-document.getElementById('btn-calibrate-voice').addEventListener('click', async event => {
+document.getElementById('btn-calibrate-voice')?.addEventListener('click', async event => {
     const button = event.currentTarget;
     button.disabled = true;
     button.textContent = 'Guardá silencio…';
@@ -906,66 +927,78 @@ document.getElementById('btn-calibrate-voice').addEventListener('click', async e
         clearInterval(sampler);
         const floor = readings.reduce((sum, value) => sum + value, 0) / Math.max(1, readings.length);
         voiceSettings = await voiceApi('/api/voice/settings', { method: 'POST', body: JSON.stringify({ noiseFloor: Math.max(.003, floor) }) });
-        document.getElementById('voice-engine-status').textContent = `Calibrado. Piso de ruido: ${voiceSettings.noiseFloor.toFixed(4)}`;
+        const box = document.getElementById('voice-engine-status');
+        if (box) box.textContent = `Calibrado. Piso de ruido: ${voiceSettings.noiseFloor.toFixed(4)}`;
     } finally { button.disabled = false; button.textContent = 'Calibrar ruido (3 s)'; }
 });
 
-document.getElementById('btn-save-voice').addEventListener('click', async () => {
-    const selected = microphoneSelect.selectedOptions[0];
+document.getElementById('btn-save-voice')?.addEventListener('click', async () => {
+    const selected = microphoneSelect?.selectedOptions ? microphoneSelect.selectedOptions[0] : null;
     voiceSettings = await voiceApi('/api/voice/settings', { method: 'POST', body: JSON.stringify({
-        microphoneId: selected?.dataset.local ? voiceSettings.microphoneId : microphoneSelect.value,
+        microphoneId: selected?.dataset?.local ? voiceSettings.microphoneId : (microphoneSelect?.value || ''),
         microphoneLabel: selected?.textContent || '',
-        localDeviceIndex: selected?.dataset.local ? Number(microphoneSelect.value) : voiceSettings.localDeviceIndex,
-        whisperModel: document.getElementById('voice-whisper-model').value,
-        whisperDevice: document.getElementById('voice-whisper-device').value,
-        confidenceThreshold: document.getElementById('voice-confidence').value,
-        agreementThreshold: document.getElementById('voice-agreement').value,
-        echoCancellation: document.getElementById('voice-echo').checked,
-        noiseSuppression: document.getElementById('voice-noise').checked,
-        autoGainControl: document.getElementById('voice-gain').checked,
-        confirmUncertain: document.getElementById('voice-confirm').checked,
-        localContextEnabled: document.getElementById('voice-local-context').checked
+        localDeviceIndex: selected?.dataset?.local ? Number(microphoneSelect?.value) : voiceSettings.localDeviceIndex,
+        whisperModel: document.getElementById('voice-whisper-model')?.value || 'turbo',
+        whisperDevice: document.getElementById('voice-whisper-device')?.value || 'cuda',
+        confidenceThreshold: document.getElementById('voice-confidence')?.value || 0.7,
+        agreementThreshold: document.getElementById('voice-agreement')?.value || 0.7,
+        echoCancellation: document.getElementById('voice-echo')?.checked ?? true,
+        noiseSuppression: document.getElementById('voice-noise')?.checked ?? true,
+        autoGainControl: document.getElementById('voice-gain')?.checked ?? true,
+        confirmUncertain: document.getElementById('voice-confirm')?.checked ?? false,
+        localContextEnabled: document.getElementById('voice-local-context')?.checked ?? true
     }) });
     await startVoiceMonitor();
-    document.getElementById('voice-engine-status').textContent = 'Configuración de voz guardada.';
+    const box = document.getElementById('voice-engine-status');
+    if (box) box.textContent = 'Configuración de voz guardada.';
 });
 
-document.getElementById('btn-add-correction').addEventListener('click', async () => {
-    const from = document.getElementById('memory-correction-from').value.trim();
-    const to = document.getElementById('memory-correction-to').value.trim();
+document.getElementById('btn-add-correction')?.addEventListener('click', async () => {
+    const fromEl = document.getElementById('memory-correction-from');
+    const toEl = document.getElementById('memory-correction-to');
+    const from = fromEl ? fromEl.value.trim() : '';
+    const to = toEl ? toEl.value.trim() : '';
+    if (!from || !to) return;
     await voiceApi('/api/memory/corrections', { method: 'POST', body: JSON.stringify({ from, to }) });
-    document.getElementById('memory-correction-from').value = '';
-    document.getElementById('memory-correction-to').value = '';
+    if (fromEl) fromEl.value = '';
+    if (toEl) toEl.value = '';
     await loadMemory();
 });
 
 socket.on('voice_status', status => {
+    const box = document.getElementById('voice-engine-status');
+    if (!box) return;
     const confidence = status.confidence ? `${Math.round(status.confidence * 100)}%` : 'sin dato';
-    document.getElementById('voice-engine-status').textContent = `${status.engine} · confianza ${confidence} · acuerdo ${Math.round((status.agreement || 0) * 100)}%`;
+    box.textContent = `${status.engine} · confianza ${confidence} · acuerdo ${Math.round((status.agreement || 0) * 100)}%`;
 });
 
 socket.on('local_voice_status', renderLocalVoiceStatus);
 
 socket.on('voice_confirmation_required', payload => {
     pendingVoiceTranscript = payload;
-    brainModal.classList.remove('hidden');
-    document.getElementById('voice-confirmation-box').classList.remove('hidden');
-    document.getElementById('voice-confirmation-reason').textContent = `La transcripción es insegura: ${payload.reason}. Revisala antes de ejecutar.`;
-    document.getElementById('voice-confirmation-text').value = payload.text;
+    brainModal?.classList.remove('hidden');
+    const box = document.getElementById('voice-confirmation-box');
+    if (box) box.classList.remove('hidden');
+    const reasonEl = document.getElementById('voice-confirmation-reason');
+    if (reasonEl) reasonEl.textContent = `La transcripción es insegura: ${payload.reason}. Revisala antes de ejecutar.`;
+    const textEl = document.getElementById('voice-confirmation-text');
+    if (textEl) textEl.value = payload.text;
 });
 
 function executeConfirmedTranscript(teachCorrection) {
-    const corrected = document.getElementById('voice-confirmation-text').value.trim();
+    const textEl = document.getElementById('voice-confirmation-text');
+    const corrected = textEl ? textEl.value.trim() : '';
     if (!corrected) return;
     if (teachCorrection && pendingVoiceTranscript?.text !== corrected) {
         voiceApi('/api/memory/corrections', { method: 'POST', body: JSON.stringify({ from: pendingVoiceTranscript.text, to: corrected }) }).catch(console.error);
     }
-    document.getElementById('voice-confirmation-box').classList.add('hidden');
+    const box = document.getElementById('voice-confirmation-box');
+    if (box) box.classList.add('hidden');
     socket.emit('process_speech', { text: corrected, source: 'voice', confirmed: true, confidence: 1, audioLevel: currentAudioLevel });
     pendingVoiceTranscript = null;
 }
-document.getElementById('btn-confirm-transcript').addEventListener('click', () => executeConfirmedTranscript(false));
-document.getElementById('btn-correct-transcript').addEventListener('click', () => executeConfirmedTranscript(true));
+document.getElementById('btn-confirm-transcript')?.addEventListener('click', () => executeConfirmedTranscript(false));
+document.getElementById('btn-correct-transcript')?.addEventListener('click', () => executeConfirmedTranscript(true));
 
 async function tvApi(path, options = {}) {
     const response = await fetch(path, {
@@ -1192,12 +1225,54 @@ socket.on('action_status', status => {
     }
 });
 
+function showActionConfirmation(data) {
+    document.getElementById('action-confirmation-controls')?.remove();
+    if (!data.confirmationToken) return;
+    const box = document.createElement('div');
+    box.id = 'action-confirmation-controls';
+    box.style.cssText = 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:16px 0';
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', 'Confirmar acción pendiente');
+    let pin;
+    if (['awaiting_pin_confirmation', 'pin_verification_failed'].includes(data.status)) {
+        pin = document.createElement('input');
+        pin.type = 'password'; pin.inputMode = 'numeric'; pin.placeholder = 'PIN de seguridad';
+        pin.setAttribute('aria-label', 'PIN de seguridad'); box.appendChild(pin);
+    }
+    const confirm = document.createElement('button'); confirm.textContent = 'Confirmar acción';
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancelar';
+    for (const button of [confirm, cancel]) { button.className = 'btn'; button.type = 'button'; box.appendChild(button); }
+    const submit = async approved => {
+        confirm.disabled = cancel.disabled = true;
+        try {
+            const response = await fetch(approved ? '/api/actions/confirm' : '/api/actions/cancel', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: data.confirmationToken, ...(pin && approved ? { pin: pin.value } : {}) })
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.message || result.error || 'No pude procesar la confirmación.');
+            box.remove();
+            jarvisBox.textContent = approved ? result.message : 'Acción cancelada.';
+            showActionToast(jarvisBox.textContent, result.ok ? 'completed' : 'failed', 5500);
+            if (result.confirmationToken) showActionConfirmation(result);
+        } catch (error) {
+            showActionToast(error.message, 'failed', 5500);
+            confirm.disabled = cancel.disabled = false;
+        }
+    };
+    confirm.addEventListener('click', () => submit(true));
+    cancel.addEventListener('click', () => submit(false));
+    jarvisBox.insertAdjacentElement('afterend', box);
+}
+
 socket.on('response', (data) => {
+    showActionConfirmation(data);
     const enteringSleep = data.action === 'voice.sleep' || data.actionPayload?.voiceState === 'dormant';
-    const succeeded = data.status !== 'failed' && data.status !== 'unavailable';
+    const succeeded = !data.status || data.status === 'completed';
+    const pending = Boolean(data.confirmationToken) || data.status === 'needs_input';
     showActionToast(
-        succeeded ? `Listo: ${data.text || 'acción completada.'}` : `No pude completarlo: ${data.text || 'error desconocido.'}`,
-        succeeded ? 'completed' : 'failed',
+        pending ? `Pendiente: ${data.text || 'faltan datos.'}` : succeeded ? `Listo: ${data.text || 'acción completada.'}` : `No pude completarlo: ${data.text || 'error desconocido.'}`,
+        pending ? 'accepted' : succeeded ? 'completed' : 'failed',
         5500
     );
     if (data.action === 'voice.wake' || data.actionPayload?.voiceState === 'awake') {
@@ -1439,7 +1514,7 @@ btnCloseModal.addEventListener('click', () => {
 modeForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('mode-name').value;
-    const description = document.getElementById('mode-desc').value;
+    const description = document.getElementById('mode-desc')?.value || document.getElementById('mode-prompt')?.value || '';
 
     try {
         const response = await fetch('/api/modes', {
@@ -1592,12 +1667,12 @@ const brushSizeInput = document.getElementById('brush-size');
 let isPainting = false;
 let maskCtx = null;
 
-btnCloseInpainting.addEventListener('click', () => {
+btnCloseInpainting?.addEventListener('click', () => {
     inpaintingModal.classList.add('hidden');
 });
 
 // Inicializar el canvas de mismo tamaño que la imagen al cargar
-inpaintingBg.addEventListener('load', () => {
+inpaintingBg?.addEventListener('load', () => {
     inpaintingCanvas.width = inpaintingBg.width;
     inpaintingCanvas.height = inpaintingBg.height;
     maskCtx = inpaintingCanvas.getContext('2d');
@@ -1619,7 +1694,7 @@ function drawMask(e) {
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
     
-    maskCtx.lineWidth = brushSizeInput.value;
+    maskCtx.lineWidth = brushSizeInput?.value || 20;
     maskCtx.strokeStyle = "white"; // Blanco para el área que SÍ se modifica
     
     maskCtx.lineTo(x, y);
@@ -1628,23 +1703,23 @@ function drawMask(e) {
     maskCtx.moveTo(x, y);
 }
 
-inpaintingCanvas.addEventListener('mousedown', (e) => {
+inpaintingCanvas?.addEventListener('mousedown', (e) => {
     isPainting = true;
     maskCtx.beginPath();
     drawMask(e);
 });
-inpaintingCanvas.addEventListener('mousemove', drawMask);
-inpaintingCanvas.addEventListener('mouseup', () => { isPainting = false; maskCtx.beginPath(); });
-inpaintingCanvas.addEventListener('mouseleave', () => { isPainting = false; maskCtx.beginPath(); });
+inpaintingCanvas?.addEventListener('mousemove', drawMask);
+inpaintingCanvas?.addEventListener('mouseup', () => { isPainting = false; maskCtx?.beginPath(); });
+inpaintingCanvas?.addEventListener('mouseleave', () => { isPainting = false; maskCtx?.beginPath(); });
 
-btnClearMask.addEventListener('click', () => {
+btnClearMask?.addEventListener('click', () => {
     if (maskCtx) {
         maskCtx.fillStyle = 'black';
         maskCtx.fillRect(0, 0, inpaintingCanvas.width, inpaintingCanvas.height);
     }
 });
 
-btnSaveMask.addEventListener('click', () => {
+btnSaveMask?.addEventListener('click', () => {
     if (maskCtx) {
         // Enviar al servidor como JPEG para asegurar que no hay canal alpha
         currentInpaintingMaskBase64 = inpaintingCanvas.toDataURL('image/jpeg', 1.0);

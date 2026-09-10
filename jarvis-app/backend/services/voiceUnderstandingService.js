@@ -42,9 +42,10 @@ async function understand(payload = {}) {
     const contextualReference = /\b(eso|esa|ese|anterior|lo mismo|segui|seguí|continua|continuá)\b/i.test(original);
     const alternativesDisagree = candidates.length > 1
         && normalized(candidates[0]) !== normalized(candidates[1]);
-    // Whisper suele entregar una sola hipótesis con confianza moderada. Enviar cada
-    // orden clara a otro LLM duplicaba el tiempo de respuesta sin mejorarla.
-    const needsRepair = contextualReference || confidence < 0.5 || alternativesDisagree;
+    // Si la frase ya contiene una orden clara del sistema, app, multimedia o carpeta,
+    // nunca la enviamos a un LLM secundario para evitar latencia innecesaria.
+    const hasClearAction = /\b(?:whatsapp|whatsapps|watsap|wasap|guasap|youtube|yutub|netflix|spotify|discord|chrome|recordame|avisame|agendame|carpeta|directorio|volumen|brillo|bater[ií]a|abrí|abre|abrir|crear)\b/i.test(original);
+    const needsRepair = !hasClearAction && (contextualReference || confidence < 0.35 || alternativesDisagree);
     if (!original || !localUnderstandingEnabled || !needsRepair) {
         remember(original);
         return {
@@ -56,7 +57,7 @@ async function understand(payload = {}) {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 2000);
     const context = recentConversation.length ? recentConversation.join('\n- ') : '(sin contexto previo)';
     const tvContext = payload.tvContext || {};
     const prompt = [

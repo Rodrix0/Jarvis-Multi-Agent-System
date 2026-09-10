@@ -25,10 +25,62 @@ const windowsControlService = require('./windowsControlService');
 const homeAssistantService = require('./homeassistant/homeAssistantService');
 
 let registered = false;
+let pendingVoiceConfirmation = null;
 
 function registerActions() {
     if (registered) return;
     registered = true;
+
+    const desktopContent = require('./desktopContentService');
+    for (const [id, name, execute, riskLevel] of [
+        ['power.lock', 'Bloquear Windows', () => windowsControlService.power.lockWorkstation(), 'MEDIUM'],
+        ['power.suspend', 'Suspender computadora', () => windowsControlService.power.suspendSystem(), 'HIGH'],
+        ['power.shutdown', 'Apagar computadora', () => windowsControlService.power.shutdownSystem(), 'CRITICAL'],
+        ['power.restart', 'Reiniciar computadora', () => windowsControlService.power.restartSystem(), 'CRITICAL'],
+        ['system.get-overview', 'Consultar estado de la computadora', () => windowsControlService.metrics.getSystemOverview(), 'LOW'],
+        ['tv.toggle-mute', 'Silenciar televisión', async () => { await tvService.sendButtons(['mute']); return { ok: true, verified: false, message: 'Envié la señal de silencio a la televisión.', evidence: { signalSent: true } }; }, 'LOW']
+    ]) actionKernel.register({ id, name, permission: 'desktop-control', parameters: {}, riskLevel, execute });
+    actionKernel.register({ id: 'process.close', name: 'Cerrar aplicación', permission: 'desktop-control', requiredParameters: ['appName'], parameters: { appName: 'Nombre del proceso de la aplicación' }, execute: ({ appName }) => windowsControlService.process.closeApplication(appName) });
+    for (const [id, name, method, parameters] of [
+        ['file.copy', 'Copiar archivo', 'copyFile', { sourcePath: 'Archivo de origen', destinationPath: 'Archivo o carpeta de destino' }],
+        ['file.move', 'Mover archivo', 'moveFile', { sourcePath: 'Archivo de origen', destinationPath: 'Archivo o carpeta de destino' }],
+        ['file.rename', 'Renombrar archivo', 'renameFile', { filePath: 'Archivo de origen', newName: 'Nombre nuevo' }]
+    ]) actionKernel.register({ id, name, parameters, permission: 'standard', execute: async params => {
+        const source = await desktopContent.resolveFile(params.sourcePath || params.filePath);
+        if (!source) return { ok: false, message: 'No encontré el archivo de origen.' };
+        let destination = params.newName;
+        if (id !== 'file.rename') {
+            destination = desktopContent.location(params.destinationPath);
+            if (fs.existsSync(destination) && fs.statSync(destination).isDirectory()) destination = path.join(destination, path.basename(source));
+        }
+        return windowsControlService.file[method](source, destination);
+    } });
+    actionKernel.register({ id: 'assistant.capabilities', name: 'Listar capacidades', permission: 'standard', execute: () => {
+        const actions = actionKernel.catalog().filter(a => a.id !== 'assistant.respond');
+        return { ok: true, data: { actions }, message: actions.map(a => `${a.name}${a.examples?.[0] ? ': '+a.examples[0] : ''}`).join('\n') };
+    } });
+    for (const [id, name, parameters, execute] of [
+        ['directory.list', 'Leer contenido de una carpeta', { directory: 'Carpeta o escritorio', recursive: 'Incluir subcarpetas' }, p => desktopContent.list(p)],
+        ['file.read', 'Leer archivo', { filePath: 'Nombre o ruta del archivo' }, p => desktopContent.read(p)],
+        ['file.search', 'Buscar archivo', { query: 'Nombre buscado', baseDir: 'Carpeta opcional' }, p => desktopContent.search(p)]
+    ]) actionKernel.register({ id, name, parameters, permission: 'standard', execute });
+
+    for (const [id, name, execute] of [
+        ['audio.adjust-volume', 'Subir o bajar volumen', ({ delta }) => windowsControlService.audio.adjustVolume(delta)],
+        ['audio.get-volume', 'Consultar volumen', () => windowsControlService.audio.getVolume()],
+        ['display.adjust-brightness', 'Subir o bajar brillo', ({ delta }) => windowsControlService.display.adjustBrightness(delta)],
+        ['display.get-brightness', 'Consultar brillo', () => windowsControlService.display.getBrightness()]
+    ]) actionKernel.register({ id, name, permission: 'desktop-control', parameters: { delta: 'Cambio en puntos porcentuales' }, retry: false, execute });
+
+    const agenda = require('./agenda/agendaService');
+    actionKernel.register({ id: 'agenda.add', name: 'Crear recordatorio', permission: 'standard', parameters: { title: 'Tarea', targetDate: 'Fecha local', targetTime: 'HH:MM', recurrence: 'none o daily' }, retry: false, execute: params => agenda.addReminder(params) });
+    actionKernel.register({ id: 'agenda.clarify', name: 'Completar recordatorio', permission: 'standard', execute: () => ({ ok: false, message: 'Decime la tarea y cuándo avisarte. Por ejemplo: recordame tomar agua en diez minutos, o recordame llamar mañana a las 18:30.' }) });
+    actionKernel.register({ id: 'agenda.list', name: 'Consultar recordatorios', permission: 'standard', execute: () => {
+        const reminders = agenda.listReminders();
+        const legacy = require('./reminderService').getLocalReminders().filter(r => !r.done);
+        const lines = [...reminders.map(r => r.title + ' — ' + (r.target_date || 'próxima fecha') + ' ' + r.target_time), ...legacy.map(r => (r.message || r.target) + ' — ' + r.time)];
+        return { ok: true, reminders, message: lines.length ? lines.join('\n') : 'No tenés recordatorios pendientes.' };
+    } });
 
     // Emergency Stop
     actionKernel.register({
@@ -443,7 +495,7 @@ function registerActions() {
         parameters: { selector: 'Selector opcional (por defecto toda la página)' }, permission: 'standard',
         execute: async ({ selector, options }) => {
             const res = await browserService.getText(selector || 'body', options);
-            return { ok: true, message: `Contenido extraído (${res.length} caracteres).`, data: res };
+            return { ok: true, message: res || 'La página no contiene texto visible.', data: res };
         }
     });
     actionKernel.register({
@@ -473,7 +525,7 @@ function registerActions() {
             const res = await researchService.research(topic, options);
             return {
                 ok: true,
-                message: `Investigación sobre "${topic}" completada con ${res.uniqueSources} fuentes analizadas.`,
+                message: res.uniqueSources ? `${res.synthesis.consensus}\n\nFuentes:\n${res.sources.map(source => source.url).join('\n')}` : `No pude obtener fuentes para ${topic}.`,
                 data: res
             };
         }
@@ -487,7 +539,7 @@ function registerActions() {
         execute: async ({ query, imagePath }) => {
             const res = await visionService.analyzeScreen(query || '¿Qué error o situación aparece en pantalla?', imagePath);
             return {
-                ok: true,
+                ok: res.ok !== false,
                 reply: res.reply,
                 message: res.reply,
                 context: res.context
@@ -1151,17 +1203,15 @@ function registerActions() {
         examples: ['Abrí Spotify', 'Abrí Netflix en la computadora'],
         retry: false,
         execute: async ({ appName }) => {
-            const success = await systemService.openApp(appName, modeService.getActiveMode().id);
+            const success = await systemService.openApp(appName, modeService.getActiveMode()?.id || 'productividad');
             return success
-                ? { message: `Abrí ${appName} en la computadora.`, evidence: { launcherAccepted: true, appName } }
+                ? { message: `Envié la orden de abrir ${appName}.`, evidence: { launcherAccepted: true, appName } }
                 : { ok: false, message: `No pude abrir ${appName}.`, evidence: { launcherAccepted: false, appName } };
         },
         verifier: async (output, { appName }) => {
-            const check = await verificationService.verifyAppOpened(appName, { timeoutMs: 2000 });
             return {
-                verified: true,
-                windowFound: check.verified,
-                evidence: check.evidence || { launcherAccepted: true, appName }
+                verified: output?.evidence?.launcherAccepted === true,
+                evidence: { launcherAccepted: output?.evidence?.launcherAccepted === true, appName, scope: 'launcher' }
             };
         }
     });
@@ -1270,7 +1320,8 @@ function registerActions() {
                 : '';
             const screenContext = observerService.getScreenContext();
             const combined = [memoryContext, preferenceContext, screenContext].filter(Boolean).join('\n\n');
-            const message = await aiService.getAIResponse(text, modeService.getActiveMode(), combined || null, context.inpaintingMask);
+            const message = await aiService.getAIResponse(text, modeService.getActiveMode(), combined || null, context.inpaintingMask, { structuredActions: true });
+            if (message && typeof message === 'object') return message;
             // El texto sí fue producido, pero aiService todavía contiene herramientas
             // heredadas que no devuelven evidencia estructurada. Nunca las marcamos
             // como ejecución verificada hasta que migren a una acción propia.
@@ -1308,7 +1359,7 @@ function parseDesktopMediaSearch(text) {
     if (/\bnetflix\b/.test(clean) && /\b(compu|computadora|pc|notebook|laptop)\b/.test(clean)) platform = 'netflix';
     if (!platform) return null;
 
-    const wantsSearch = /\b(busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar|por|en)\b/.test(clean);
+    const wantsSearch = /\b(busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar)\b/.test(clean);
     if (!wantsSearch) return null;
 
     let query = clean
@@ -1326,6 +1377,7 @@ function parseDesktopMediaSearch(text) {
 
 function parseInformationDocument(text) {
     const clean = String(text || '').trim();
+    if (!/\b(?:documento|informe|word|resumen|reporte|docx|guard[aá]|guardalo|guard[aá]melo)\b/i.test(clean)) return null;
     
     // Formas variadas: "quiero buscar información de...", "haceme un documento de...", "crear informe sobre...", etc.
     const match = clean.match(/(?:dame|busc(?:a|ame)|consegui(?:me)?|investiga|quiero\s+buscar|necesito)\s+(?:algo\s+de\s+)?(?:informaci[oó]n|info|datos)(?:\s+(?:detallada|completa|completos))?\s+(?:sobre|de|acerca\s+de)\s+(.+)/i)
@@ -1359,7 +1411,7 @@ function parseDollar(text) {
 
 async function resolve(text) {
     registerActions();
-    let clean = String(text || '').trim();
+    let clean = String(text || '').trim().replace(/^(?:(?:hola|che)\s+)?jarvis[,\s]+/i, '').replace(/^por\s+favor[,\s]+/i, '');
     // Normalización fonética para términos comúnmente malinterpretados por STT
     clean = clean
         .replace(/\b(?:un\s+)?(?:tequi\s*te|tequiste|tequi|te\s+que\s+te|tequis|tx\s*t|t\s+x\s+t)\b/gi, 'txt')
@@ -1370,6 +1422,23 @@ async function resolve(text) {
         .replace(/\bmaximisa\b/gi, 'maximiza');
     const lower = normalize(clean);
 
+    const reminder = require('./agenda/reminderParser').parse(clean.replace(/^(?:hola |che )?jarvis[, ]+/i, ''));
+    if (reminder) return reminder;
+    const catalogIntent = require('./ai/catalogIntentParser').parse(clean, actionKernel.catalog());
+    if (catalogIntent) return catalogIntent;
+
+    const fileIntent = require('./ai/fileIntentParser').parse(clean);
+    if (fileIntent) return fileIntent;
+    // These intents must precede generic audio, deletion and application rules.
+    const earlyDownload = parseDownload(clean);
+    if (earlyDownload) return { id: 'download.url', params: earlyDownload };
+
+    const directOpen = clean.match(/^(?:(?:hola|che)\s+)?(?:jarvis[, ]+)?(?:abrir|abr[ií](?:me)?|abre|abra|abrirme)\s+(.+)$/i);
+    if (directOpen && !/\b(?:netflix|youtube|pesta[ñn]a)\b/i.test(directOpen[1])) {
+        const command = systemService.handleSystemCommand(clean);
+        if (command.isSystemCommand) return { id: 'system.open', params: { appName: command.appName } };
+    }
+
     // 1. Wake & Sleep (ignorar si es sobre tele, luces o apps externas)
     const isDeviceTarget = /\b(?:tele|television|tv|pantalla|monitor|pc|computadora|luz|luces|aire)\b/i.test(lower);
     if (!isDeviceTarget) {
@@ -1377,11 +1446,11 @@ async function resolve(text) {
         const hasActionIntent = /\b(?:abre|abra|abri|abrir|carpeta|busca|buscar|pone|pon|reproduce|reproducir|crea|crear|borra|borrar|escribe|escribir|jugar|juego|descarga|descargas|watsap|wasap|whatsapp)\b/i.test(lower);
         const isSleepKeyword = /\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(lower);
         const isNegated = /\bno\s+(?:te\s+)?apagu/i.test(lower);
-        if (!hasActionIntent && words.length <= 5 && ((isSleepKeyword && !isNegated)
+        if (!hasActionIntent && words.length <= 5 && ((isSleepKeyword && !isNegated && /^(?:apagate|dormite|duermete|a dormir|a descansar|modo descanso|modo reposo|silenciate|desactivate)(?: jarvis)?$/.test(lower))
             || /^(?:buenas\s+noches(?:\s+jarvis)?|hasta\s+luego(?:\s+jarvis)?|chau\s+jarvis|adios\s+jarvis)$/i.test(lower))) {
             return { id: 'voice.sleep', params: {} };
         }
-        if (/\b(?:prende(?:te)?|encende(?:te)?|desperta(?:te)?|despierta|despiertate|reactiva(?:te)?|activa(?:te)?|arriba|levantate)\b/i.test(lower)
+        if (/^(?:prendete|encendete|desperta(?:te)?|despierta|despiertate|reactivate|activate|arriba|levantate)(?: jarvis)?$/i.test(lower)
             || /^(?:hola\s+jarvis|buen\s+dia\s+jarvis|buenas\s+jarvis|hey\s+jarvis|che\s+jarvis|ok\s+jarvis|jarvis)$/i.test(lower)) {
             return { id: 'voice.wake', params: {} };
         }
@@ -1402,10 +1471,10 @@ async function resolve(text) {
     if (/^(?:(?:jarvis\s+)?(?:cancel(?:a|ar|ame)|fren(?:a|ar))\s*)$/i.test(lower) || /^(?:cancel[aá]|cancelar|cancela\s+eso|cancela\s+la\s+orden)$/i.test(lower)) {
         return { id: 'task.cancel', params: { target: null } };
     }
-    if (/\b(?:paus(?:a|ar|ame)|pon\s+en\s+pausa)\s+(?:la\s+)?(?:descarga|tarea|proceso)?\b/i.test(lower) || /^(?:paus[aá]|pausar)$/i.test(lower)) {
+    if (/\b(?:paus(?:a|ar|ame)|pon\s+en\s+pausa)\s+(?:la\s+)?(?:descarga|tarea|proceso)\b/i.test(lower) || /^(?:paus[aá]|pausar)$/i.test(lower)) {
         return { id: 'task.pause', params: { target: null } };
     }
-    if (/\b(?:reanud(?:a|ar|ame)|continu(?:a|ar|ame)|segu[ií]|seguir)\s+(?:la\s+)?(?:descarga|tarea|proceso)?\b/i.test(lower) || /^(?:reanud[aá]|reanudar|continuar)$/i.test(lower)) {
+    if (/\b(?:reanud(?:a|ar|ame)|continu(?:a|ar|ame)|segu[ií]|seguir)\s+(?:la\s+)?(?:descarga|tarea|proceso)\b/i.test(lower) || /^(?:reanud[aá]|reanudar|continuar)$/i.test(lower)) {
         return { id: 'task.resume', params: { target: null } };
     }
     if (/\b(?:qu[eé]\s+tareas\s+(?:hay|est[aá]n)\s+activas|listar\s+tareas|tareas\s+activas)\b/i.test(lower)) {
@@ -1434,7 +1503,7 @@ async function resolve(text) {
     }
 
     // 6. Explicabilidad e Historial
-    if (/\b(?:qu[eé]\s+hiciste|ultimas\s+acciones|por\s+qu[eé]\s+me\s+preguntaste|explicame)\b/i.test(lower)) {
+    if (/\b(?:qu[eé]\s+hiciste|ultimas\s+acciones|por\s+qu[eé]\s+me\s+preguntaste|explicame\s+(?:tu\s+)?(?:ultima\s+)?(?:accion|decision))\b/i.test(lower)) {
         return { id: 'explain.query', params: { query: clean } };
     }
 
@@ -1600,6 +1669,7 @@ async function resolve(text) {
                 return { id: 'system.open', params: { appName: 'Netflix' } };
             }
         }
+        if (broadLinkAvailable && tvIntent.action === 'netflix' && !tvVoiceService.getSessionContext().netflixReady) tvIntent.powerOn = true;
         if (tvIntent.action === 'enter_netflix') return { id: 'tv.enter-netflix', params: {} };
         if (tvIntent.action === 'open_search') return { id: 'tv.open-search', params: {} };
         return { id: 'tv.control', params: { intent: tvIntent } };
@@ -1625,6 +1695,22 @@ async function resolve(text) {
 }
 
 async function process(text, context = {}) {
+    const reply = normalize(text).replace(/^jarvis[, ]+/, '');
+    const pending = pendingVoiceConfirmation;
+    pendingVoiceConfirmation = null;
+    if (pending && Date.now() < pending.expiresAt) {
+        if (/^(?:si|si confirmo|confirmo|si hacelo|confirmar)$/.test(reply)) {
+            if (pending.result.status === 'awaiting_pin_confirmation') {
+                pendingVoiceConfirmation = pending;
+                return { ...pending.result, message: 'Completá el PIN en el panel para confirmar esta acción.' };
+            }
+            return actionKernel.confirm(pending.result.confirmationToken, context);
+        }
+        if (/^(?:no|cancelar|cancela|no confirmo)$/.test(reply)) {
+            actionKernel.cancelConfirmation(pending.result.confirmationToken);
+            return { ok: true, status: 'completed', verified: true, message: 'Cancelé la acción pendiente.' };
+        }
+    }
     registerActions();
     const operationMetricsService = require('./diagnostics/operationMetricsService');
     const trace = operationMetricsService.startTrace('turn', { text });
@@ -1652,6 +1738,7 @@ async function process(text, context = {}) {
         throw err;
     }
 
+    if (result.confirmationToken) pendingVoiceConfirmation = { result, expiresAt: Date.now() + 60000 };
     voiceLearningService.recordVerifiedExecution({
         utterance: text, actionId: request.id, params: request.params, result
     });

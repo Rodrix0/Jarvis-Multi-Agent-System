@@ -5,6 +5,8 @@ const { spawn } = require('child_process');
 const FORGE_URL = 'http://127.0.0.1:7860';
 const FORGE_BAT_PATH = 'C:\\Users\\Rodrigo\\Desktop\\IA\\stable-diffusion-webui-forge\\webui-user.bat';
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
+const fetch = (url, options = {}) => globalThis.fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(options.method === 'POST' ? 180000 : 3000) });
+let forgeStarting = null;
 
 /**
  * Verifica si el API de Forge responde.
@@ -25,13 +27,16 @@ async function checkForgeStatus() {
  * Arranca Forge en segundo plano silenciosamente.
  */
 async function startForgeSilently() {
-    return new Promise((resolve, reject) => {
+    if (!fs.existsSync(FORGE_BAT_PATH)) throw new Error('No encontré la instalación de Forge.');
+    if (forgeStarting) return forgeStarting;
+    forgeStarting = new Promise((resolve, reject) => {
         console.log("[ImageService] Iniciando Stable Diffusion Forge en background...");
         // spawn cmd.exe /c start /b para que no abra ventana visible al usuario.
         // O alternativamente spawn detached sin stdout.
         const forgeProcess = spawn('cmd.exe', ['/c', FORGE_BAT_PATH], {
             detached: true,
             windowsHide: true,
+            stdio: 'ignore',
             cwd: path.dirname(FORGE_BAT_PATH)
         });
 
@@ -52,7 +57,10 @@ async function startForgeSilently() {
                 reject(new Error("Timeout al iniciar Forge."));
             }
         }, 2000);
+        forgeProcess.on('error', error => { clearInterval(interval); reject(error); });
+        forgeProcess.on('exit', code => { if (code) { clearInterval(interval); reject(new Error(`Forge terminó durante el inicio (código ${code}).`)); } });
     });
+    return forgeStarting.finally(() => { forgeStarting = null; });
 }
 
 /**
@@ -82,7 +90,7 @@ async function switchModel(modelName) {
 /**
  * Fuerza el estilo realista y genera la imagen
  */
-async function generateImage(userPrompt) {
+async function generateImage(userPrompt, options = {}) {
     // Verificar si Forge esta corriendo
     const isOnline = await checkForgeStatus();
     if (!isOnline) {
@@ -94,7 +102,7 @@ async function generateImage(userPrompt) {
     }
 
     // Cambiar al modelo base (Juggernaut)
-    await switchModel('juggernautXL_ragnarokBy.safetensors');
+    if (!await switchModel('juggernautXL_ragnarokBy.safetensors')) throw new Error('Forge no pudo cargar el modelo de imágenes configurado.');
 
     if (!fs.existsSync(UPLOAD_DIR)) {
         fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -114,10 +122,10 @@ async function generateImage(userPrompt) {
             body: JSON.stringify({
                 prompt: finalPrompt,
                 negative_prompt: negativePrompt,
-                steps: 30,
+                steps: Math.max(1, Math.min(50, Number(options.steps) || 30)),
                 cfg_scale: 6,
-                width: 1024,
-                height: 1024,
+                width: Math.max(256, Math.min(1536, Math.round((Number(options.width) || 1024) / 64) * 64)),
+                height: Math.max(256, Math.min(1536, Math.round((Number(options.height) || 1024) / 64) * 64)),
                 sampler_name: "DPM++ 2M Karras"
             })
         });
@@ -185,11 +193,11 @@ async function editImage(imagePath, userPrompt, denoisingStrength = 0.55, maskBa
 
     if (useInpainting) {
         // Juggernaut XL para Inpainting Realista
-        await switchModel('juggernautXL_ragnarokBy.safetensors');
+        if (!await switchModel('juggernautXL_ragnarokBy.safetensors')) throw new Error('No pude cargar el modelo para editar la imagen.');
         if (maskBase64.startsWith('data:image')) maskBase64 = maskBase64.split(',')[1];
     } else {
         // Modelo viejo para edición sin máscara
-        await switchModel('instruct-pix2pix-00-22000.safetensors');
+        if (!await switchModel('instruct-pix2pix-00-22000.safetensors')) throw new Error('No pude cargar el modelo para editar la imagen.');
     }
 
     if (!fs.existsSync(UPLOAD_DIR)) {

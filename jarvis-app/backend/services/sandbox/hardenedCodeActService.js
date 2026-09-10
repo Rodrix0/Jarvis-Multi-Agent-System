@@ -126,9 +126,9 @@ class HardenedCodeActService {
             };
 
             const executable = isPython
-                ? (fs.existsSync(path.resolve(__dirname, '..', '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe'))
+                ? (process.env.JARVIS_PYTHON_EXE || (fs.existsSync(path.resolve(__dirname, '..', '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe'))
                     ? path.resolve(__dirname, '..', '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe')
-                    : 'python')
+                    : 'python'))
                 : process.execPath;
 
             const args = [filePath, ...(options.args || [])];

@@ -150,7 +150,7 @@ function refreshLexicon(memory = read()) {
     for (const item of memory.vocabulary
         .slice()
         .sort((a, b) => (b.uses || 0) - (a.uses || 0))) {
-        ranked.push(item.canonical, ...(item.variants || []));
+        ranked.push(item.canonical); // Incorrect STT variants are correction inputs, never acoustic hints.
     }
     const seen = new Set();
     const terms = ranked.filter(term => {

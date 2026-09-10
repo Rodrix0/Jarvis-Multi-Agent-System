@@ -18,7 +18,7 @@ function triggerBackgroundScan(force = false) {
         return;
     }
     console.log("\n[App Discovery] 🔍 Iniciando rastreo silencioso de aplicaciones y elementos del Escritorio...");
-    execFile('powershell', ['-ExecutionPolicy', 'Bypass', '-File', psScript], { maxBuffer: 1024 * 5000 }, (error, stdout) => {
+    execFile('powershell', ['-ExecutionPolicy', 'Bypass', '-File', psScript], { maxBuffer: 1024 * 5000, windowsHide: true, timeout: 60000 }, (error, stdout) => {
         if (error) {
             console.error("[App Discovery] Error escaneando apps:", error);
             return;

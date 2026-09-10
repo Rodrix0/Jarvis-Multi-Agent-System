@@ -5,6 +5,18 @@ const crypto = require('crypto');
 const AUDIT_PATH = process.env.JARVIS_ACTION_AUDIT_PATH || path.join(__dirname, '..', 'data', 'action_audit.jsonl');
 const actions = new Map();
 const pendingConfirmations = new Map();
+const requiredByAction = {
+    'file.read': ['filePath'], 'file.search': ['query'], 'file.delete': ['filePath'], 'file.restore': ['identifier'],
+    'file.copy': ['sourcePath', 'destinationPath'], 'file.move': ['sourcePath', 'destinationPath'], 'file.rename': ['filePath', 'newName'],
+    'folder.delete': ['folderName'], 'ui.click': ['element'], 'ui.type': ['text'],
+    'browser.open': ['url'], 'browser.click': ['selector'], 'browser.type': ['selector', 'text'],
+    'automation.toggle-rule': ['id'], 'automation.delete-rule': ['id'], 'automation.test-rule': ['id'],
+    'ha.get-state': ['entity_id'], 'code.autonomous_fix': ['instruction'], 'git.safe_commit': ['message'],
+    'snapshot.create': ['projectPath'], 'snapshot.restore': ['snapshotId'], 'document.template_create': ['template', 'title'],
+    'profile.switch': ['profileId'], 'clipboard.write': ['text'], 'goal.plan': ['instruction'], 'goal.plan_and_execute': ['instruction'],
+    'system.open': ['appName'], 'download.url': ['url'], 'whatsapp.send': ['contact', 'message'],
+    'audio.set-volume': ['percent'], 'display.set-brightness': ['percent'], 'audio.adjust-volume': ['delta'], 'display.adjust-brightness': ['delta']
+};
 
 function register(definition) {
     if (!definition?.id || typeof definition.execute !== 'function') {
@@ -18,6 +30,7 @@ function register(definition) {
         confirmation: false,
         dependencies: [],
         examples: [],
+        requiredParameters: requiredByAction[definition.id] || [],
         ...definition
     });
 }
@@ -69,6 +82,8 @@ async function execute(id, params = {}, context = {}, options = {}) {
     const startMs = Date.now();
     const startedAt = new Date().toISOString();
     if (!action) return { ok: false, status: 'failed', actionId: id, verified: true, message: `Acción desconocida: ${id}.` };
+    const missing = action.requiredParameters.filter(key => params[key] === undefined || params[key] === null || (typeof params[key] === 'string' && !params[key].trim()));
+    if (missing.length) return { ok: false, status: 'needs_input', actionId: id, verified: false, missingParameters: missing, message: `Para ${action.name.toLowerCase()} falta indicar: ${missing.map(key => action.parameters[key] || key).join(', ')}.` };
 
     const deps = await dependencyStatus(action, context);
     if (!deps.available) {
@@ -209,6 +224,7 @@ async function execute(id, params = {}, context = {}, options = {}) {
 
     try {
         let output = await action.execute(params, context);
+        if (output?.confirmationToken || output?.status === 'needs_input') return output;
         let verified = output?.verified !== false;
         let verificationResult = null;
 
@@ -233,7 +249,7 @@ async function execute(id, params = {}, context = {}, options = {}) {
             }
         }
 
-        const hasExplicitError = output?.ok === false || (typeof action.verifier === 'function' && verificationResult?.error);
+        const hasExplicitError = output?.ok === false || output?.success === false || output?.data?.ok === false || output?.data?.success === false || verificationResult?.verified === false || Boolean(verificationResult?.error);
         const isOk = !hasExplicitError;
 
         // Retroalimentar al Circuit Breaker (solo por fallas técnicas reales o rechazos)
@@ -252,7 +268,7 @@ async function execute(id, params = {}, context = {}, options = {}) {
             message: !verified && verificationResult?.error
                 ? `${output?.message || action.name}. (Verificación: ${verificationResult.error})`
                 : (output?.message || `${action.name} completada.`),
-            data: output?.data,
+            data: output?.data ?? (output && typeof output === 'object' ? Object.fromEntries(Object.entries(output).filter(([key]) => !['ok', 'success', 'message', 'verified', 'evidence'].includes(key))) : undefined),
             evidence: {
                 ...(output?.evidence || {}),
                 ...(verificationResult ? { verification: verificationResult } : {})
@@ -344,7 +360,12 @@ async function confirm(token, context = {}, options = {}) {
     if (!pending) return { ok: false, status: 'failed', verified: true, message: 'La confirmación expiró o no existe.' };
     pendingConfirmations.delete(token);
     const pin = options.pin || context.pin;
-    return execute(pending.id, pending.params, context, { confirmed: true, pin });
+    const result = await execute(pending.id, pending.params, context, { confirmed: true, pin });
+    if (result.status === 'pin_verification_failed' && Date.now() - pending.createdAt < 60000) {
+        pendingConfirmations.set(token, pending);
+        return { ...result, confirmationToken: token };
+    }
+    return result;
 }
 
 
@@ -352,4 +373,7 @@ function cancelConfirmation(token) {
     return pendingConfirmations.delete(token);
 }
 
-module.exports = { register, describe, execute, confirm, cancelConfirmation };
+function catalog() {
+    return [...actions.values()].map(({ id, name, description, parameters, examples, requiredParameters = [] }) => ({ id, name, description, parameters, examples, requiredParameters }));
+}
+module.exports = { register, catalog, describe, execute, confirm, cancelConfirmation };

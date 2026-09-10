@@ -57,6 +57,9 @@ class MemoryService {
 
         if (!bypassTriage) {
             const triage = memoryImportanceService.triageMemory(value, { type, tier, key });
+            if (triage.action === 'ARCHIVE_ONLY') {
+                return require('./universalMemoryService').storeMemory({ value, key, source, confidence, tier: type });
+            }
             if (triage.action === 'DISCARD') {
                 return {
                     ok: true,

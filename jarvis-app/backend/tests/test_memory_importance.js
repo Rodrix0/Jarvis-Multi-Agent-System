@@ -2,7 +2,7 @@
  * Test Suite para el Ítem 18: Memoria con Importancia y Triaje (memoryImportanceService.js)
  * Verifica:
  *   1. Evaluación universal de importancia (0.0 a 1.0) en múltiples dominios.
- *   2. Triaje de charlas triviales y ruido -> DISCARD (<= 0.25).
+ *   2. Triaje de charlas triviales y ruido -> ARCHIVE_ONLY (<= 0.25).
  *   3. Triaje de eventos y tareas transitorias -> EPISÓDICA (0.26 - 0.70 con TTL).
  *   4. Triaje de hechos inmutables, hardware e identidad -> PERMANENTE (0.71 - 1.00).
  *   5. Integración con memoryService: descarte sin escribir en DB y ascenso a CORE.
@@ -27,8 +27,8 @@ async function runTests() {
         }
     }
 
-    // 1. Charlas Triviales y Ruido (DISCARD)
-    console.log('--- Test 1: Triaje de Charlas Triviales y Ruido (DISCARD) ---');
+    // 1. Charlas Triviales y Ruido (ARCHIVE_ONLY)
+    console.log('--- Test 1: Triaje de Charlas Triviales y Ruido (ARCHIVE_ONLY) ---');
     const trivialStatements = [
         'Hoy tengo sueño',
         'Qué calor hace hoy',
@@ -39,7 +39,7 @@ async function runTests() {
 
     for (const text of trivialStatements) {
         const triage = memoryImportanceService.triageMemory(text);
-        assert(triage.action === 'DISCARD', `"${text}" clasificado como DISCARD`);
+        assert(triage.action === 'ARCHIVE_ONLY', `"${text}" clasificado como ARCHIVE_ONLY`);
         assert(triage.importance <= 0.25, `Importancia de "${text}" es baja (${triage.importance})`);
     }
 
@@ -87,8 +87,8 @@ async function runTests() {
     const discardRes = memoryService.addMemory({
         value: 'Hoy tengo sueño y fiaca'
     });
-    assert(discardRes.ok === true && discardRes.discarded === true, 'memoryService descartó el dato trivial');
-    assert(discardRes.action === 'DISCARD', 'Acción reportada es DISCARD');
+    assert(discardRes.ok === true && discardRes.tier === 'ARCHIVE_ONLY', 'memoryService descartó el dato trivial');
+    assert(discardRes.action === 'ARCHIVE_ONLY', 'Acción reportada es ARCHIVE_ONLY');
 
     // Verificar que NO se insertó en la base de datos
     const dbCheckTrivial = databaseService.db.prepare("SELECT * FROM memory WHERE value LIKE '%Hoy tengo sueño%'").all();

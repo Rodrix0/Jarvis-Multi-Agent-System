@@ -1,29 +1,15 @@
-const { execSync } = require('child_process');
-
+const { spawnSync } = require('child_process');
+const encoding = '[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); ';
 class ClipboardService {
     readClipboard() {
-        try {
-            const text = execSync('powershell.exe -NoProfile -Command "Get-Clipboard"', { timeout: 4000 }).toString().trim();
-            return {
-                ok: true,
-                text,
-                message: text ? `Contenido del portapapeles: "${text.slice(0, 100)}${text.length > 100 ? '...' : ''}"` : 'El portapapeles está vacío.'
-            };
-        } catch (err) {
-            return { ok: false, code: 'ERR_CLIPBOARD_READ', message: err.message };
-        }
+        const res = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', encoding + '$value = Get-Clipboard -Raw -ErrorAction Stop; if ($null -ne $value) { [Console]::Write($value) }'], { windowsHide: true, timeout: 4000, encoding: 'utf8' });
+        if (res.error || res.status !== 0) return { ok: false, message: res.error?.message || res.stderr || 'No pude leer el portapapeles.' };
+        const text = res.stdout || '';
+        return { ok: true, text, message: text || 'El portapapeles está vacío.' };
     }
-
     writeClipboard(text) {
-        const clean = String(text || '').replace(/"/g, '`"');
-        try {
-            execSync(`powershell.exe -NoProfile -Command "Set-Clipboard -Value \\"${clean}\\""`, { timeout: 4000 });
-            return { ok: true, message: 'Texto copiado al portapapeles con éxito.' };
-        } catch (err) {
-            return { ok: false, code: 'ERR_CLIPBOARD_WRITE', message: err.message };
-        }
+        const res = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', encoding + '$value = [Console]::In.ReadToEnd(); Set-Clipboard -Value $value -ErrorAction Stop'], { input: String(text ?? ''), windowsHide: true, timeout: 4000, encoding: 'utf8' });
+        return res.error || res.status !== 0 ? { ok: false, message: res.error?.message || res.stderr || 'No pude escribir en el portapapeles.' } : { ok: true, message: 'Texto copiado al portapapeles.' };
     }
 }
-
-const clipboardService = new ClipboardService();
-module.exports = clipboardService;
+module.exports = new ClipboardService();

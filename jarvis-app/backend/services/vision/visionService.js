@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -47,7 +47,7 @@ class VisionService {
     captureScreen(targetPath = TEMP_IMAGE) {
         try {
             fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-            execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${CAPTURE_SCRIPT}" -FilePath "${targetPath}"`, { timeout: 8000 });
+            execFileSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',CAPTURE_SCRIPT,'-FilePath',targetPath], { timeout: 8000, windowsHide:true });
             if (fs.existsSync(targetPath)) {
                 this.lastCaptureTime = Date.now();
                 return { ok: true, imagePath: targetPath };
@@ -68,7 +68,7 @@ class VisionService {
                 return { ok: false, error: `Imagen no encontrada: ${imagePath}` };
             }
 
-            const rawOut = execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${OCR_SCRIPT}" -ImagePath "${imagePath}"`, { timeout: 10000 }).toString().trim();
+            const rawOut = execFileSync('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',OCR_SCRIPT,'-ImagePath',imagePath], { timeout: 10000, windowsHide:true }).toString().trim();
             const parsed = JSON.parse(rawOut);
             return parsed;
         } catch (err) {
@@ -158,7 +158,8 @@ class VisionService {
         }
 
         const result = {
-            ok: ocr.ok !== false,
+            ok: ocr.ok === true,
+            error: ocr.error,
             imagePath,
             activeWindow,
             detectedErrors,
@@ -176,6 +177,7 @@ class VisionService {
      */
     async analyzeScreen(userQuestion = '¿Qué error o situación aparece en la pantalla?', customImagePath = null) {
         const context = await this.inspectScreen(customImagePath, userQuestion);
+        if (!context.ok) return { ok: false, reply: `No pude leer la pantalla: ${context.error || 'el reconocimiento de texto falló'}.`, context };
 
         const errorsSummary = context.detectedErrors.length > 0
             ? context.detectedErrors.map(e => `* ${e}`).join('\n')

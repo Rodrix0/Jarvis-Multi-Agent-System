@@ -53,7 +53,11 @@ class VerificationService {
         const intervalMs = options.intervalMs || 350;
         const start = Date.now();
 
-        const cleanTarget = String(appNameOrTitle || '').toLowerCase().trim();
+        let cleanTarget = String(appNameOrTitle || '').toLowerCase().trim();
+        cleanTarget = cleanTarget
+            .replace(/^(?:la\s+)?carpeta\s+(?:de\s+|a\s+)?/i, '')
+            .replace(/^(?:la\s+)?(?:aplicaci[oó]n|app|programa|juego)\s+(?:de\s+)?/i, '')
+            .trim();
         const isKnownWebApp = /whatsapp|youtube|netflix|chatgpt|spotify|crunchyroll/i.test(cleanTarget);
 
         while (Date.now() - start < timeoutMs) {

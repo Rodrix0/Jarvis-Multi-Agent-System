@@ -3,6 +3,11 @@ const databaseService = require('../persistence/databaseService');
 
 class AgendaService {
     addReminder({ title, targetDate = null, targetTime, recurrence = 'none' }) {
+        if (!String(title || '').trim() || !/^([01]\d|2[0-3]):[0-5]\d$/.test(targetTime || '') || !['none', 'daily'].includes(recurrence)
+            || (targetDate !== null && (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate) || Number.isNaN(Date.parse(targetDate))))) {
+            return { ok: false, message: 'Falta una tarea, fecha u hora válida para el recordatorio.' };
+        }
+        title = String(title).trim();
         const id = `rem-${crypto.randomUUID().slice(0, 8)}`;
         const now = new Date().toISOString();
 

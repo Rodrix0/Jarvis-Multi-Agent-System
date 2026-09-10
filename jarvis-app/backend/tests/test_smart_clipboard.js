@@ -6,6 +6,11 @@
  */
 
 const assert = require('assert');
+// Unit tests use an in-memory clipboard so images/files copied by the user survive.
+const clipboard = require('../services/windows/clipboardService');
+let clipboardText = '';
+clipboard.readClipboard = () => ({ ok: true, text: clipboardText, message: clipboardText });
+clipboard.writeClipboard = text => { clipboardText = String(text); return { ok: true }; };
 const { smartClipboardService } = require('../services/intelligence/smartClipboardService');
 const actionKernel = require('../services/actionKernelService');
 require('../services/jarvisActionService');

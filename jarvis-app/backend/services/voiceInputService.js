@@ -7,14 +7,25 @@ const HISTORY_PATH = path.join(__dirname, '..', 'data', 'voice_history.jsonl');
 const MAX_HISTORY_BYTES = 1024 * 1024;
 
 function normalizeVoiceTranscript(text) {
+    // Paths, URLs, clock times and filenames carry meaningful punctuation.
+    if (/(?:https?:\/\/|[a-z]:[\\/])/i.test(String(text))) return String(text).trim();
     const [collapsed] = collapseRepeatedTranscript(String(text || ''));
     let basic = collapsed
         .trim()
+        .replace(/^(?:howdy|hello|hey|buenas|hola)\s+/gi, '')
         .replace(/\b(?:yarvis|jarbis|charvis|harvis)\b/gi, 'Jarvis')
         .replace(/\b(?:edrey|edrei|yervis)\b/gi, 'Jarvis')
+        .replace(/\b(?:abrega|abregame|abrin|apli|averi|avery|a\s+veri|avri)\b/gi, 'abrí')
+        .replace(/\b(?:whatsapps?\s+up|watsapps?\s+up|watsap|wasap|guasap|whatsap|watsapp|wsp|whatsapps?)\b/gi, 'WhatsApp')
+        .replace(/\b(?:yutubes|yutubi|yutub|youtubes|you\s*tube)\b/gi, 'YouTube')
+        .replace(/\b(?:netfli|net\s*free)\b/gi, 'Netflix')
+        .replace(/\b(?:spotifai)\b/gi, 'Spotify')
+        .replace(/\b(?:discor|niscor|niscord|giscore|g\s+score)\b/gi, 'Discord')
+        .replace(/\b(?:yutas\s+aftalda|aftalda|yutas)\b/gi, '')
         .replace(/\b(?:un\s+)?(?:tequi\s*te|tequiste|tequi|te\s+que\s+te|tequis|tx\s*t|t\s+x\s+t)\b/gi, 'txt')
         .replace(/\b(crear|creame|crea|hacer|haceme|hace|generar|genera)\s+(?:un\s+)?tequila\b/gi, '$1 un txt')
-        .replace(/\s+/g, ' ');
+        .replace(/\s+/g, ' ')
+        .trim();
     return memoryService.applyCorrections(repairApplicationCommand(basic));
 }
 
@@ -54,7 +65,7 @@ function collapseRepeatedTranscript(text) {
         output.pop();
         changed = true;
     }
-    return [output.join(' ').trim(), changed];
+    return [changed ? output.join(' ').trim() : String(text || '').trim(), changed];
 }
 
 function normalizedForMatching(text) {
@@ -66,11 +77,16 @@ function normalizedForMatching(text) {
 
 function repairApplicationCommand(text) {
     const normalized = normalizedForMatching(text);
-    const match = normalized.match(/^(?:jarvis\s+)?(?:abri|abrir|abre|abrin|apli|averi|avery|a veri)\s+(.+)$/);
-    if (!match) return text;
-    const heardApp = match[1].trim();
-    // Vocabulario fonético de destinos, no de órdenes: Whisper puede traducir
-    // marcas extranjeras aunque el verbo se haya entendido correctamente.
+    if (/\b(?:en|por)\s+(?:el\s+|la\s+)?(?:navegador|compu|computadora|pc|notebook|tele|tv|television)\b/i.test(normalized)) return text;
+
+    // Si contiene intención de carpeta o búsqueda en youtube/streaming, preservar
+    if (/\b(?:carpeta|directorio)\b/i.test(normalized)) {
+        return text;
+    }
+    if (/\b(?:youtube|netflix)\b/i.test(normalized) && /\b(?:busca|buscame|buscar|pone|poneme|reproduce|reproducime|el canal|la cancion|cancion|trailer|video)\b/i.test(normalized)) {
+        return text;
+    }
+
     const aliases = [
         { app: 'WhatsApp', values: ['whatsapp', 'what s up', 'watsap', 'wasap', 'guasap', 'whatsapps up', 'whatsapps', 'whatsap', 'watsapp', 'wsp'] },
         { app: 'Discord', values: ['discord', 'discor', 'niscor', 'niscord', 'g score', 'giscore', 'de ese'] },
@@ -79,8 +95,16 @@ function repairApplicationCommand(text) {
         { app: 'Spotify', values: ['spotify', 'spotifai'] },
         { app: 'Chrome', values: ['chrome', 'crom'] }
     ];
-    const destination = aliases.find(item => item.values.some(v => heardApp === v || heardApp.startsWith(v + ' ')));
-    return destination ? `Abrí ${destination.app}` : text;
+
+    for (const item of aliases) {
+        for (const v of item.values) {
+            const regex = new RegExp(`^(?:(?:jarvis|che|hola|howdy|por favor)\\s+)?(?:(?:que\\s+)?(?:abr[aá]|abr[aá]n|abr[aá]s|abre|abres|abrir|abr[ií]|abr[ií]s|abrin|apli|averi|avery|a veri|abrega|inicia|iniciar|arranca|arrancar|lanzar|ejecutar|pone|pon|entra a|entrar a|ve a|ir a)\\s+)?(?:el\\s+|la\\s+)?${v}(?:\\s+.*)?$`, 'i');
+            if (regex.test(normalized)) {
+                return `Abrí ${item.app}`;
+            }
+        }
+    }
+    return text;
 }
 
 function words(text) {

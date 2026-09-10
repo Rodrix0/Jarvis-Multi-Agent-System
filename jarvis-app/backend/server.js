@@ -746,7 +746,7 @@ app.post('/api/actions/execute', async (req, res) => {
     const result = await jarvisActionService.execute(req.body.id, req.body.params || {}, actionContext());
     res.status(result.ok || result.status === 'awaiting_confirmation' ? 200 : 400).json(result);
 });
-app.post('/api/actions/confirm', async (req, res) => res.json(await jarvisActionService.confirm(req.body.token, actionContext())));
+app.post('/api/actions/confirm', async (req, res) => res.json(await jarvisActionService.confirm(req.body.token, actionContext(), { pin: req.body.pin })));
 app.post('/api/actions/cancel', (req, res) => res.json({ ok: jarvisActionService.cancelConfirmation(req.body.token) }));
 
 app.get('/api/memory', (req, res) => res.json(memoryService.snapshot()));
@@ -945,6 +945,7 @@ app.post('/api/speak', (req, res) => {
 
 // Endpoint principal para el cliente de Audio Python (Fondo)
 app.post('/api/process_speech_local', async (req, res) => {
+    try {
     const selectedVoice = voiceInputService.chooseTranscript(req.body);
     const duplicateKey = voiceInputService.normalizeVoiceTranscript(selectedVoice.text).toLowerCase();
     if (duplicateKey && duplicateKey === lastLocalSpeech.text && Date.now() - lastLocalSpeech.at < 1500) {
@@ -1004,11 +1005,18 @@ app.post('/api/process_speech_local', async (req, res) => {
         actionPayload: result.data || null,
         suppressTts: true,
         verified: result.verified,
-        status: result.status
+        status: result.status,
+        confirmationToken: result.confirmationToken
     });
     
     // Responder a Python para que lo hable por TTS usando el canal de voz optimizado
     res.json({ response: formatted.voice, screenText: formatted.screen, result });
+    } catch (error) {
+        console.error('[Voz local] Error:', error.message);
+        const response = 'No pude completar la orden: ' + error.message;
+        io.emit('response', { text: response, suppressTts: true, status: 'failed', verified: false });
+        if (!res.headersSent) res.status(500).json({ response, result: { ok: false, status: 'failed', verified: false } });
+    }
 });
 
 function actionContext(onTvProgress) {

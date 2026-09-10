@@ -106,6 +106,8 @@ class TrashService {
             `).run(id, resolvedPath, trashPath, deletedAt, stats.size);
         } catch (err) {
             console.error('[TrashService] Error guardando manifiesto:', err.message);
+            fs.renameSync(trashPath, resolvedPath);
+            return { ok: false, message: 'No se pudo registrar la papelera. El archivo se conservó en su ubicación original.' };
         }
 
         console.log(`[TrashService] 🗑️ Archivo movido a papelera segura: ${baseName} (${resolvedPath})`);
@@ -141,6 +143,8 @@ class TrashService {
             if (conflictResolution === 'RENAME') {
                 const parsed = path.parse(destination);
                 destination = path.join(parsed.dir, `${parsed.name} (restaurado)${parsed.ext}`);
+                let suffix = 2;
+                while (fs.existsSync(destination)) destination = path.join(parsed.dir, `${parsed.name} (restaurado ${suffix++})${parsed.ext}`);
             }
         }
 

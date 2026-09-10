@@ -392,11 +392,22 @@ class LocalVoiceEngine:
         ])
         self.barge_recognizer = KaldiRecognizer(self.wake_model, SAMPLE_RATE, barge_grammar)
         self.whisper = None
+        self.whisper_lock = threading.Lock()
         self.wake_name_until = 0.0
         self.wake_word_until = 0.0
         self.last_state_check = 0.0
 
     def ensure_whisper(self):
+        with self.whisper_lock:
+            self._load_whisper()
+
+    def warm_whisper(self):
+        try:
+            self.ensure_whisper()
+        except Exception as error:
+            print(f"[Voz local] No pude precargar Whisper: {error}", flush=True)
+
+    def _load_whisper(self):
         if self.whisper is not None:
             return
         model_name = self.settings.get("whisperModel", "turbo")
@@ -420,6 +431,7 @@ class LocalVoiceEngine:
                 raise
             print(f"[Voz local] CUDA no disponible ({error}). Uso CPU int8 como respaldo.")
             device, compute_type = "cpu", "int8"
+            model_name = "small"  # Cached CPU model avoids running large-v3-turbo on the CPU.
             self.whisper = WhisperModel(
                 model_name,
                 device=device,
@@ -429,6 +441,9 @@ class LocalVoiceEngine:
                 download_root=str(WHISPER_ROOT),
                 local_files_only=True,
             )
+        warm_segments, _ = self.whisper.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), language="es", beam_size=1, condition_on_previous_text=False)
+        list(warm_segments)
+        self.whisper_model_name = model_name
         self.whisper_device = device
         report_status(stage="ready", model=model_name, device=device, computeType=compute_type)
 
@@ -436,20 +451,19 @@ class LocalVoiceEngine:
         self.ensure_whisper()
         save_wav(frames)
         learned_terms = load_voice_lexicon()
-        vocabulary_hint = ", ".join(learned_terms[:60])
+        vocabulary_hint = ", ".join(learned_terms[:24])
         duration_seconds = len(frames) * FRAME_MS / 1000.0
         token_limit = max(24, min(192, int(duration_seconds * 6) + 18))
         segments, info = self.whisper.transcribe(
-            str(TEMP_WAV), language="es", beam_size=6, best_of=6,
+            str(TEMP_WAV), language="es", beam_size=2, best_of=1,
             temperature=0.0, condition_on_previous_text=False,
             repetition_penalty=1.15, no_repeat_ngram_size=3,
             max_new_tokens=token_limit,
             vad_filter=True, vad_parameters={"min_silence_duration_ms": 350},
             initial_prompt=(
-                "Transcripción literal en español rioplatense. No repitas palabras ni inventes texto. "
-                f"Vocabulario posible: {vocabulary_hint}"
+                "Abrir WhatsApp. Abrir Netflix. Subir el brillo. Bajar el volumen. "
+                f"{vocabulary_hint}."
             ),
-            hotwords=" ".join(learned_terms[:80]),
             no_speech_threshold=0.55,
             hallucination_silence_threshold=1.0,
         )
@@ -464,7 +478,7 @@ class LocalVoiceEngine:
         frame_levels = [rms(frame) for frame in frames]
         return text, confidence, {
             "language": info.language, "duration": info.duration, "segments": len(completed),
-            "model": self.settings.get("whisperModel", "turbo"),
+            "model": getattr(self, "whisper_model_name", self.settings.get("whisperModel", "turbo")),
             "device": getattr(self, "whisper_device", "unknown"),
             "meanRms": round(sum(frame_levels) / max(1, len(frame_levels)), 5),
             "peakRms": round(max(frame_levels, default=0), 5),
@@ -594,7 +608,7 @@ class LocalVoiceEngine:
                 stop_speaking()
                 self.state = "dormant"
                 write_state(self.state)
-                self.whisper = None
+                # Keep the cached Whisper model for the next command.
                 gc.collect()
                 threading.Thread(target=unload_local_understanding, daemon=True).start()
                 clear_audio_queue()
@@ -647,12 +661,13 @@ class LocalVoiceEngine:
         capturing = False
         report_status(stage="listening", device=device)
         if self.state == "awake":
-            threading.Thread(target=warm_local_understanding, daemon=True).start()
+            threading.Thread(target=self.warm_whisper, daemon=True).start()
 
         with sd.InputStream(
             samplerate=input_sample_rate, blocksize=input_blocksize, device=device,
             channels=1, dtype="int16", callback=audio_callback,
         ):
+            threading.Thread(target=self.warm_whisper, daemon=True).start()
             state_check_frames = 0
             while running:
                 frame = audio_queue.get()
@@ -665,14 +680,14 @@ class LocalVoiceEngine:
                         self.pending = None
                         report_status(stage=self.state)
                         if self.state == "awake":
-                            threading.Thread(target=warm_local_understanding, daemon=True).start()
+                            threading.Thread(target=self.warm_whisper, daemon=True).start()
                         else:
                             stop_speaking()
                             clear_audio_queue()
                             self.wake_recognizer.Reset()
                             self.sleep_recognizer.Reset()
                             self.suppress_until = time.monotonic() + 2.0
-                            self.whisper = None
+                            # Keep the cached Whisper model for the next command.
                             gc.collect()
                             threading.Thread(target=unload_local_understanding, daemon=True).start()
                 if len(frame) != FRAME_BYTES or time.monotonic() < self.suppress_until:
@@ -687,13 +702,13 @@ class LocalVoiceEngine:
                         self.state = disk_state
                         if self.state == "dormant":
                             stop_speaking()
-                            self.whisper = None
+                            # Keep the cached Whisper model for the next command.
                             gc.collect()
                             threading.Thread(target=unload_local_understanding, daemon=True).start()
                             clear_audio_queue()
                             report_status(stage="dormant", state="dormant")
                         else:
-                            threading.Thread(target=warm_local_understanding, daemon=True).start()
+                            threading.Thread(target=self.warm_whisper, daemon=True).start()
                             report_status(stage="awake", state="awake")
 
                 if self.state == "dormant":
@@ -701,7 +716,7 @@ class LocalVoiceEngine:
                         self.state = "awake"
                         write_state(self.state)
                         report_status(stage="awake", state="awake")
-                        threading.Thread(target=warm_local_understanding, daemon=True).start()
+                        threading.Thread(target=self.warm_whisper, daemon=True).start()
                         speak("Estoy en línea. ¿Qué necesitás?")
                         clear_audio_queue()
                         self.suppress_until = time.monotonic() + 1.0
@@ -716,7 +731,7 @@ class LocalVoiceEngine:
                         self.state = "dormant"
                         self.pending = None
                         write_state(self.state)
-                        self.whisper = None
+                        # Keep the cached Whisper model for the next command.
                         gc.collect()
                         clear_audio_queue()
                         report_status(stage="dormant")
@@ -784,6 +799,7 @@ class LocalVoiceEngine:
                             except Exception as error:
                                 print(f"[Voz local] Error de transcripción: {error}")
                                 report_status(stage="error", error=str(error))
+                                speak("No pude transcribir esa frase. Repetila, por favor.")
 
 
 def stop(*_):

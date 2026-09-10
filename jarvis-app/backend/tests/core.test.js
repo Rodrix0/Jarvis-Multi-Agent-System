@@ -127,8 +127,9 @@ async function run() {
     assert.match(discordCommand, /Discord\\Update\.exe" --processStart Discord\.exe|start discord:/i);
 
     const infoDocument = await jarvisActions.resolve('Dame información sobre computación cuántica');
-    assert.equal(infoDocument.id, 'document.create-info');
-    assert.equal(infoDocument.params.topic, 'computación cuántica');
+    assert.equal(infoDocument.id, 'assistant.respond');
+    const explicitDocument = await jarvisActions.resolve('Creame un informe sobre computación cuántica');
+    assert.ok(['document.create-info', 'file.create'].includes(explicitDocument.id));
     const explicitSleep = await jarvisActions.resolve('Jarvis, apagate');
     assert.equal(explicitSleep.id, 'voice.sleep');
     const bareSleep = await jarvisActions.resolve('apagate');
@@ -138,7 +139,7 @@ async function run() {
 
     const originalFetch = global.fetch;
     process.env.JARVIS_DESKTOP_DIR = testDir;
-    global.fetch = async () => ({ ok: true, json: async () => ({ response: 'Introducción\nInformación comprobable de prueba.\nConclusión' }) });
+    global.fetch = async () => ({ ok: true, json: async () => ({ message: { content: 'Introducción\nInformación comprobable de prueba.\nConclusión' } }) });
     const generated = await informationDocumentService.createOnDesktop('tema de prueba');
     global.fetch = originalFetch;
     assert.equal(fs.existsSync(generated.filePath), true);

@@ -270,7 +270,7 @@ class ResearchService {
         console.log(`[ResearchService] 📊 Investigación completada en ${elapsedMs}ms con confianza media: ${synthesis.avgConfidence || 0}\n`);
 
         return {
-            ok: true,
+            ok: scored.length > 0,
             topic: question,
             subQueries,
             totalSourcesFound: combined.length,

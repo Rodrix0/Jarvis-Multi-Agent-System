@@ -3,7 +3,7 @@ const { execSync } = require('child_process');
 function runPowerShell(script, timeout = 6000) {
     const buffer = Buffer.from(script, 'utf16le');
     const base64 = buffer.toString('base64');
-    return execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${base64}`, { timeout }).toString().trim();
+    return execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${base64}`, { timeout, windowsHide: true }).toString().trim();
 }
 
 class PowerControlService {
@@ -25,7 +25,7 @@ class PowerControlService {
                     Write-Output "NO_BATTERY"
                 }
             } catch {
-                Write-Output "NO_BATTERY"
+                throw
             }
         `;
         try {
@@ -42,7 +42,7 @@ class PowerControlService {
                 message: `La batería está al ${data.Percent}% (${data.Charging ? 'Cargando' : 'Descargando'}).`
             };
         } catch (err) {
-            return { ok: true, hasBattery: false, message: 'No se pudo obtener el estado de la batería.' };
+            return { ok: false, message: 'No se pudo obtener el estado de la batería.' };
         }
     }
 

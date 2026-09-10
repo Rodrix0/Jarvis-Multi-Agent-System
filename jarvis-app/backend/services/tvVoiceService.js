@@ -103,6 +103,10 @@ function parseTvIntent(text) {
         return { action: 'open_pc' };
     }
 
+    if (/^(?:(?:hola|che)\s+)?(?:jarvis\s+)?(?:abri(?:r|me)?|abre|abra|pone(?:me)?)\s+netflix(?:\s+en\s+(?:la\s+)?(?:tele|tv|television))?$/.test(normalized)) {
+        return { action: 'netflix', title: '', useDefaultSeries: false, powerOn: false };
+    }
+
     // Apertura directa de cuenta / perfil Rodri en Netflix
     if (/\b(?:ingresa|ingresar|entra|entrar|accede|acceder|selecciona|elegir?)\s+(?:a\s+)?(?:mi\s+cuenta|mi\s+perfil|perfil(?:\s+de)?\s+rodri)\b/i.test(normalized)
         || /^(?:jarvis\s+)?(?:ingresa|entra|abrir?|pone)\s+(?:a\s+)?netflix(?:\s+(?:en|a)\s+(?:la\s+)?tele)?$/i.test(normalized)) {

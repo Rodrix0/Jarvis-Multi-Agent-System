@@ -24,9 +24,9 @@ class SandboxService {
         }
 
         // Resolución del ejecutable de Python (entorno virtual de Jarvis o fallback del sistema)
-        this.pythonExec = fs.existsSync(path.resolve(__dirname, '..', '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe'))
+        this.pythonExec = process.env.JARVIS_PYTHON_EXE || (fs.existsSync(path.resolve(__dirname, '..', '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe'))
             ? path.resolve(__dirname, '..', '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe')
-            : 'python';
+            : 'python');
     }
 
     /**

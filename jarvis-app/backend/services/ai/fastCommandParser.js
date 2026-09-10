@@ -11,70 +11,38 @@ function normalize(text) {
 class FastCommandParser {
     parse(text) {
         const clean = normalize(text);
+        if (/^aprende\b/.test(clean) || /https?:\/\//i.test(text) || /^(?:descarga|descargar|descargame)\b/.test(clean)) return { match: false };
 
         // 0. Parada de Emergencia Inmediata
         if (/\b(?:deten(?:er)?\s+todo|par(?:ar)?\s+todo|abortar|emergencia|cancel(?:ar)?\s+todo|detente|parate|cancela|detene)\b/i.test(clean)) {
             return { match: true, action: 'emergency.stop', params: {} };
         }
 
-        // 1. Volumen de TV (BroadLink IR / Smart TV)
-        const isTvAudio = /\b(?:tele|television|tv)\b/i.test(clean);
-
-        // 1.0 Calibración de volumen de la tele ("el volumen actual es 20", "calibra el volumen de la tele a 20", "este es el volumen actualmente: 20")
-        const calibMatch = clean.match(/(?:calibr(?:a|ar)|sincroniz(?:a|ar))\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)?\s*(?:a|al|en)?\s*(\d{1,3})/i)
-            || clean.match(/(?:este\s+es\s+el\s+|el\s+)?volumen\s+(?:actual\s+)?(?:de\s+la\s+|en\s+la\s+)?(?:tele|television|tv)?\s*(?:actual\s+|actualmente\s+)?(?:es\s+de|es|esta\s+en)\s*(\d{1,3})/i)
-            || clean.match(/(?:este\s+es\s+el\s+volumen\s+(?:actual\s+|actualmente\s+)?)(?:de\s+)?(\d{1,3})/i)
-            || clean.match(/(?:la\s+tele|television|tv)\s+(?:esta\s+en|tiene|quedo\s+en)\s+(?:volumen\s+)?(\d{1,3})/i);
-        if (calibMatch) {
-            return { match: true, action: 'tv.calibrate-volume', params: { level: parseInt(calibMatch[1], 10) } };
+        // Only explicit audio/display commands may change these devices.
+        // Preserve TV calibration, but never infer a TV from 'hasta' or 'subile'.
+        const isTv = /\b(?:tele|television|tv)\b/.test(clean);
+        const isBrightness = /\b(?:brillo|iluminacion)\b/.test(clean);
+        const isAudio = /\b(?:volumen|sonido|audio)\b/.test(clean) || (isTv && /\b(?:subile|bajale)\b/.test(clean));
+        const up = /\b(?:subi(?:r|me|le)?|sube(?:me|le)?|aumenta(?:r|me|le)?)\b/.test(clean);
+        const down = /\b(?:baja(?:r|me|le)?|disminui(?:r|me|le)?|reduce)\b/.test(clean);
+        const number = clean.match(/\b(\d{1,3})(?:\s*%|\b)/);
+        if (isTv && isAudio && number && /\b(?:calibra(?:r)?|sincroniza(?:r)?|actual|actualmente|esta en|quedo en|es)\b/.test(clean)) {
+            return { match: true, action: 'tv.calibrate-volume', params: { level: Number(number[1]) } };
         }
-
-        // 1.1 Delta relativo de TV ("subile un 20%", "subi 10 puntos", "bajale 15%", "subile 20 a la tele", "bajale un 20%")
-        const isHasta = /\bhasta\b/i.test(clean);
-        const tvDeltaMatch = clean.match(/(?:subi|subile|subir|aumenta|aumentale|aumentar)\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)?\s*(?:un\s+|en\s+)?(\d{1,2})\s*(?:%|por ciento|puntos)?/i)
-            || clean.match(/(?:baja|bajale|bajar|disminui|disminuile|disminuir)\s+(?:el\s+)?(?:volumen\s+)?(?:de\s+la\s+|a\s+la\s+)?(?:tele|television|tv)?\s*(?:un\s+|en\s+)?(\d{1,2})\s*(?:%|por ciento|puntos)?/i);
-        if (tvDeltaMatch && !isHasta && (isTvAudio || /\b(subile|bajale|aumentale|disminuile|un \d|puntos)\b/i.test(clean))) {
-            const isUp = /subi|aument/i.test(tvDeltaMatch[0]);
-            const val = parseInt(tvDeltaMatch[1], 10);
-            return { match: true, action: 'tv.adjust-volume', params: { delta: isUp ? val : -val } };
-        }
-
-        // 1.2 Consulta de volumen de TV
-        if (/\b(?:que|cuanto|cuanta|a que|a cuanto|nivel de|estado del?)\s+(?:esta\s+el\s+)?(?:volumen|sonido|audio)\b/i.test(clean) || clean === 'volumen de la tele' || clean === 'volumen tele') {
-            return { match: true, action: 'tv.get-volume', params: {} };
-        }
-
-        // 1.3 Target absoluto de TV ("subile hasta el 70%", "pone el volumen de la tele al 50%", "volumen de la tele al 30%")
-        if (isTvAudio || isHasta) {
-            const tvTargetMatch = clean.match(/(?:hasta\s+(?:el\s+)?|a|al|en)\s*(\d{1,3})\s*(?:%|por ciento)?/i)
-                || clean.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
-                || clean.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia|coloca|sete(?:a|ar)).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i);
-            if (tvTargetMatch) {
-                return { match: true, action: 'tv.set-volume', params: { percent: parseInt(tvTargetMatch[1], 10) } };
+        if (isAudio || isBrightness) {
+            const prefix = isBrightness ? 'display' : isTv ? 'tv' : 'audio';
+            const noun = isBrightness ? 'brightness' : 'volume';
+            const absolute = /\b(?:a|al|en|hasta)\s+(?:el\s+)?\d/.test(clean) && !/\ben\s+\d/.test(clean);
+            if ((up || down) && !absolute) {
+                return { match: true, action: prefix + '.adjust-' + noun, params: { delta: (up ? 1 : -1) * (number ? Number(number[1]) : 10) } };
             }
-            if (/\b(?:mute|silenci(?:a|ar|ate)|mutear|desmutear|pon(?:e)? en silencio|sac(?:a)? el silencio)\b/i.test(clean)) {
-                return { match: true, action: 'tv.toggle-mute', params: {} };
+            if (number) return { match: true, action: prefix + '.set-' + noun, params: { percent: Number(number[1]) } };
+            if (/\b(?:cuanto|que|cual|nivel|estado)\b/.test(clean) || /^(?:volumen|brillo)(?: de la tele)?$/.test(clean)) {
+                return { match: true, action: prefix + '.get-' + noun, params: {} };
             }
         }
-
-        // 1.1 Volumen de Windows (Notebook / PC)
-        if (!/\b(?:aire|grados|temperatura|brillo|iluminacion)\b/i.test(clean)) {
-            const volMatch = clean.match(/(?:volumen|sonido|audio)\s*(?:a|al|en)?\s*(\d{1,3})\s*(?:%|por ciento)?/i)
-                || clean.match(/(?:volumen|sonido|audio).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i)
-                || clean.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia|coloca|sete(?:a|ar)).*?\b(\d{1,3})\s*(?:%|por ciento)?\b/i);
-            if (volMatch) {
-                return { match: true, action: 'audio.set-volume', params: { percent: parseInt(volMatch[1], 10) } };
-            }
-            if (/\b(?:mute|silenci(?:a|ar|ate)|mutear|desmutear|pon(?:e)? en silencio|sac(?:a)? el silencio)\b/i.test(clean)) {
-                return { match: true, action: 'audio.toggle-mute', params: {} };
-            }
-        }
-
-        // 2. Brillo
-        const brightMatch = clean.match(/(?:brillo|iluminacion)\s+(?:a|al)?\s*(\d{1,3})(?:%| por ciento)?/i)
-            || clean.match(/(?:pon|pone|subi|subir|baja|bajar|ajusta|cambia).*(?:brillo|iluminacion).*(?:a|al)?\s*(\d{1,3})/i);
-        if (brightMatch) {
-            return { match: true, action: 'display.set-brightness', params: { percent: parseInt(brightMatch[1], 10) } };
+        if (/^(?:(?:jarvis|por favor)\s+)?(?:mute|silencia(?:r|me)?|mutear|desmutear|pone en silencio|saca el silencio)(?:\s+(?:la tele|el audio|la pc|la computadora))?$/.test(clean)) {
+            return { match: true, action: isTv ? 'tv.toggle-mute' : 'audio.toggle-mute', params: {} };
         }
 
         // 3. Captura de pantalla (Solo para creación, nunca para borrado o eliminación)

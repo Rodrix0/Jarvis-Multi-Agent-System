@@ -4,6 +4,8 @@ const embeddingService = require('./memory/embeddingService');
 const modelRouterService = require('./ai/modelRouterService');
 const structuredOutputService = require('./ai/structuredOutputService');
 const toolRegistryService = require('./tools/toolRegistryService');
+const canonicalTools = require('./ai/canonicalTools');
+const fetch = (url, options = {}) => globalThis.fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(30000) });
 
 // Eliminamos las credenciales de Google porque ahora somos 100% locales
 let conversationHistory = [];
@@ -430,7 +432,7 @@ TAREA: Leé los datos y respondé la pregunta en 1-2 oraciones.
     return typeof aiMsg.content === 'string' ? aiMsg.content : JSON.stringify(aiMsg.content);
 }
 
-async function executeLlamaChat(messages, tools = null, jsonFormat = false, overrideModel = null) {
+async function executeLlamaChat(messages, tools = null, jsonFormat = false, overrideModel = null, deadline = Date.now() + 30000) {
     let selectedModel = overrideModel;
     let fallbackModel = 'llama3.1:latest';
 
@@ -449,7 +451,8 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
     const payload = {
         model: selectedModel,
         messages: messages,
-        stream: false
+        stream: false,
+        options: { temperature: 0.2 }
     };
 
     if (tools) {
@@ -475,6 +478,7 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
 
     try {
         const response = await fetch('http://127.0.0.1:11434/api/chat', {
+            signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -483,7 +487,7 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
         if (!response.ok) {
             // Si el modelo seleccionado no está disponible, probar fallback
             if (selectedModel !== fallbackModel) {
-                return executeLlamaChat(messages, tools, jsonFormat, fallbackModel);
+                return executeLlamaChat(messages, tools, jsonFormat, fallbackModel, deadline);
             }
             throw new Error(`Ollama devolvió un error HTTP: ${response.status}`);
         }
@@ -491,8 +495,8 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
         const data = await response.json();
         return data.message;
     } catch (err) {
-        if (selectedModel !== fallbackModel) {
-            return executeLlamaChat(messages, tools, jsonFormat, fallbackModel);
+        if (selectedModel !== fallbackModel && Date.now() < deadline && !['TimeoutError', 'AbortError'].includes(err.name)) {
+            return executeLlamaChat(messages, tools, jsonFormat, fallbackModel, deadline);
         }
         throw err;
     }
@@ -514,8 +518,23 @@ async function fetchOllamaResponse(prompt) {
     }
 }
 
-async function getAIResponse(userText, activeMode, screenContext = null, inpaintingMask = null) {
+async function getAIResponse(userText, activeMode, screenContext = null, inpaintingMask = null, options = {}) {
     try {
+        const normalizedQuestion = String(userText).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        if (/^(?:explicame|explica|que es|quien es|como funciona|dame informacion sobre)\b/.test(normalizedQuestion) && !/\b(?:archivo|documento|pantalla|captura|portapapeles|proyecto|historial|ultima accion|esto|eso|hoy|actual|precio|cotizacion|noticia)\b/.test(normalizedQuestion)) {
+            const answer = await executeLlamaChat([{ role: 'system', content: 'Respondé en español, con precisión y sin inventar datos. No afirmes haber ejecutado acciones ni consultado fuentes. Si no sabés una respuesta, decilo.' }, { role: 'user', content: userText }]);
+            return answer.content || 'No pude generar una respuesta.';
+        }
+        const sysServices = require('./systemService');
+        const sysCmd = sysServices.handleSystemCommand(userText);
+        if (sysCmd && sysCmd.isSystemCommand) {
+            console.log(`[aiService] ⚡ Interceptando comando directo de sistema: ${sysCmd.appName}`);
+            const opened = await sysServices.openApp(sysCmd.appName);
+            return opened
+                ? `Abriendo ${sysCmd.appName} enseguida, señor.`
+                : `Intenté abrir ${sysCmd.appName}, pero hubo un inconveniente al ejecutar la aplicación.`;
+        }
+
         let systemPrompt = "INSTRUCCIONES DEL SISTEMA BASE:\n" + (activeMode?.prompt || '') + "\n";
         systemPrompt += "Eres Jarvis, el asistente de PC. Tienes herramientas de automatización y de auto-aprendizaje (Code-Act).\n";
         systemPrompt += "REGLA DE VIDA O MUERTE: Si el usuario te hace charla casual, te pregunta qué sabes hacer, cómo estás, o cualquier pregunta general sobre ti mismo, ESTÁ STRICTAMENTE PROHIBIDO USAR UNA HERRAMIENTA. Responde únicamente chateando de forma natural.\n";
@@ -586,7 +605,7 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
         ];
 
         try {
-            const pythonSkillsRes = await fetch('http://127.0.0.1:8000/list_skills');
+            const pythonSkillsRes = await fetch('http://127.0.0.1:8000/list_skills', { signal: AbortSignal.timeout(1500) });
             if (pythonSkillsRes.ok) {
                 const pythonSkills = await pythonSkillsRes.json();
                 pythonSkills.forEach(skill => {
@@ -604,7 +623,29 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
             console.error("[Code-Act] No se pudieron cargar habilidades dinámicas de Python:", e.message);
         }
 
-        let llamaResponse = await executeLlamaChat(messages, tools, false, activeMode ? activeMode.model || 'llama3.1:latest' : 'llama3.1:latest');
+        const canonical = canonicalTools.build(userText);
+        tools.unshift(...canonical.tools);
+        let llamaResponse = await executeLlamaChat(messages, tools, false, activeMode?.model || null);
+        if (llamaResponse.tool_calls?.some(call => canonical.byName.has(call.function?.name))) {
+            const outputs = [];
+            const results = [];
+            for (const call of llamaResponse.tool_calls.slice(0, 6)) {
+                if (!canonical.byName.has(call.function?.name)) {
+                    outputs.push('Quedó una acción adicional pendiente de ejecutar.');
+                    break;
+                }
+                const result = await canonicalTools.execute(call.function, canonical.byName, { userText });
+                results.push(result);
+                outputs.push(result.message);
+                if (!result.ok || result.status !== 'completed') break;
+            }
+            if (options.structuredActions && results.length) {
+                const pending = results.find(result => result.confirmationToken || result.status === 'needs_input');
+                if (pending) return pending;
+                return { ok: results.every(result => result.ok), verified: results.every(result => result.verified), message: outputs.join('\n'), data: { actions: results } };
+            }
+            return outputs.join('\n');
+        }
         
         // Emulamos el intent structure legacy para no quebrar el resto del código
         let intent = {
@@ -642,7 +683,8 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
                     ...recoveredToolIntent
                 };
             } else {
-                intent.reply = contentRaw || 'Entendido.';
+                let textReply = contentRaw || 'Entendido.';
+                intent.reply = textReply;
             }
         }
 
@@ -770,7 +812,7 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
                         const esUltimo = /ultimo|último|salió|salio|resultado|como le fue|quedo|quedó/.test(userLow);
                         const esProximo = /cuando|cuándo|proximo|próximo|juega|enfrenta/.test(userLow);
                         if (esUltimo) {
-                            queryToSearch = `${equipoDetectado} resultado ultimo partido hoy 2025`;
+                            queryToSearch = `${equipoDetectado} resultado ultimo partido hoy ${new Date().getFullYear()}`;
                         } else if (esProximo) {
                             queryToSearch = `${equipoDetectado} proximo partido fecha hora`;
                         } else {
@@ -909,7 +951,7 @@ Responde la pregunta del usuario usando esos datos. Sé directo y conciso. No me
                                 const pdfParse = require('pdf-parse');
                                 if (fs.existsSync(source)) {
                                     const dataBuffer = fs.readFileSync(source);
-                                    const pdfData = await pdfParse(dataBuffer);
+                                    const pdfData = await pdfParse(new Uint8Array(dataBuffer), { version: 'v2.0.550' });
                                     textExtracted = pdfData.text.replace(/\s+/g, ' ');
                                     console.log(`[Jarvis RAG] ✅ PDF cargado completo: ${textExtracted.length} caracteres leídos.`);
                                 } else {
@@ -1791,7 +1833,8 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
         return intent.reply || "He procesado la acción pero no generé respuesta hablada.";
     } catch (error) {
         console.error("Error Local de IA o de Conexión de Scraper:", error.message);
-        return "Mis sistemas cognitivos están apagados. Por favor, asegúrate de que Ollama esté ejecutándose.";
+        const message = ['TimeoutError', 'AbortError'].includes(error.name) ? 'El motor local tardó demasiado en responder. No pude completar el pedido.' : `No pude completar el pedido: ${error.message}`;
+        return options.structuredActions ? { ok: false, verified: false, message } : message;
     }
 }
 

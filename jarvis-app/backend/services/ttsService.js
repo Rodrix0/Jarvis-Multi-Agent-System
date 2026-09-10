@@ -72,7 +72,10 @@ function speak(text, voice = 'es-AR-TomasNeural') {
 
     return new Promise((resolve, reject) => {
         const pythonExecutable = fs.existsSync(PYTHON_PATH) ? PYTHON_PATH : 'python';
-        const child = spawn(pythonExecutable, [EDGE_TTS_SCRIPT], {
+        const useLocal = process.platform === 'win32' && (safeText.length <= 300 || process.env.JARVIS_TTS_LOCAL === '1');
+        const executable = useLocal ? 'powershell.exe' : pythonExecutable;
+        const args = useLocal ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, '../scripts/speakLocal.ps1')] : [EDGE_TTS_SCRIPT];
+        const child = spawn(executable, args, {
             windowsHide: true,
             stdio: ['pipe', 'pipe', 'pipe']
         });

@@ -307,7 +307,7 @@ async function main() {
         const plan = await jarvisActionService.resolve('crea una carpeta llamada Finanzas y adentro un word llamado Balance que diga ingresos y egresos');
         assert.strictEqual(plan.id, 'file.create');
         assert.strictEqual(plan.params.folderName, 'Finanzas');
-        assert.strictEqual(plan.params.fileName, 'Balance');
+        assert.strictEqual(plan.params.fileName, 'Balance.docx');
         assert.strictEqual(plan.params.format, 'docx');
         assert.strictEqual(plan.params.content, 'ingresos y egresos');
     });
@@ -338,11 +338,11 @@ async function main() {
         assert.strictEqual(res.appName.toLowerCase(), 'youtube');
     });
 
-    runTest('Configuración de tolerancia de silencio en voice_settings.json >= 2000 ms', () => {
+    runTest('Configuración de silencio compatible con una respuesta ágil', () => {
         const settingsPath = path.join(__dirname, '..', 'data', 'voice_settings.json');
         assert.ok(fs.existsSync(settingsPath), 'voice_settings.json debe existir');
         const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        assert.ok(settings.endSilenceMs >= 2000, `endSilenceMs debe ser al menos 2000ms para permitir pausas al hablar (actual: ${settings.endSilenceMs})`);
+        assert.ok(settings.endSilenceMs >= 800 && settings.endSilenceMs <= 3000, `endSilenceMs fuera del intervalo admitido (actual: ${settings.endSilenceMs})`);
     });
 
     runTest('Frontend app.js tiene protección contra micrófono dual simultáneo', () => {

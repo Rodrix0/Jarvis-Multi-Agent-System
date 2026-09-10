@@ -40,6 +40,7 @@ class ModelRouterService {
             NONE: [],
             FAST_INTENT: ['qwen2.5:0.5b', 'qwen2.5:1.5b', 'qwen2.5:3b', 'hermes3:latest'],
             GENERAL_CHAT: ['qwen2.5:3b', 'qwen2.5:latest', 'hermes3:latest', 'llama3.1:latest'],
+            KNOWLEDGE: ['llama3.1:latest', 'hermes3:latest', 'qwen2.5:3b'],
             CONVERSATION: ['qwen2.5:3b', 'qwen2.5:latest', 'hermes3:latest', 'llama3.1:latest'],
             REASONING: ['hermes3:latest', 'llama3.1:latest', 'deepseek-r1:latest', 'qwen2.5:3b'],
             CODING_FAST: ['qwen2.5-coder:1.5b', 'qwen2.5-coder:3b', 'qwen2.5-coder:7b'],
@@ -201,6 +202,10 @@ class ModelRouterService {
             return { route: 'REASONING', useLLM: true, reason: 'Razonamiento lógico, comparativa o análisis profundo' };
         }
 
+        if (/^(?:¿\s*)?(?:explic[aá](?:me)?|qu[eé]\s+es|qui[eé]n\s+es|c[oó]mo\s+funciona|dame\s+informaci[oó]n)\b/i.test(text)) {
+            return { route: 'KNOWLEDGE', useLLM: true, reason: 'Pregunta informativa: priorizar el modelo de conocimiento instalado' };
+        }
+
         // 8. Conversación Rápida y Cotidiana (CONVERSATION / GENERAL_CHAT)
         return { route: 'CONVERSATION', useLLM: true, reason: 'Charla cotidiana, saludo o respuesta directa' };
     }
@@ -213,7 +218,11 @@ class ModelRouterService {
 
         // Buscar coincidencia exacta o por prefijo en los modelos instalados
         for (const pref of preferences) {
-            const found = availableModels.find(m => m === pref || m.startsWith(pref.split(':')[0]));
+            const found = availableModels.find(m => m === pref);
+            if (found) return found;
+        }
+        for (const pref of preferences) {
+            const found = availableModels.find(m => m.split(':')[0] === pref.split(':')[0]);
             if (found) return found;
         }
 

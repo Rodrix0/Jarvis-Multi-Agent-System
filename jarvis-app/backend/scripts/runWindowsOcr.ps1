@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$ImagePath
 )
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
 try {
     Add-Type -AssemblyName System.Runtime.WindowsRuntime

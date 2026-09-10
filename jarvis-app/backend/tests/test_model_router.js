@@ -63,6 +63,11 @@ async function runTests() {
     });
 
     // 2. Clasificación CONVERSATION (qwen2.5:3b)
+    test('Distingue conocimiento de charla y respeta el tamaño exacto instalado', () => {
+        assert.equal(modelRouter.classifyTask('Explicame qué es la fotosíntesis').route, 'KNOWLEDGE');
+        assert.equal(modelRouter.resolveModelForRoute('KNOWLEDGE', ['hermes3:latest','llama3.1:latest']), 'llama3.1:latest');
+        assert.equal(modelRouter.resolveModelForRoute('FAST_INTENT', ['qwen2.5:7b','qwen2.5:3b']), 'qwen2.5:3b');
+    });
     await testAsync('Enruta diálogo casual a CONVERSATION con modelo pequeño y ágil', async () => {
         const res = await modelRouter.route('hola jarvis cómo estás hoy');
         assert.strictEqual(res.route, 'CONVERSATION');

@@ -292,8 +292,25 @@ function buildLaunchCommand(targetPath) {
     return `start "" "${cleanPath}"`;
 }
 
+function launchLiteral(target) {
+    return new Promise(resolve => {
+        const script = "$ErrorActionPreference='Stop'; Start-Process -FilePath '" + target.replace(/'/g, "''") + "'";
+        // A GUI child can inherit output handles and keep execFile's callback
+        // waiting even after PowerShell exits. Only wait for the launcher.
+        const child = require('child_process').spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'ignore' });
+        const timer = setTimeout(() => { child.kill(); resolve(false); }, 8000);
+        child.on('error', () => { clearTimeout(timer); resolve(false); });
+        child.on('exit', code => { clearTimeout(timer); resolve(code === 0); });
+    });
+}
+
 async function openApp(appName, modeId = 'productividad') {
     const platform = os.platform();
+    const originalTarget = String(appName || '').trim().replace(/^"|"$/g, '');
+    // Preserve URL case and explicit paths; don't treat their names as app keywords.
+    if (platform === 'win32' && (isWebUrl(originalTarget) || (path.isAbsolute(originalTarget) && fs.existsSync(originalTarget)))) {
+        return launchLiteral(originalTarget);
+    }
     let command = '';
     let lowerApp = String(appName || '').toLowerCase().trim();
     let prev = '';
@@ -310,45 +327,51 @@ async function openApp(appName, modeId = 'productividad') {
     // 0. Normalización fonética de variantes frecuentes de Whisper / transcripción
     lowerApp = lowerApp.replace(/\b(?:watsap|wasap|guasap|whatsap|watsapp|wsp)\b/gi, 'whatsapp');
 
+    if (platform === 'win32' && path.extname(lowerApp)) {
+        const file = await require('./localFileSearch').find(lowerApp);
+        if (file) return launchLiteral(file);
+    }
+
     // 0b. Detección directa de apertura de carpetas (Desktop y carpetas de usuario)
     if (platform === 'win32') {
-        const folderMatch = lowerApp.match(/^(?:(?:la\s+)?carpeta\s+(?:de\s+)?|directorio\s+(?:de\s+)?)(.+)$/i);
-        const folderQuery = folderMatch ? folderMatch[1].trim() : (lowerApp.startsWith('carpeta ') ? lowerApp.replace(/^carpeta\s+/i, '').trim() : null);
-        if (folderQuery) {
-            const userDirs = {
-                'descargas': path.join(os.homedir(), 'Downloads'),
-                'downloads': path.join(os.homedir(), 'Downloads'),
-                'documentos': path.join(os.homedir(), 'Documents'),
-                'documents': path.join(os.homedir(), 'Documents'),
-                'escritorio': path.join(os.homedir(), 'Desktop'),
-                'desktop': path.join(os.homedir(), 'Desktop'),
-                'imagenes': path.join(os.homedir(), 'Pictures'),
-                'fotos': path.join(os.homedir(), 'Pictures'),
-                'musica': path.join(os.homedir(), 'Music'),
-                'videos': path.join(os.homedir(), 'Videos')
-            };
+        const folderQuery = lowerApp
+            .replace(/^(?:la\s+)?carpeta\s+(?:de\s+|a\s+)?/i, '')
+            .replace(/^(?:el\s+)?directorio\s+(?:de\s+)?/i, '')
+            .trim();
 
-            const directPath = userDirs[folderQuery.toLowerCase()];
-            if (directPath && fs.existsSync(directPath)) {
-                command = `explorer "${directPath}"`;
-            } else {
-                // Buscar en el Escritorio del usuario
-                const desktopPath = path.join(os.homedir(), 'Desktop');
-                if (fs.existsSync(desktopPath)) {
-                    try {
-                        const items = fs.readdirSync(desktopPath, { withFileTypes: true });
-                        const matchDir = items.find(it => it.isDirectory() && it.name.toLowerCase() === folderQuery.toLowerCase());
-                        if (matchDir) {
-                            command = `explorer "${path.join(desktopPath, matchDir.name)}"`;
-                        } else {
-                            // Búsqueda parcial de carpeta en el escritorio
-                            const partialDir = items.find(it => it.isDirectory() && (it.name.toLowerCase().includes(folderQuery.toLowerCase()) || folderQuery.toLowerCase().includes(it.name.toLowerCase())));
-                            if (partialDir) {
-                                command = `explorer "${path.join(desktopPath, partialDir.name)}"`;
-                            }
+        const userDirs = {
+            'descargas': path.join(os.homedir(), 'Downloads'),
+            'downloads': path.join(os.homedir(), 'Downloads'),
+            'documentos': path.join(os.homedir(), 'Documents'),
+            'documents': path.join(os.homedir(), 'Documents'),
+            'escritorio': path.join(os.homedir(), 'Desktop'),
+            'desktop': path.join(os.homedir(), 'Desktop'),
+            'imagenes': path.join(os.homedir(), 'Pictures'),
+            'fotos': path.join(os.homedir(), 'Pictures'),
+            'musica': path.join(os.homedir(), 'Music'),
+            'videos': path.join(os.homedir(), 'Videos')
+        };
+
+        const directPath = userDirs[folderQuery.toLowerCase()];
+        if (directPath && fs.existsSync(directPath)) {
+            command = `explorer "${directPath}"`;
+        } else if (folderQuery.length >= 2) {
+            // Buscar en el Escritorio del usuario
+            const desktopPath = path.join(os.homedir(), 'Desktop');
+            if (fs.existsSync(desktopPath)) {
+                try {
+                    const items = fs.readdirSync(desktopPath, { withFileTypes: true });
+                    const matchDir = items.find(it => it.isDirectory() && it.name.toLowerCase() === folderQuery.toLowerCase());
+                    if (matchDir) {
+                        command = `explorer "${path.join(desktopPath, matchDir.name)}"`;
+                    } else {
+                        // Búsqueda parcial de carpeta en el escritorio
+                        const partialDir = items.find(it => it.isDirectory() && (it.name.toLowerCase().includes(folderQuery.toLowerCase()) || folderQuery.toLowerCase().includes(it.name.toLowerCase())));
+                        if (partialDir) {
+                            command = `explorer "${path.join(desktopPath, partialDir.name)}"`;
                         }
-                    } catch (_) {}
-                }
+                    }
+                } catch (_) {}
             }
         }
     }
@@ -456,13 +479,13 @@ async function openApp(appName, modeId = 'productividad') {
 
     // B. ¿Es una aplicación del núcleo de Windows?
     const localAppsMap = {
-        'calculadora': 'calc',
-        'calc': 'calc',
-        'bloc de notas': 'notepad',
-        'notepad': 'notepad',
-        'notas': 'notepad',
-        'paint': 'mspaint',
-        'administrador de tareas': 'taskmgr',
+        'calculadora': 'start "" calc',
+        'calc': 'start "" calc',
+        'bloc de notas': 'start "" notepad',
+        'notepad': 'start "" notepad',
+        'notas': 'start "" notepad',
+        'paint': 'start "" mspaint',
+        'administrador de tareas': 'start "" taskmgr',
         'cmd': 'start cmd',
         'terminal': 'start cmd',
         'consola': 'start cmd'
@@ -470,7 +493,7 @@ async function openApp(appName, modeId = 'productividad') {
 
     if (!command) {
         for (const [key, cmd] of Object.entries(localAppsMap)) {
-            if (lowerApp === key || lowerApp === `el ${key}` || lowerApp.includes(key)) {
+            if (lowerApp === key || lowerApp === `el ${key}`) {
                 command = platform === 'win32' ? cmd : `open -a "${key}"`;
                 break;
             }
@@ -489,6 +512,12 @@ async function openApp(appName, modeId = 'productividad') {
                 }
             }
         }
+    }
+
+    // User files are searched by exact name (including extensions) before fuzzy app matching.
+    if (!command && platform === 'win32') {
+        const file = await require('./localFileSearch').find(lowerApp);
+        if (file) return launchLiteral(file);
     }
 
     // D. Búsqueda inteligente (Fuzzy, Diminutivos y Rutas del Sistema)
@@ -548,7 +577,7 @@ async function openApp(appName, modeId = 'productividad') {
 
     // Ejecutar orden en el Sistema Operativo
     return new Promise((resolve) => {
-        exec(command, (error) => {
+        exec(command, { windowsHide: true, timeout: 8000 }, (error) => {
             // En Windows, explorer.exe retorna exit code 1 por diseño aun cuando abre la ventana con éxito
             if (error && !(platform === 'win32' && command.toLowerCase().startsWith('explorer') && error.code === 1)) {
                 console.error(`Error al abrir app: ${error.message}`);
@@ -569,16 +598,52 @@ function handleSystemCommand(text) {
     }
 
     // 1. Detectar intención de entrenamiento
-    const trainMatch = cleanText.match(/(?:cuando|si) te (?:diga|digo) (.+?) (?:quiero que|abre|abrir|ejecuta|ejecutes|ve a|vayas a|pongas) (.+)/i);
+    const trainMatch = cleanText.match(/^(?:cuando|si) (?:te )?(?:diga|digo) (.+?) (?:quiero que|abre|abr[ií]|abrir|ejecuta|ejecutes|ve a|vayas a|pongas) (.+)/i);
     if (trainMatch) {
         let trigger = trainMatch[1].trim();
         let app = trainMatch[2].trim();
         trigger = trigger.replace(/^jarvis /i, '');
         return { isTraining: true, trigger: trigger, appName: app };
     }
+    if (/^(?:explica(?:me)?|como|que es|por que|cuando|donde)\b/.test(cleanText.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) return { isSystemCommand: false, isTraining: false };
 
-    // 2. Extracción estándar de comandos del sistema
-    const match = lowerText.match(/(?:(?:que\s+)?(?:abr[aá]|abre|abrir|abr[ií]|abr[aá]me|abr[ií]me|abrirme|abr[ií]te|inici[aá]|iniciar|arranc[aá]|arrancar|lanz[aá]|lanzar|ejecut[aá]|ejecutar)|(?:pod[eé]s|podrias|puedes|quiero|necesito)\s+(?:abrir|iniciar|ejecutar)|ir a|ve a|metete a|metete en|pon|ponme|poneme|pon[eé]|coloca|colocame|jug[aá] a?|jugar a?)\s+(.+)/i)
+    const literal = String(text).match(/(?:abr[ií](?:me|r)?|abre|abrirme)\s+(?:el archivo\s+)?(https?:\/\/\S+|[a-z]:[\\/].+|"[a-z]:[\\/].+")$/i);
+    if (literal) return { isSystemCommand: true, appName: literal[1].replace(/^"|"$/g, '') };
+
+    // 2a. Extracción dedicada de carpetas (Desktop y usuario)
+    const folderMatch = lowerText.match(/\b(?:(?:la|una|mi)\s+)?carpeta\s+(?:de\s+|a\s+|que\s+diga\s+|llamada\s+)?([\p{L}\p{N}_\-\s]+)/iu);
+    if (folderMatch && /^(?:(?:jarvis[, ]+)?(?:abr[ií](?:me|r)?|abre|abrirme)\s+|(?:la\s+)?carpeta\s+)/i.test(lowerText)) {
+        let folderName = folderMatch[1].trim();
+        folderName = folderName
+            .replace(/\b(?:enotaciones|yutas\s+aftalda|yutas|aftalda|por\s+favor)\b/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (folderName.length >= 1) {
+            return { isSystemCommand: true, appName: folderName, isLearned: false, isFolder: true };
+        }
+    }
+
+    // 2b. Detección directa de apps esenciales (WhatsApp, Netflix, YouTube, Spotify, Discord, Chrome)
+    const directWebApps = [
+        { name: 'whatsapp', regex: /\b(?:whatsapp|whatsapps|watsap|wasap|guasap|wsp|whatsapps\s+up)\b/i },
+        { name: 'youtube', regex: /\b(?:youtube|yutub|yutube|yutubes|youtubes)\b/i },
+        { name: 'netflix', regex: /\b(?:netflix|netfli)\b/i },
+        { name: 'spotify', regex: /\b(?:spotify|spotifai)\b/i },
+        { name: 'discord', regex: /\b(?:discord|discor|niscor)\b/i },
+        { name: 'chrome', regex: /\b(?:chrome|crom|google\s+chrome)\b/i }
+    ];
+    const isQuestion = /^(?:quien|como|que\s+es|por\s+que|cuando|donde)\b/i.test(cleanText);
+    const isYtSearch = /\byoutube\b/i.test(cleanText) && /\b(?:busca|buscame|buscar|pone|poneme|la cobra|el canal|cancion|trailer|video)\b/i.test(cleanText);
+    if (!isQuestion && !isYtSearch && /^(?:(?:jarvis[, ]+)?(?:abr[ií](?:me|r)?|abre|abrirme|inici[aá]|iniciar)\s+)?(?:whatsapp|whatsapps|watsap|wasap|guasap|wsp|youtube|yutub|yutube|netflix|netfli|spotify|spotifai|discord|discor|niscor|chrome|crom|google\s+chrome)(?:\s+(?:en\s+)?(?:el\s+)?navegador)?[.!?]?$/i.test(lowerText)) {
+        for (const app of directWebApps) {
+            if (app.regex.test(lowerText)) {
+                return { isSystemCommand: true, appName: app.name, isLearned: false };
+            }
+        }
+    }
+
+    // 2c. Extracción estándar de comandos del sistema con verbos Rioplatenses y variaciones fonéticas
+    const match = lowerText.match(/(?:(?:que\s+)?(?:abr[aá]|abr[aá]n|abr[aá]s|abre|abres|abrir|abr[ií]|abr[ií]me|abr[aá]me|abrirme|abr[ií]te|inici[aá]|iniciar|arranc[aá]|arrancar|lanz[aá]|lanzar|ejecut[aá]|ejecutar|abrega|apli|averi|avery|a\s+veri)|(?:pod[eé]s|podrias|puedes|quiero|necesito)\s+(?:abrir|iniciar|ejecutar)|ir a|ve a|metete a|metete en|pon|ponme|poneme|pon[eé]|coloca|colocame|jug[aá] a?|jugar a?)\s+(.+)/i)
         || lowerText.match(/^(?:y\s+)?(?:la\s+)?carpeta\s+(.+)/i);
 
     if (match) {
@@ -586,6 +651,11 @@ function handleSystemCommand(text) {
         if (appToOpen.endsWith('.')) {
             appToOpen = appToOpen.slice(0, -1);
         }
+        appToOpen = appToOpen
+            .replace(/^(?:la\s+)?carpeta\s+(?:de\s+|a\s+)?/i, '')
+            .replace(/^(?:la\s+)?(?:aplicaci[oó]n|app|programa|juego)\s+(?:de\s+)?/i, '')
+            .replace(/^(?:el\s+)?(?:archivo|documento)\s+(?:de\s+)?/i, '')
+            .trim();
 
         if (fs.existsSync(customCommandsFile)) {
             try {

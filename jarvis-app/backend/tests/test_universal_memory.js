@@ -13,6 +13,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const universalMemory = require('../services/memory/universalMemoryService');
+const databaseService = require('../services/persistence/databaseService');
 
 async function runTests() {
     console.log('===============================================================');
@@ -75,8 +76,10 @@ async function runTests() {
             value: 'tengo mucho sueño hoy'
         });
         assert.ok(noise.ok);
-        assert.strictEqual(noise.discarded, true);
-        assert.strictEqual(noise.action, 'DISCARD');
+        assert.strictEqual(noise.tier, 'ARCHIVE_ONLY');
+        const rows = databaseService.db.prepare('SELECT id FROM memory WHERE value = ?').all('tengo mucho sueño hoy');
+        assert.strictEqual(rows.length, 0);
+        assert.strictEqual(noise.action, 'ARCHIVE_ONLY');
     });
 
     // 3. Verificación de Raw Archive inmutable JSONL

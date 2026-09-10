@@ -80,8 +80,10 @@ class HomeAssistantService {
     async init({ haUrl = null, token = null, forceMock = false } = {}) {
         if (haUrl) this.haUrl = haUrl.replace(/\/$/, '');
         if (token) this.token = token;
-        if (forceMock || !this.token) {
-            this.isMockMode = true;
+        this.isMockMode = forceMock;
+        if (!forceMock && !this.token) {
+            this.entities.clear(); this.domainIndex.clear(); this.initialized = false;
+            return { ok: false, mode: 'unavailable', message: 'Home Assistant no está configurado. Falta conectar el servidor con su token.' };
         }
 
         if (this.isMockMode) {
@@ -99,11 +101,10 @@ class HomeAssistantService {
             console.log(`[HomeAssistant] 🏠 Conectado exitosamente a ${this.haUrl} (${this.entities.size} entidades sincronizadas).`);
             return { ok: true, mode: 'live', entityCount: this.entities.size };
         } catch (err) {
-            console.warn(`[HomeAssistant] ⚠️ No se pudo contactar con Home Assistant (${err.message}). Activando modo fallback.`);
-            this.isMockMode = true;
-            this._initMockEntities();
-            this.initialized = true;
-            return { ok: true, mode: 'mock_fallback', entityCount: this.entities.size, reason: err.message };
+            this.isMockMode = false;
+            this.initialized = false;
+            this.entities.clear(); this.domainIndex.clear();
+            return { ok: false, mode: 'unavailable', entityCount: 0, message: `No pude conectar con Home Assistant: ${err.message}` };
         }
     }
 
@@ -474,6 +475,10 @@ class HomeAssistantService {
      * Retorna { success, message, entityId, state, action }
      */
     async executeCommand(text) {
+        if (!this.initialized) {
+            const status = await this.init();
+            if (!status.ok) return { success: false, message: status.message };
+        }
         const clean = this._normalize(text);
 
         // 1. Apagar todas las luces
@@ -602,7 +607,7 @@ class HomeAssistantService {
 
     getPublicStatus() {
         return {
-            connected: this.wsConnected || this.isMockMode,
+            connected: this.initialized && !this.isMockMode,
             isMockMode: this.isMockMode,
             haUrl: this.haUrl,
             entityCount: this.entities.size,

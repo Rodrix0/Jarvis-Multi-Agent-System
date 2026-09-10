@@ -29,10 +29,14 @@ class WindowsControlService {
     registerActionRouterHandlers() {
         // Audio
         actionRouterService.registerAction('audio.set-volume', async (params) => this.audio.setVolume(params.percent));
+        actionRouterService.registerAction('audio.adjust-volume', async (params) => this.audio.adjustVolume(params.delta));
+        actionRouterService.registerAction('audio.get-volume', async () => this.audio.getVolume());
         actionRouterService.registerAction('audio.toggle-mute', async () => this.audio.toggleMute());
 
         // Display
         actionRouterService.registerAction('display.set-brightness', async (params) => this.display.setBrightness(params.percent));
+        actionRouterService.registerAction('display.adjust-brightness', async (params) => this.display.adjustBrightness(params.delta));
+        actionRouterService.registerAction('display.get-brightness', async () => this.display.getBrightness());
         actionRouterService.registerAction('display.screenshot', async (params) => this.display.takeScreenshot(params.destinationDir));
 
         // Power

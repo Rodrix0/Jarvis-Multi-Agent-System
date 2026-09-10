@@ -144,7 +144,7 @@ async function discover() {
 async function isAvailable() {
     const config = getConfig();
     if (!config.device.host) return false;
-    if (Date.now() - availabilityCache.checkedAt < 4000) return availabilityCache.value;
+    if (Date.now() - availabilityCache.checkedAt < (availabilityCache.value ? 4000 : 15000)) return availabilityCache.value;
     try {
         const result = await runBridge(['check'], 3000);
         availabilityCache = { value: result.available === true, checkedAt: Date.now() };
@@ -175,7 +175,7 @@ async function learnButton(button) {
     return getPublicStatus();
 }
 
-async function sendButtons(buttons, delayMs) {
+async function sendButtons(buttons, delayMs = 180) {
     if (!buttons.length) return;
     const invalid = buttons.filter(button => !ALLOWED_BUTTONS.includes(button));
     if (invalid.length) throw new Error(`Secuencia IR inválida: ${invalid.join(', ')}`);
@@ -480,7 +480,8 @@ async function getVolume() {
         ok: true,
         volume: state.volume,
         muted: state.muted,
-        message: `El volumen de la televisión está al ${state.volume}%.`
+        estimated: true,
+        message: `El último volumen estimado de la televisión es ${state.volume}%. El control infrarrojo no permite leer el nivel real.`
     };
 }
 
@@ -499,7 +500,7 @@ async function setVolume(percent) {
     const diff = target - state.volume;
     if (diff !== 0) {
         const button = diff > 0 ? upBtn : downBtn;
-        const count = Math.min(50, Math.abs(diff));
+        const count = Math.abs(diff);
         await sendButtons(repeat(button, count), 180);
     }
     state.volume = target;
@@ -512,6 +513,8 @@ async function setVolume(percent) {
 }
 
 async function adjustVolume(delta) {
+    if (!Number.isFinite(Number(delta))) return { ok: false, message: 'El cambio de volumen debe ser numérico.' };
+    delta = Math.round(Number(delta));
     const config = getConfig();
     const upBtn = getVolButton(config, true);
     const downBtn = getVolButton(config, false);
@@ -522,10 +525,11 @@ async function adjustVolume(delta) {
         };
     }
     const state = getTvState();
-    const count = Math.min(30, Math.abs(delta));
+    const target = Math.max(0, Math.min(100, state.volume + delta));
+    const count = Math.abs(target - state.volume);
     const button = delta > 0 ? upBtn : downBtn;
     await sendButtons(repeat(button, count), 180);
-    state.volume = Math.max(0, Math.min(100, state.volume + delta));
+    state.volume = target;
     saveTvState(state);
     const actionWord = delta > 0 ? 'Subí' : 'Bajé';
     return {

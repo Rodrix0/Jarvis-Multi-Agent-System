@@ -28,7 +28,7 @@ class UiAutomationService {
                 ...args
             ];
 
-            execFile('powershell.exe', psArgs, { timeout: timeoutMs, encoding: 'utf8' }, (error, stdout, stderr) => {
+            execFile('powershell.exe', psArgs, { timeout: timeoutMs, encoding: 'utf8', windowsHide: true }, (error, stdout, stderr) => {
                 if (error && !stdout) {
                     return reject(new Error(`[UIAutomation] Error ejecutando comando: ${error.message} (${stderr || ''})`));
                 }
@@ -62,7 +62,7 @@ class UiAutomationService {
      * Busca una ventana por título (subcadena o regex).
      */
     async findWindow(titleOrPattern) {
-        const res = await this._runBridge(['-Action', 'find-window', '-TitlePattern', String(titleOrPattern || '')]);
+        const res = await this._runBridge(['-Action', 'find-window', '-TitlePattern', titleOrPattern instanceof RegExp ? titleOrPattern.source : String(titleOrPattern || '')]);
         if (!res.ok) throw new Error(res.error || `Error buscando ventana '${titleOrPattern}'.`);
         return res.matched ? res.window : null;
     }
@@ -71,7 +71,11 @@ class UiAutomationService {
      * Resuelve el target de una ventana (puede ser HWND numérico, objeto ventana o string de título).
      */
     async _resolveHwnd(windowTarget) {
-        if (!windowTarget) throw new Error('Se requiere especificar la ventana destino.');
+        if (!windowTarget) {
+            const foreground = await this._runBridge(['-Action', 'foreground-window']);
+            if (!foreground.ok || !foreground.hwnd) throw new Error('No encontré una ventana activa.');
+            return foreground.hwnd;
+        }
         if (typeof windowTarget === 'number') return windowTarget;
         if (typeof windowTarget === 'object' && (windowTarget.Hwnd || windowTarget.hwnd)) {
             return windowTarget.Hwnd || windowTarget.hwnd;

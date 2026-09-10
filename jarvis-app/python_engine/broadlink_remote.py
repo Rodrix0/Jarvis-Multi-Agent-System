@@ -42,13 +42,14 @@ def import_broadlink():
         ) from error
 
 
-def connect_device():
+def connect_device(timeout=5):
     broadlink = import_broadlink()
     config = load_config()
     host = config.get("device", {}).get("host")
     if not host:
         raise RuntimeError("Primero descubre el BroadLink desde el panel Control TV.")
-    device = broadlink.hello(host)
+    device = broadlink.hello(host, timeout=timeout)
+    device.timeout = timeout
     try:
         device.auth()
     except Exception as error:
@@ -224,7 +225,7 @@ def main():
             raise ValueError("La secuencia debe ser una lista JSON de botones.")
         result = send_sequence(sequence, args.delay_ms)
     elif args.command == "check":
-        device = connect_device()
+        device = connect_device(timeout=1)
         result = {
             "available": True,
             "host": device.host[0] if isinstance(device.host, tuple) else str(device.host),

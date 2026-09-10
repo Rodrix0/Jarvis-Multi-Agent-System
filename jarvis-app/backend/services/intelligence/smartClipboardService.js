@@ -29,37 +29,16 @@ class SmartClipboardService {
      * Lee el contenido textual del portapapeles bajo demanda.
      */
     readClipboard() {
-        try {
-            const proc = spawnSync('powershell', ['-Command', 'Get-Clipboard'], {
-                encoding: 'utf8',
-                windowsHide: true,
-                timeout: 3000
-            });
-            if (proc.error) throw proc.error;
-            return (proc.stdout || '').replace(/\r\n/g, '\n').trim();
-        } catch (e) {
-            console.warn('[SmartClipboard] Error leyendo portapapeles:', e.message);
-            return '';
-        }
+        const result = require('../windows/clipboardService').readClipboard();
+        if (!result.ok) throw new Error(result.message);
+        return result.text;
     }
 
     /**
      * Escribe texto en el portapapeles de Windows de forma segura.
      */
     writeClipboard(text) {
-        try {
-            const str = String(text ?? '');
-            const proc = spawnSync('powershell', ['-Command', '[Console]::In.ReadToEnd() | Set-Clipboard'], {
-                input: str,
-                encoding: 'utf8',
-                windowsHide: true,
-                timeout: 3000
-            });
-            return proc.status === 0;
-        } catch (e) {
-            console.warn('[SmartClipboard] Error escribiendo en portapapeles:', e.message);
-            return false;
-        }
+        return require('../windows/clipboardService').writeClipboard(text).ok;
     }
 
     /**

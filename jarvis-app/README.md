@@ -153,8 +153,8 @@ ejecute dos veces. Si el proceso local falla, el navegador queda como respaldo.
 
 Para poder diagnosticar errores reales, las transcripciones elegidas y sus
 alternativas se registran localmente en `backend/data/voice_history.jsonl`. El
-archivo se limita automáticamente a 1 MB. Whisper se carga recién después de
-despertar y detectar una frase; mientras está en descanso solo trabaja Vosk.
+archivo se limita automáticamente a 1 MB. Whisper se precarga en segundo plano y queda disponible para la siguiente orden.
+Mientras Jarvis está en descanso, solo Vosk procesa el micrófono.
 
 ## Memoria contextual
 
@@ -274,3 +274,10 @@ El escudo actúa al instante (en 0ms y bloqueando incluso los puertos USB). Tien
 - 🔴 **Apagar**: *"Jarvis, desactivar seguridad"* o *"Apaga la biometría"*
 
 > **Nota:** Si es la primera vez que clonas este proyecto en otra PC, recuerda instalar los requisitos internos de Python (`pip install opencv-contrib-python customtkinter numpy Pillow`).
+
+
+## Verificación de comandos cotidianos
+
+La reparación y las pruebas del 8 de septiembre de 2026 están documentadas en [VERIFICACION_2026-09-08.md](VERIFICACION_2026-09-08.md), incluidos los límites de la comprobación física del Broadlink.
+
+La revisión integral posterior, con 61 suites aprobadas, el catálogo de 132 acciones y las comprobaciones reales de Windows e integraciones, está en [VERIFICACION_2026-09-09.md](VERIFICACION_2026-09-09.md).

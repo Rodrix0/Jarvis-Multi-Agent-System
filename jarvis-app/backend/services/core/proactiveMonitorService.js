@@ -56,6 +56,9 @@ class ProactiveMonitorService {
         this.processTimer = setInterval(() => {
             this.checkMonitoredProcesses().catch(() => {});
         }, processIntervalMs);
+        this.batteryTimer.unref?.();
+        this.cpuTimer.unref?.();
+        this.processTimer.unref?.();
 
         // 4. Monitor de archivos en Descargas de Jarvis
         if (watchDownloads) {

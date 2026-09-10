@@ -39,6 +39,7 @@ public class NativeBridge {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
@@ -553,6 +554,10 @@ public class NativeBridge {
 Add-Type -TypeDefinition $csharp -ReferencedAssemblies "UIAutomationClient", "UIAutomationTypes", "WindowsBase", "System.Windows.Forms" -ErrorAction SilentlyContinue
 
 switch ($Action.ToLower()) {
+    "foreground-window" {
+        [PSCustomObject]@{ ok = $true; hwnd = [NativeBridge]::GetForegroundWindow().ToInt64() } | ConvertTo-Json -Compress
+        exit 0
+    }
     "list-windows" {
         Write-Output ([NativeBridge]::ListWindowsJson())
         exit 0

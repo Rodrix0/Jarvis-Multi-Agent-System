@@ -55,7 +55,8 @@ foreach ($path in $pathsToScan) {
                 $name = $_.BaseName
                 $target = $shortcut.TargetPath
                 if (-not [string]::IsNullOrWhiteSpace($target) -and (Test-Path $target)) {
-                    Add-AppWithAliases $name $target
+                    # Preserve shortcut arguments, working directory and launcher flags.
+                    Add-AppWithAliases $name $_.FullName
                 } else {
                     Add-AppWithAliases $name $_.FullName
                 }

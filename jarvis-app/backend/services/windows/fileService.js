@@ -6,35 +6,8 @@ const trashService = require('../core/trashService');
 const securityPolicyService = require('../core/securityPolicyService');
 
 class FileService {
-    searchFiles(query, extension = null, baseDir = null) {
-        const root = baseDir || os.homedir();
-        const extFilter = extension ? `*.${extension.replace(/^\./, '')}` : '*.*';
-        const cleanQuery = String(query || '').replace(/['"]/g, '').trim();
-
-        const script = `
-            Get-ChildItem -Path '${root.replace(/\\/g, '\\\\')}' -Filter '${extFilter}' -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like '*${cleanQuery}*' } |
-            Select-Object -First 10 -Property FullName, Name, Length, LastWriteTime |
-            ConvertTo-Json
-        `;
-
-        try {
-            const out = execSync(`powershell.exe -NoProfile -Command "${script.replace(/\r?\n/g, ' ')}"`, { timeout: 12000 }).toString().trim();
-            if (!out) return { ok: true, files: [], message: `No se encontraron archivos que coincidan con "${query}".` };
-
-            const data = JSON.parse(out);
-            const files = Array.isArray(data) ? data : [data];
-            const summary = files.map(f => `• ${f.Name} (${f.FullName})`).join('\n');
-
-            return {
-                ok: true,
-                files,
-                summary,
-                message: `Encontré ${files.length} archivo(s):\n${summary}`
-            };
-        } catch (err) {
-            return { ok: false, code: 'ERR_SEARCH_FAILED', message: err.message };
-        }
+    async searchFiles(query, extension = null, baseDir = null) {
+        return require('../desktopContentService').search({ query, extension, baseDir });
     }
 
     moveFile(sourcePath, destinationPath) {
@@ -48,7 +21,13 @@ class FileService {
         }
 
         fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
-        fs.renameSync(sourcePath, destinationPath);
+        if (fs.existsSync(destinationPath)) return { ok: false, message: `Ya existe ${destinationPath}. Indicá otro destino.` };
+        try { fs.renameSync(sourcePath, destinationPath); }
+        catch (error) {
+            if (error.code !== 'EXDEV' || !fs.statSync(sourcePath).isFile()) throw error;
+            fs.copyFileSync(sourcePath, destinationPath, fs.constants.COPYFILE_EXCL);
+            fs.unlinkSync(sourcePath);
+        }
 
         return {
             ok: true,
@@ -64,7 +43,7 @@ class FileService {
         }
 
         fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
-        fs.copyFileSync(sourcePath, destinationPath);
+        fs.copyFileSync(sourcePath, destinationPath, fs.constants.COPYFILE_EXCL);
 
         return {
             ok: true,
@@ -75,6 +54,7 @@ class FileService {
     }
 
     renameFile(filePath, newName) {
+        require('../core/fileOperationsService').validateName(String(newName || ''));
         const sec = securityPolicyService.validatePathAccess(filePath, true);
         if (!sec.allowed) return { ok: false, code: sec.code, message: sec.reason };
 
@@ -84,6 +64,7 @@ class FileService {
 
         const dir = path.dirname(filePath);
         const destination = path.join(dir, newName);
+        if (fs.existsSync(destination)) return { ok: false, message: `Ya existe ${destination}. Indicá otro nombre.` };
         fs.renameSync(filePath, destination);
 
         return {

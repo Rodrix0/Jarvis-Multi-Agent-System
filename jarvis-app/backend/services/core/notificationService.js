@@ -134,24 +134,22 @@ class NotificationService {
         this.currentTts = this.ttsQueue.shift();
         const textToSpeak = this.currentTts.text;
 
-        // 1. Sintetizar y reproducir voz en la PC si ttsService está disponible
-        if (this.ttsService && typeof this.ttsService.speak === 'function') {
-            this.ttsService.speak(textToSpeak).catch(err => {
-                console.warn('[Notifications] Error reproduciendo TTS:', err.message);
-            });
+        const current = this.currentTts;
+        try {
+            if (this.ttsService && typeof this.ttsService.speak === 'function') {
+                await this.ttsService.speak(textToSpeak);
+            } else if (this.io) {
+                this.io.emit('speak_phrase', { phrase: textToSpeak });
+                await new Promise(resolve => setTimeout(resolve, Math.min(15000, Math.max(1200, textToSpeak.length * 60))));
+            }
+        } catch (error) {
+            console.warn('[Notifications] Error reproduciendo TTS:', error.message);
+        } finally {
+            if (this.currentTts === current) {
+                this.currentTts = null;
+                this.processTtsQueue();
+            }
         }
-
-        // 2. Emitir al socket para clientes frontend
-        if (this.io) {
-            this.io.emit('speak_phrase', { phrase: textToSpeak });
-        }
-
-        // Esperar duración estimada de habla (~60ms por carácter)
-        const durationMs = Math.min(10000, Math.max(1200, textToSpeak.length * 60));
-        setTimeout(() => {
-            this.currentTts = null;
-            this.processTtsQueue();
-        }, durationMs);
     }
 }
 
