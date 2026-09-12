@@ -522,13 +522,19 @@ function registerActions() {
         parameters: { question: 'Pregunta o tema a investigar', options: 'Opciones adicionales (timeout, maxSources)' }, permission: 'standard',
         execute: async ({ question, query, options }) => {
             const topic = question || query;
-            const res = await researchService.research(topic, options);
+            const res = await require('./researchDocumentService').search(topic, {quick:false,...options});
             return {
                 ok: true,
-                message: res.uniqueSources ? `${res.synthesis.consensus}\n\nFuentes:\n${res.sources.map(source => source.url).join('\n')}` : `No pude obtener fuentes para ${topic}.`,
+                message: res.uniqueSources ? require('./researchDocumentService').format(res) : `No pude obtener fuentes para ${topic}.`,
                 data: res
             };
         }
+    });
+
+    actionKernel.register({
+        id:'document.research', name:'Guardar investigación en documento',
+        parameters:{topic:'Tema para buscar',useLast:'Usar resultados de la última búsqueda',directory:'Carpeta de destino o ruta absoluta',fileName:'Nombre opcional',format:'docx, pdf o txt'},
+        execute: params => require('./researchDocumentService').create(params)
     });
 
     // Vision Subsystem (Screen OCR & Error Diagnosis)
@@ -1232,18 +1238,10 @@ function registerActions() {
 
     actionKernel.register({
         id: 'document.create-info', name: 'Crear documento informativo en el Escritorio',
-        description: 'Genera localmente un informe de Word cuando el usuario pide información sobre un tema.',
-        parameters: { topic: 'Tema solicitado' }, permission: 'desktop-control',
-        dependencies: [{ id: 'ollama', label: 'Motor local Ollama', check: () => true }],
-        examples: ['Dame información sobre computación cuántica', 'Buscame info de Alan Turing'],
-        execute: async ({ topic }) => {
-            const result = await informationDocumentService.createOnDesktop(topic);
-            return {
-                message: `Preparé la información sobre ${topic} y guardé el documento en tu Escritorio como ${require('path').basename(result.filePath)}.`,
-                data: { filePath: result.filePath },
-                evidence: { fileCreated: true, filePath: result.filePath }
-            };
-        }
+        description: 'Busca fuentes web y guarda su información en un documento.',
+        parameters: { topic: 'Tema solicitado', directory: 'Destino opcional', fileName: 'Nombre opcional', format: 'docx, pdf o txt' }, permission: 'desktop-control',
+        examples: ['Creame un informe sobre computación cuántica'],
+        execute: params => require('./researchDocumentService').create(params)
     });
 
     actionKernel.register({
@@ -1427,6 +1425,8 @@ async function resolve(text) {
     const catalogIntent = require('./ai/catalogIntentParser').parse(clean, actionKernel.catalog());
     if (catalogIntent) return catalogIntent;
 
+    const researchIntent = require('./ai/researchIntentParser').parse(clean);
+    if (researchIntent) return researchIntent;
     const fileIntent = require('./ai/fileIntentParser').parse(clean);
     if (fileIntent) return fileIntent;
     // These intents must precede generic audio, deletion and application rules.

@@ -18,7 +18,7 @@ const defaultNames = [
  'regression_safety_suite','voice_intent_test','test_daily_commands','test_full_command_pipeline',
  'test_document_templates','test_snapshot_service','test_git_integration','test_coding_agent',
  'test_activity_context','test_home_assistant','test_auto_heal','test_research_service',
- 'test_browser_real_e2e','test_open_app_fixes','test_hardened_code_act','test_mcp_architecture','test_canonical_llm','test_browser_confirmations','core.test','test_smart_clipboard'
+ 'test_browser_real_e2e','test_open_app_fixes','test_hardened_code_act','test_mcp_architecture','test_canonical_llm','test_browser_confirmations','core.test','test_smart_clipboard','test_research_documents'
 ];
 const names = process.argv.length > 2 ? process.argv.slice(2) : defaultNames;
 fs.mkdirSync(root, { recursive: true });

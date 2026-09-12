@@ -68,10 +68,11 @@ class ResearchService {
 
             $('#b_results > li.b_algo').each((_, elem) => {
                 const title = $(elem).find('h2 a').text().trim();
-                const link = $(elem).find('h2 a').attr('href');
+                let link = $(elem).find('h2 a').attr('href');
+                try { const u = new URL(link); if (u.hostname.endsWith('bing.com') && u.pathname === '/ck/a') { const target=u.searchParams.get('u'); if (target?.startsWith('a1')) link=Buffer.from(target.slice(2),'base64url').toString('utf8'); } } catch (_) {}
                 const snippet = $(elem).find('.b_caption p, .b_algoSlug, p').first().text().trim();
                 
-                if (title && link && link.startsWith('http')) {
+                if (title && link && /^https?:/.test(link) && !/duckduckgo\.com\/y\.js|bing\.com\/aclick/.test(link)) {
                     results.push({
                         title,
                         url: link,
@@ -98,7 +99,7 @@ class ResearchService {
             const html = await res.text();
             const $ = cheerio.load(html);
 
-            $('.result').each((_, elem) => {
+            $('.result').not('.result--ad').each((_, elem) => {
                 const title = $(elem).find('.result__title a').text().trim();
                 let link = $(elem).find('.result__url').attr('href') || $(elem).find('.result__title a').attr('href');
                 const snippet = $(elem).find('.result__snippet').text().trim();
@@ -138,7 +139,7 @@ class ResearchService {
                 parsed.searchParams.delete('utm_medium');
                 parsed.searchParams.delete('utm_campaign');
                 parsed.searchParams.delete('ref');
-                const canonical = `${parsed.hostname}${parsed.pathname}`.toLowerCase().replace(/\/+$/, '');
+                const canonical = `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}${parsed.search}`;
 
                 if (!seen.has(canonical)) {
                     seen.add(canonical);
@@ -242,7 +243,8 @@ class ResearchService {
         console.log(`\n[ResearchService] 🔬 Iniciando investigación analítica sobre: "${question}"...`);
 
         // 1. Generar 3 a 5 subconsultas
-        const subQueries = this.generateSubQueries(question);
+        if (!String(question || '').trim()) return { ok:false, topic:'', sources:[], uniqueSources:0, synthesis:this.synthesize([], '') };
+        const subQueries = options.quick ? [String(question).trim()] : this.generateSubQueries(question);
         console.log(`[ResearchService] 📋 Subconsultas generadas (${subQueries.length}):`, subQueries);
 
         // 2. Búsquedas concurrentes multi-fuente

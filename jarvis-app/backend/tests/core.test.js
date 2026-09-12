@@ -127,9 +127,9 @@ async function run() {
     assert.match(discordCommand, /Discord\\Update\.exe" --processStart Discord\.exe|start discord:/i);
 
     const infoDocument = await jarvisActions.resolve('Dame información sobre computación cuántica');
-    assert.equal(infoDocument.id, 'assistant.respond');
+    assert.equal(infoDocument.id, 'research.query');
     const explicitDocument = await jarvisActions.resolve('Creame un informe sobre computación cuántica');
-    assert.ok(['document.create-info', 'file.create'].includes(explicitDocument.id));
+    assert.ok(['document.create-info', 'document.research', 'file.create'].includes(explicitDocument.id));
     const explicitSleep = await jarvisActions.resolve('Jarvis, apagate');
     assert.equal(explicitSleep.id, 'voice.sleep');
     const bareSleep = await jarvisActions.resolve('apagate');

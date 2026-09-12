@@ -3,7 +3,7 @@ const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300
 const families = [
     [/archivo|carpeta|escritorio|documento|leer|leeme|texto/, ['file.', 'folder.', 'directory.']],
     [/git|repositorio|commit|rama|codigo|program|bug|proyecto/, ['git.', 'code.', 'snapshot.']],
-    [/plantilla|estilo|curriculum|monografia|informe|word/, ['document.']],
+    [/plantilla|estilo|curriculum|monografia|informe|word|documento|informacion|investiga/, ['document.', 'research.']],
     [/perfil|contexto/, ['profile.', 'context.']],
     [/regla|automatiz|cuando|condicion/, ['automation.']],
     [/objetivo|meta|subobjetivo|progreso/, ['goal.']],
