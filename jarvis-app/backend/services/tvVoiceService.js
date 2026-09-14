@@ -16,6 +16,7 @@ function normalize(text) {
 }
 
 function activateSession() {
+    require('./browser/voiceNavigationService').suspend();
     activeUntil = Date.now() + SESSION_MS;
     sessionContext.topic = 'netflix_tv';
 }
@@ -71,6 +72,8 @@ function cleanQuery(query) {
         .replace(/\s+y\s+(?:reproduci(?:rla|rlo)?|reproduce(?:la|lo)?|pon(?:ela|elo))\b.*$/, '')
         .replace(/^(?:en\s+)?(?:mi\s+lista\s+)?/, '')
         .replace(/^(?:la\s+)?serie\s+que\s+estoy\s+viendo\s+(?:que\s+es\s+)?/, '')
+        .replace(/^(?:(?:la|el|una|un)\s+)?(?:pelicula|serie)(?:\s+(?:llamada|llamado|titulada))?\s+(?!de\s)/, '')
+        .replace(/\s+en\s+(?:la\s+)?(?:tele|television|tv)$/, '')
         .trim();
 
     const genre = clean.match(/^(?:una?\s+)?(?:pelicula|serie)s?\s+de\s+(.+)$/);
@@ -82,7 +85,7 @@ function parseTvIntent(text) {
     const raw = String(text || '').trim();
     const normalized = normalize(raw);
 
-    if (/(cancela|detene|para).*(tele|netflix)/.test(normalized)) {
+    if (/(cancela|detene|para).*(tele|netflix|youtube)/.test(normalized)) {
         return { action: 'cancel' };
     }
 
@@ -197,7 +200,7 @@ function parseTvIntent(text) {
     if (/^(?:prende|prenda|prender|encende|encienda|encender)\s+(?:la\s+)?(?:tele|television|tv)\s+(?:y\s+)?(?:pone|poneme|abrir|abri|abre|entra|entrar)?\s*netflix$/i.test(normalized)
         || /^(?:pone|poneme|abrir|abri|abre|entra|entrar)\s+netflix\s+(?:en\s+)?(?:la\s+)?(?:tele|television|tv)$/i.test(normalized)
         || /^(?:prende|prenda|encende|encienda)\s+(?:la\s+)?(?:tele|television|tv)$/i.test(normalized)) {
-        return { action: 'netflix', title: '', useDefaultSeries: false, powerOn: powerOn || true };
+        return { action: 'netflix', title: '', useDefaultSeries: false, powerOn };
     }
 
     if (/\b(reproduce|reproduci|pone|poneme|ponelo|ponela|ponlo|selecciona|elegi|entra)(?:\s+(?:eso|esa|ese|esto|esta|seleccionado|seleccionada|ahi))?\s*$/.test(normalized)) {

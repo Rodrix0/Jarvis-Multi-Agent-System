@@ -28,6 +28,12 @@ let registered = false;
 let pendingVoiceConfirmation = null;
 
 function registerActions() {
+    actionKernel.register({id:'browser.voice',name:'Navegar por voz',description:'Busca, abre enlaces y elige resultados visibles manteniendo la página actual.',parameters:{command:'open, search, select, point, click, scroll, back, inspect, clarify o stop',expectedHref:'Enlace señalado al interpretar la orden',question:'Aclaración si falta contexto',site:'youtube, google o URL',resultType:'channel o video',query:'Consulta',index:'Posición acumulativa del resultado',label:'Nombre del enlace o botón',direction:'up o down'},permission:'desktop-control',retry:false,
+        execute:params=>require('./browser/voiceNavigationService').execute(params)});
+    actionKernel.register({id:'tv.learned-app',name:'Aplicación aprendida en TV',parameters:{app:'youtube o netflix',title:'Texto o título',open:'Abrir aplicación',writeOnly:'Escribir en teclado ya abierto',powerOn:'Encender solo por pedido explícito'},permission:'physical-device',retry:false,
+        execute:async(params,context)=>{const result=await require('./tvLearningService').execute(params,context.onTvProgress);tvVoiceService.activateSession();return result;}});
+    actionKernel.register({id:'tv.power-signal',name:'Encendido de TV',parameters:{},permission:'physical-device',retry:false,
+        execute:async()=>{await tvService.sendButtons(['power']);tvVoiceService.activateSession();return {ok:true,message:'Envié la señal de encendido/apagado. El control infrarrojo no informa el estado de la TV.',evidence:{signalSent:true}};}});
     if (registered) return;
     registered = true;
 
@@ -1197,7 +1203,10 @@ function registerActions() {
         dependencies: [{ id: 'broadlink', label: 'BroadLink configurado', check: async () => ({ available: await tvService.isAvailable(), detail: 'Debe estar en la misma red que la PC.' }) }],
         examples: ['Prendé la tele y abrí Netflix', 'Buscá The Walking Dead', 'Bajá dos veces'],
         execute: async ({ intent }, context) => {
+            const learning=require('./tvLearningService');
+            if(intent.title && learning.get().netflix?.search?.length) return learning.execute({app:'netflix',title:intent.title,open:intent.action==='netflix',powerOn:intent.powerOn===true},context.onTvProgress);
             const message = await context.executeTvIntent(intent, context.onTvProgress);
+            learning.setActiveApp('netflix');
             return { message, evidence: { intent: intent.action, deviceAccepted: true } };
         }
     });
@@ -1422,9 +1431,29 @@ async function resolve(text) {
 
     const reminder = require('./agenda/reminderParser').parse(clean.replace(/^(?:hola |che )?jarvis[, ]+/i, ''));
     if (reminder) return reminder;
+    const voiceBrowser=require('./browser/voiceNavigationService');
+    const browserIntent=require('./ai/browserVoiceIntentParser').parse(clean,{active:voiceBrowser.isActive(),tv:tvVoiceService.isSessionActive(),platform:voiceBrowser.platform()});
+    if(browserIntent)return browserIntent;
     const catalogIntent = require('./ai/catalogIntentParser').parse(clean, actionKernel.catalog());
     if (catalogIntent) return catalogIntent;
 
+    const tvRequested = /\b(tele|television|tv)\b/.test(lower);
+    const pcRequested = /\b(compu|computadora|pc|navegador)\b/.test(lower);
+    if (/^(?:prende|prender|encende|encender|apaga|apagar)\s+(?:la\s+)?(?:tele|television|tv)$/.test(lower)) return {id:'tv.power-signal',params:{}};
+    if (!pcRequested && (tvRequested || tvVoiceService.isSessionActive())) {
+        const write = clean.match(/^(?:escrib[ií](?:me)?|escribe|escribir|tipe[aá])\s+(.+)$/i);
+        if(write)return {id:'tv.learned-app',params:{app:/youtube/i.test(clean)?'youtube':/netflix/i.test(clean)?'netflix':require('./tvLearningService').getActiveApp(),title:write[1].replace(/\s+en\s+(?:la\s+)?(?:tele|tv|netflix|youtube)$/i,''),open:false,writeOnly:true}};
+        if (tvVoiceService.isSessionActive() && /^(?:busca|buscame|pone|poneme|reproduci)\s+/.test(lower) && !/\b(informacion|archivo|documento|youtube|netflix|spotify)\b/.test(lower)) {
+            const app=require('./tvLearningService').getActiveApp();
+            if(app==='youtube')return {id:'tv.learned-app',params:{app,title:clean.replace(/^\S+\s+/,''),open:false}};
+            const intent=tvVoiceService.parseTvIntent(clean);
+            if(intent)return {id:'tv.control',params:{intent}};
+        }
+        if (/\byoutube\b/.test(lower) && /^(?:abri|abrir|abre|pone|poneme|busca|buscame|reproduci|prende|encende)/.test(lower)) {
+            const title=clean.match(/^(?:busc[aá](?:me)?|pon[eé](?:me)?|reproduc[ií])\s+(.+?)\s+en\s+youtube/i)?.[1] || '';
+            return {id:'tv.learned-app',params:{app:'youtube',title,open:true,powerOn:/^(?:prende|encende).*?(?:tele|tv)/.test(lower)}};
+        }
+    }
     const researchIntent = require('./ai/researchIntentParser').parse(clean);
     if (researchIntent) return researchIntent;
     const fileIntent = require('./ai/fileIntentParser').parse(clean);
@@ -1669,7 +1698,7 @@ async function resolve(text) {
                 return { id: 'system.open', params: { appName: 'Netflix' } };
             }
         }
-        if (broadLinkAvailable && tvIntent.action === 'netflix' && !tvVoiceService.getSessionContext().netflixReady) tvIntent.powerOn = true;
+        // Power is a toggle: only send it when the user explicitly requests it.
         if (tvIntent.action === 'enter_netflix') return { id: 'tv.enter-netflix', params: {} };
         if (tvIntent.action === 'open_search') return { id: 'tv.open-search', params: {} };
         return { id: 'tv.control', params: { intent: tvIntent } };
@@ -1690,6 +1719,10 @@ async function resolve(text) {
     const learned = voiceLearningService.resolveVerifiedPhrase(clean);
     if (learned) return learned;
 
+    if(voiceBrowser.isActive()){
+        try {const interpreted=await voiceBrowser.interpret(clean);if(interpreted)return interpreted;}
+        catch(error){return {id:'browser.voice',params:{command:'clarify',question:'La interpretación de navegación tardó demasiado o falló. Podés repetir el pedido; no ejecuté una selección.'}};}
+    }
     const refs = memoryService.resolveReferences(clean);
     return { id: 'assistant.respond', params: { text: clean, referenceContext: refs.context || [] } };
 }

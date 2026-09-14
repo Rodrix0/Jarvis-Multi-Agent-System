@@ -802,6 +802,19 @@ app.post('/api/voice/local/state', (req, res) => {
 app.get('/api/tv/status', (req, res) => {
     res.json(tvService.getPublicStatus());
 });
+app.get('/api/tv/learning', (req,res)=>res.json(require('./services/tvLearningService').get()));
+app.post('/api/tv/learning', (req,res)=>{
+    try {res.json(require('./services/tvLearningService').save(req.body.app,req.body));}
+    catch(error){res.status(400).json({error:error.message});}
+});
+app.post('/api/tv/learning/run',async(req,res)=>{
+    try {
+        const result=await require('./services/tvLearningService').execute(req.body,progress=>io.emit('tv_progress',progress));
+        tvVoiceService.activateSession();
+        res.json(result);
+    }
+    catch(error){res.status(400).json({error:error.message});}
+});
 
 app.post('/api/tv/settings', (req, res) => {
     try {

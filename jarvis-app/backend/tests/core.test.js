@@ -75,12 +75,13 @@ async function run() {
     assert.equal(safeLowConfidence.text, 'Abrí Spotify');
     assert.equal(safeLowConfidence.uncertain, false);
     assert.equal((await jarvisActions.resolve('Abrí WhatsApp')).id, 'system.open');
-    assert.equal((await jarvisActions.resolve('Abrí YouTube')).id, 'system.open');
+    assert.equal((await jarvisActions.resolve('Abrí YouTube')).id, 'browser.voice');
 
     const youtube = await jarvisActions.resolve('Buscá el canal de Kurzgesagt en YouTube');
-    assert.equal(youtube.id, 'system.media-search');
-    assert.equal(youtube.params.platform, 'youtube');
-    assert.equal(youtube.params.query, 'kurzgesagt');
+    assert.equal(youtube.id, 'browser.voice');
+    assert.equal(youtube.params.site, 'youtube');
+    assert.equal(youtube.params.resultType, 'channel');
+    assert.equal(youtube.params.query, 'Kurzgesagt');
     const netflixPc = await jarvisActions.resolve('Buscá The Walking Dead en Netflix desde mi computadora');
     assert.equal(netflixPc.id, 'system.media-search');
     assert.equal(netflixPc.params.platform, 'netflix');
@@ -97,10 +98,10 @@ async function run() {
     tvService.isAvailable = originalTvAvailability;
     assert.equal(systemService.mediaSearchUrl('netflix', 'The Walking Dead'), 'https://www.netflix.com/search?q=The%20Walking%20Dead');
     const rubius = await jarvisActions.resolve('Abrí YouTube y buscá el Rubius');
-    assert.equal(rubius.id, 'system.media-search');
-    assert.equal(rubius.params.platform, 'youtube');
-    assert.equal(rubius.params.query, 'el rubius');
-    const rubiusUrl = systemService.mediaSearchUrl(rubius.params.platform, rubius.params.query);
+    assert.equal(rubius.id, 'browser.voice');
+    assert.equal(rubius.params.site, 'youtube');
+    assert.equal(rubius.params.query.toLowerCase(), 'el rubius');
+    const rubiusUrl = systemService.mediaSearchUrl(rubius.params.site, rubius.params.query.toLowerCase());
     assert.equal(systemService.isWebUrl(rubiusUrl), true);
     assert.match(systemService.urlLaunchCommand(rubiusUrl, 'win32'), /^start "" "https:\/\/www\.youtube\.com\/results\?search_query=el%20rubius"$/);
     voiceLearning.recordVerifiedExecution({

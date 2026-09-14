@@ -283,3 +283,5 @@ La reparación y las pruebas del 8 de septiembre de 2026 están documentadas en 
 La revisión integral posterior, con 61 suites aprobadas, el catálogo de 132 acciones y las comprobaciones reales de Windows e integraciones, está en [VERIFICACION_2026-09-09.md](VERIFICACION_2026-09-09.md).
 
 La reparación de búsqueda web, documentos con fuentes y guardado en carpetas está en [VERIFICACION_2026-09-11.md](VERIFICACION_2026-09-11.md).
+
+Los comandos encadenados para navegar por voz y elegir resultados visibles están en [NAVEGACION_POR_VOZ.md](NAVEGACION_POR_VOZ.md).

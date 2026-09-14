@@ -182,6 +182,7 @@
             <div class="tv-tabs">
                 <button type="button" class="tv-tab-btn active" data-tab="learning" onclick="switchTvTab('learning', this)">Aprender Botones</button>
                 <button type="button" class="tv-tab-btn" data-tab="testing" onclick="switchTvTab('testing', this)">Pruebas Rápidas</button>
+                <button type="button" class="tv-tab-btn" data-tab="apps" onclick="switchTvTab('apps', this); loadTvLearning()">Aprendizaje TV</button>
                 <button type="button" class="tv-tab-btn" data-tab="setup" onclick="switchTvTab('setup', this)">Configuración</button>
             </div>
 
@@ -201,6 +202,28 @@
                 </div>
             </div>
 
+            <div class="tv-tab-content" id="tab-apps" style="display:none">
+                <h3>Enseñar YouTube y el teclado</h3>
+                <p>Primero aprendé Home y las flechas en «Aprender Botones». Home ahora se guarda separado de Power: si lo enseñaste antes, volvé a enseñarlo.</p>
+                <label>Aplicación <select id="tv-learning-app" onchange="loadTvLearning()"><option value="youtube">YouTube</option><option value="netflix">Netflix (teclado)</option></select></label>
+                <button type="button" class="btn-learn" data-btn="youtube" onclick="learnTvButton('youtube')">Aprender botón YouTube del control</button>
+                <p>Elegí una etapa y pulsá las teclas de abajo mirando la TV. Cada pulsación se envía y se agrega a esa etapa. La apertura debe empezar en Home; la búsqueda debe terminar con el campo vacío y una letra conocida seleccionada.</p>
+                <label>Etapa <select id="tv-learning-stage" onchange="renderTvLearningSteps()"><option value="open">Abrir desde Home</option><option value="search">Entrar al buscador y vaciarlo</option><option value="submit">Salir del teclado / mostrar resultados</option></select></label>
+                <label>Espera después de cada tecla (ms) <input id="tv-learning-wait" type="number" min="100" max="60000" value="800"></label>
+                <div id="tv-learning-buttons" class="learning-grid"></div>
+                <button type="button" onclick="recordTvLearning(null)">Agregar espera sin pulsar</button>
+                <button type="button" onclick="clearTvLearningStage()">Borrar etapa grabada</button>
+                <pre id="tv-learning-steps" style="white-space:pre-wrap;max-height:180px;overflow:auto"></pre>
+                <label>Teclado: una fila por línea, sin separadores. Usá _ para la tecla espacio.<textarea id="tv-learning-rows" rows="6" placeholder="Copiá la distribución que ves en la TV"></textarea></label>
+                <label>Letra inicialmente seleccionada <input id="tv-learning-start" maxlength="1" value="a"></label>
+                <label>Tiempo por tecla al escribir (ms) <input id="tv-learning-delay" type="number" min="300" max="2000" value="800"></label>
+                <button type="button" onclick="saveTvLearning()">Guardar aprendizaje</button>
+                <button type="button" onclick="runTvLearning(false)">Probar apertura guardada</button>
+                <label>Texto de prueba <input id="tv-learning-text" placeholder="Título completo"></label>
+                <button type="button" onclick="runTvLearning(true)">Probar escritura en teclado abierto</button>
+                <button type="button" onclick="tvApi('/api/tv/cancel',{method:'POST'}).catch(e=>alert(e.message))">Cancelar operación</button>
+                <p id="tv-learning-message" role="status" aria-live="polite"></p>
+            </div>
             <div class="tv-tab-content" id="tab-testing" style="display: none;">
                 <div class="testing-grid">
                     <button type="button" class="btn-test-cmd" data-btn="vol_up" onclick="testTvButton('vol_up')">Test Vol +</button>

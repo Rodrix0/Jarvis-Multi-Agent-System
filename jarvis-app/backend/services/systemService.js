@@ -307,6 +307,19 @@ function launchLiteral(target) {
 async function openApp(appName, modeId = 'productividad') {
     const platform = os.platform();
     const originalTarget = String(appName || '').trim().replace(/^"|"$/g, '');
+    // Every YouTube entry uses the same live page, including legacy learned actions.
+    let youtubeTarget = /^youtube$/i.test(originalTarget);
+    let youtubeUrl;
+    if(isWebUrl(originalTarget)){
+        try{const parsed=new URL(originalTarget);if(parsed.hostname==='youtube.com'||parsed.hostname.endsWith('.youtube.com')){youtubeTarget=true;youtubeUrl=parsed;}}catch(_){}
+    }
+    if(youtubeTarget){
+        const navigation=require('./browser/voiceNavigationService');
+        const request=youtubeUrl?.pathname==='/results'
+            ? {command:'search',site:'youtube',query:youtubeUrl.searchParams.get('search_query')||''}
+            : {command:'open',site:youtubeUrl&&youtubeUrl.pathname!=='/'?youtubeUrl.href:'youtube'};
+        return (await navigation.execute(request)).ok;
+    }
     // Preserve URL case and explicit paths; don't treat their names as app keywords.
     if (platform === 'win32' && (isWebUrl(originalTarget) || (path.isAbsolute(originalTarget) && fs.existsSync(originalTarget)))) {
         return launchLiteral(originalTarget);

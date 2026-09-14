@@ -55,7 +55,7 @@ async function run() {
         tv.isAvailable = async () => true;
         const online = await actions.resolve('abrir Netflix');
         assert.equal(online.id, 'tv.control');
-        assert.equal(online.params.intent.powerOn, true);
+        assert.equal(online.params.intent.powerOn, false);
         assert.equal((await actions.resolve('abrir Netflix en el navegador')).id, 'system.open');
     } finally { tv.isAvailable = originalAvailable; }
 

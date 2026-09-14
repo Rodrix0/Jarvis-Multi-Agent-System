@@ -18,7 +18,7 @@ const defaultNames = [
  'regression_safety_suite','voice_intent_test','test_daily_commands','test_full_command_pipeline',
  'test_document_templates','test_snapshot_service','test_git_integration','test_coding_agent',
  'test_activity_context','test_home_assistant','test_auto_heal','test_research_service',
- 'test_browser_real_e2e','test_open_app_fixes','test_hardened_code_act','test_mcp_architecture','test_canonical_llm','test_browser_confirmations','core.test','test_smart_clipboard','test_research_documents'
+ 'test_browser_real_e2e','test_open_app_fixes','test_hardened_code_act','test_mcp_architecture','test_canonical_llm','test_browser_confirmations','core.test','test_smart_clipboard','test_research_documents','test_voice_navigation','test_browser_context_navigation','test_browser_session_continuity','test_spanish_ordinals'
 ];
 const names = process.argv.length > 2 ? process.argv.slice(2) : defaultNames;
 fs.mkdirSync(root, { recursive: true });
@@ -39,7 +39,7 @@ async function run(name) {
  const started = Date.now();
  return new Promise(resolve => execFile(process.execPath, ['-r', bootstrap, path.join(copy, 'tests', name+'.js')], {
    cwd: project, windowsHide: true, timeout: 25000, maxBuffer: 256*1024,
-   env: { ...process.env, USERPROFILE: name.includes('browser') ? process.env.USERPROFILE : home, JARVIS_DESKTOP_DIR: path.join(home,'Desktop'), JARVIS_PYTHON_EXE: path.resolve(backend,'../python_engine/venv/Scripts/python.exe'), JARVIS_REAL_E2E: '0' }
+   env: { ...process.env, USERPROFILE: (name.includes('browser') || name.includes('voice_navigation')) ? process.env.USERPROFILE : home, JARVIS_DESKTOP_DIR: path.join(home,'Desktop'), JARVIS_PYTHON_EXE: path.resolve(backend,'../python_engine/venv/Scripts/python.exe'), JARVIS_REAL_E2E: '0' }
  }, (error, stdout, stderr) => {
    const result = { name, log: path.join(project,'result.log'), status: error ? (error.killed ? 'TIMEOUT' : 'FAIL') : 'PASS', ms: Date.now()-started, code: error?.code || 0 };
    fs.writeFileSync(path.join(project,'result.log'),stdout+'\n'+stderr);

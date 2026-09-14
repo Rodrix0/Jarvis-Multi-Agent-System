@@ -1868,3 +1868,35 @@ if (typeof socket !== 'undefined' && socket) {
         }
     });
 }
+let tvLearningDraft={open:[],search:[],submit:[]};
+let tvLearningBusy=false;
+function tvLearningMessage(text){document.getElementById('tv-learning-message').textContent=text;}
+async function loadTvLearning(){
+ try {const all=await tvApi('/api/tv/learning');const app=document.getElementById('tv-learning-app').value;
+ tvLearningDraft=all[app]||{open:[],search:[],submit:[],rows:'',start:'a',keyDelayMs:800};
+ document.getElementById('tv-learning-rows').value=tvLearningDraft.rows||'';
+ document.getElementById('tv-learning-start').value=tvLearningDraft.start||'a';
+ document.getElementById('tv-learning-delay').value=tvLearningDraft.keyDelayMs||800;
+ const container=document.getElementById('tv-learning-buttons');container.replaceChildren();
+ for(const [key,label] of [['home','Home'],['youtube','YouTube'],['netflix','Netflix'],['up','Arriba'],['down','Abajo'],['left','Izquierda'],['right','Derecha'],['ok','OK'],['back','Volver']]){const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>recordTvLearning(key);container.appendChild(b);}
+ renderTvLearningSteps();tvLearningMessage('Aprendizaje cargado.');
+ }catch(e){tvLearningMessage(e.message);}
+}
+function renderTvLearningSteps(){const stage=document.getElementById('tv-learning-stage').value;document.getElementById('tv-learning-steps').textContent=(tvLearningDraft[stage]||[]).map((s,i)=>`${i+1}. ${s.button||'Esperar'} · ${s.waitMs} ms`).join('\n')||'Sin pasos grabados.';}
+function clearTvLearningStage(){if(tvLearningBusy)return;tvLearningDraft[document.getElementById('tv-learning-stage').value]=[];renderTvLearningSteps();tvLearningMessage('Etapa borrada del borrador. Pulsá Guardar para conservar el cambio.');}
+async function recordTvLearning(button){
+ if(tvLearningBusy)return;tvLearningBusy=true;
+ const stage=document.getElementById('tv-learning-stage').value;const waitMs=Number(document.getElementById('tv-learning-wait').value);
+ try{if(!Number.isFinite(waitMs)||waitMs<100||waitMs>60000)throw new Error('Elegí una espera entre 100 y 60000 ms.');
+ if(button)await tvApi('/api/tv/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({button})});
+ (tvLearningDraft[stage]||=[]).push({button,waitMs});renderTvLearningSteps();tvLearningMessage('Paso agregado. Esperando que la TV responda…');await new Promise(r=>setTimeout(r,waitMs));tvLearningMessage('Listo para el siguiente paso.');
+ }catch(e){tvLearningMessage(e.message);}finally{tvLearningBusy=false;}
+}
+async function saveTvLearning(){
+ if(tvLearningBusy)return false;
+ try{await tvApi('/api/tv/learning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...tvLearningDraft,app:document.getElementById('tv-learning-app').value,rows:document.getElementById('tv-learning-rows').value,start:document.getElementById('tv-learning-start').value,keyDelayMs:Number(document.getElementById('tv-learning-delay').value)})});tvLearningMessage('Aprendizaje guardado.');return true;}catch(e){tvLearningMessage(e.message);return false;}
+}
+async function runTvLearning(writeOnly){
+ if(tvLearningBusy || !await saveTvLearning())return;tvLearningBusy=true;
+ try{tvLearningMessage('Enviando secuencia…');const result=await tvApi('/api/tv/learning/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app:document.getElementById('tv-learning-app').value,title:writeOnly?document.getElementById('tv-learning-text').value:'',open:!writeOnly,writeOnly})});tvLearningMessage(result.message);}catch(e){tvLearningMessage(e.message);}finally{tvLearningBusy=false;}
+}

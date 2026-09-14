@@ -7,7 +7,7 @@ const TV_STATE_PATH = path.join(__dirname, '..', 'data', 'tv_state.json');
 const BRIDGE_PATH = path.join(__dirname, '..', '..', 'python_engine', 'broadlink_remote.py');
 const VENV_PYTHON = path.join(__dirname, '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe');
 const executionManager = require('./core/executionManager');
-const ALLOWED_BUTTONS = ['power', 'up', 'down', 'left', 'right', 'ok', 'back', 'netflix', 'volup', 'voldown', 'vol_up', 'vol_down', 'mute', 'home'];
+const ALLOWED_BUTTONS = ['power', 'up', 'down', 'left', 'right', 'ok', 'back', 'netflix', 'youtube', 'volup', 'voldown', 'vol_up', 'vol_down', 'mute', 'home'];
 const KEYBOARD_ROWS = ['abcdef', 'ghijkl', 'mnopqr', 'stuvwx', 'yz1234', '567890'];
 
 const DEFAULT_CONFIG = {
@@ -157,7 +157,6 @@ async function isAvailable() {
 
 async function learnButton(button) {
     let normalizedBtn = button.replace('_', '').toLowerCase();
-    if (button === 'home') normalizedBtn = 'power';
     if (!ALLOWED_BUTTONS.includes(button) && !ALLOWED_BUTTONS.includes(normalizedBtn)) throw new Error('Botón IR no permitido.');
     
     await runBridge(['learn', normalizedBtn, '--timeout', '20'], 28000);
@@ -195,7 +194,7 @@ function normalizeSearchTitle(title) {
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/[^a-z0-9]/g, '')
-        .slice(0, 10);
+        .slice(0, 120);
 }
 
 function keyboardPosition(character) {
@@ -331,7 +330,7 @@ async function playNetflix(options = {}, onProgress = () => {}) {
             await sleep(config.netflix.bootWaitMs, job);
         }
 
-        if (config.netflix.pressNetflixAfterBoot) {
+        if (config.codes.netflix) {
             progress('netflix', 'Abriendo Netflix…');
             await sendButtons(['netflix'], config.netflix.keyDelayMs || 350);
             await sleep(config.netflix.appWaitMs, job);
@@ -357,7 +356,7 @@ async function playNetflix(options = {}, onProgress = () => {}) {
 
         progress('search_type', `Escribiendo “${title}” en el teclado…`);
         const playFirst = options.playFirst !== false;
-        await sendButtons(buildNetflixSearchSequence(title, playFirst), config.netflix.keyDelayMs || 350);
+        await sendButtons(buildNetflixSearchSequence(title, playFirst), config.netflix.keyboardKeyDelayMs || 1100);
         await sleep(config.netflix.resultLoadMs || 2500, job);
 
         if (playFirst && config.netflix.pressPlayAfterResult) {
@@ -400,7 +399,7 @@ async function searchNetflix(title, options = {}, onProgress = () => {}) {
         const playFirst = options.playFirst !== false;
         await sendButtons(
             buildNetflixSearchSequence(query, playFirst),
-            config.netflix.keyDelayMs || 350
+            config.netflix.keyboardKeyDelayMs || 1100
         );
         await sleep(config.netflix.resultLoadMs || 2500, job);
 
@@ -551,7 +550,20 @@ function calibrateVolume(actual) {
     };
 }
 
+async function runProgram(steps, onProgress = () => {}) {
+    if (currentJob) throw new Error('Ya hay una operación de TV en curso. Podés cancelarla.');
+    const job = {cancelled:false}; currentJob=job;
+    try { for(let i=0;i<steps.length;i++) {
+        if(job.cancelled)throw new Error('Automatización cancelada.');
+        onProgress({stage:'tv_program',message:'TV: paso '+(i+1)+' de '+steps.length});
+        if(steps[i].button)await sendButtons([steps[i].button]);
+        await sleep(steps[i].waitMs || 350,job);
+    } return {ok:true,message:'Envié la secuencia a la TV. Verificá el resultado en su pantalla.',evidence:{signalSent:true}};
+    } finally {if(currentJob===job)currentJob=null;}
+}
+
 module.exports = {
+    runProgram,
     ALLOWED_BUTTONS,
     getPublicStatus,
     saveSettings,

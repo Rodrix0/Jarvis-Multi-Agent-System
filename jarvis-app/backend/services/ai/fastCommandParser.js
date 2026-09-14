@@ -205,7 +205,7 @@ class FastCommandParser {
             }
 
             // 10.2 Despertar a Jarvis / Prender escucha
-            if (/\b(?:prende(?:te)?|encende(?:te)?|desperta(?:te)?|despierta|despiertate|reactiva(?:te)?|activa(?:te)?|arriba|levantate)\b/i.test(clean)
+            if (/^(?:jarvis[, ]+)?(?:prende(?:te)?|encende(?:te)?|desperta(?:te)?|despierta|despiertate|reactiva(?:te)?|activa(?:te)?|arriba|levantate)(?:\s+jarvis)?$/i.test(clean)
                 || /^(?:hola\s+jarvis|buen\s+dia\s+jarvis|buenas\s+jarvis|hey\s+jarvis|che\s+jarvis|ok\s+jarvis|jarvis)$/i.test(clean)) {
                 return { match: true, action: 'voice.wake', params: {} };
             }
