@@ -6,6 +6,8 @@ const scriptsDir = path.join(__dirname, '..', 'scripts');
 const dataDir = path.join(__dirname, '..', 'data');
 const appsPath = path.join(dataDir, 'installed_apps.json');
 const psScript = path.join(scriptsDir, 'scanInstalledApps.ps1');
+let memoryCache = null;
+let memoryCacheMtime = 0;
 
 if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -29,6 +31,8 @@ function triggerBackgroundScan(force = false) {
             
             const appsObj = JSON.parse(rawJson);
             fs.writeFileSync(appsPath, JSON.stringify(appsObj, null, 2), 'utf8');
+            memoryCache = appsObj;
+            memoryCacheMtime = fs.statSync(appsPath).mtimeMs;
             console.log(`[App Discovery] ✅ ¡Listo! Se aprendieron ${Object.keys(appsObj).length} accesos directos desde el Escritorio y Menú de Inicio.`);
         } catch(e) {
             console.error("[App Discovery] Error procesando los datos extraídos del Disco Duro:", e);
@@ -39,7 +43,11 @@ function triggerBackgroundScan(force = false) {
 function getAppDictionary() {
     if (fs.existsSync(appsPath)) {
         try {
-            return JSON.parse(fs.readFileSync(appsPath, 'utf8'));
+            const mtime = fs.statSync(appsPath).mtimeMs;
+            if (memoryCache && memoryCacheMtime === mtime) return memoryCache;
+            memoryCache = JSON.parse(fs.readFileSync(appsPath, 'utf8'));
+            memoryCacheMtime = mtime;
+            return memoryCache;
         } catch(e) {
             return {};
         }

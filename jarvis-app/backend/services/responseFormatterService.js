@@ -54,6 +54,8 @@ class ResponseFormatterService {
             .replace(/^[\s]*\d+\.\s+/gm, '')
             // Remover negrita y cursiva
             .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1')
+            // Describir imágenes Markdown sin leer el signo de exclamación ni la URL
+            .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
             // Remover enlaces Markdown [texto](url) -> texto
             .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
             // Remover URLs directas https://... -> "el enlace"

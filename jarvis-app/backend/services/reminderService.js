@@ -182,11 +182,10 @@ async function runDueReminders() {
                     const sysServices = require('./systemService');
                     await sysServices.openApp(task.target, "productividad");
                 } else if (task.action === "speak") {
-                    showWindowsNotification("Jarvis - ¡Recordatorio!", task.message || "Es hora de la meta programada.");
-                    
-                    schedulerIo.emit('response', {
-                        text: "¡Atención, señor! Recordatorio especial: " + task.message,
-                        action: null
+                    require('./core/notificationService').notify({
+                        title: 'Recordatorio',
+                        message: task.message || 'Es hora de la tarea programada.',
+                        priority: 'HIGH', channels: ['HUD', 'TOAST', 'TTS']
                     });
                 }
             }

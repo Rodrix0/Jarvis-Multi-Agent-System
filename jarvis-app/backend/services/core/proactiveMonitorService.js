@@ -38,7 +38,7 @@ class ProactiveMonitorService {
     /**
      * Inicia los monitores de fondo de la PC.
      */
-    start({ batteryIntervalMs = 60000, cpuIntervalMs = 30000, processIntervalMs = 5000, watchDownloads = true } = {}) {
+    start({ batteryIntervalMs = 60000, cpuIntervalMs = 60000, processIntervalMs = 15000, watchDownloads = true } = {}) {
         if (this.isRunning) return;
         this.isRunning = true;
 

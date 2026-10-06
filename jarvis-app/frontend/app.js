@@ -756,7 +756,7 @@ async function loadVoiceSettings() {
 }
 
 function renderLocalVoiceStatus(status = {}) {
-    localVoiceOnline = status.online === true && (!status.lastSeenAt || Date.now() - Date.parse(status.lastSeenAt) < 15000);
+    localVoiceOnline = status.online === true && (!status.lastSeenAt || Date.now() - Date.parse(status.lastSeenAt) < 90000);
     const box = document.getElementById('voice-engine-status');
     if (box) {
         box.textContent = localVoiceOnline
@@ -1226,46 +1226,108 @@ socket.on('action_status', status => {
 });
 
 function showActionConfirmation(data) {
-    document.getElementById('action-confirmation-controls')?.remove();
     if (!data.confirmationToken) return;
+    const existing = document.getElementById('action-confirmation-controls');
+    if (existing?.dataset.token === data.confirmationToken && data.status !== 'pin_verification_failed') return;
+    existing?.remove();
     const box = document.createElement('div');
     box.id = 'action-confirmation-controls';
-    box.style.cssText = 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:16px 0';
-    box.setAttribute('role', 'group');
-    box.setAttribute('aria-label', 'Confirmar acción pendiente');
+    box.dataset.token = data.confirmationToken;
+    box.className = 'action-confirmation-overlay';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-labelledby', 'action-confirmation-title');
+    const panel = document.createElement('div');
+    panel.className = 'action-confirmation-panel';
+    const title = document.createElement('h2');
+    title.id = 'action-confirmation-title';
+    const needsPin = ['awaiting_pin_confirmation', 'pin_verification_failed'].includes(data.status);
+    title.textContent = needsPin ? 'Autorización con PIN' : 'Confirmar acción';
+    panel.appendChild(title);
+    const description = document.createElement('p');
+    description.textContent = data.message || data.text || 'Jarvis espera tu autorización.';
+    panel.appendChild(description);
+    if (data.expiresAt) {
+        const expires = Date.parse(data.expiresAt);
+        if (Number.isFinite(expires)) {
+            setTimeout(() => {
+                if (box.isConnected) {
+                    box.remove();
+                    showActionToast('La autorización venció. Pedí la acción nuevamente.', 'failed', 5500);
+                }
+            }, Math.max(0, expires - Date.now()));
+        }
+    }
+    const errorText = document.createElement('p');
+    errorText.className = 'action-confirmation-error';
+    errorText.setAttribute('role', 'alert');
+    if (data.status === 'pin_verification_failed') errorText.textContent = data.message || 'PIN incorrecto.';
+    panel.appendChild(errorText);
     let pin;
-    if (['awaiting_pin_confirmation', 'pin_verification_failed'].includes(data.status)) {
+    if (needsPin) {
         pin = document.createElement('input');
         pin.type = 'password'; pin.inputMode = 'numeric'; pin.placeholder = 'PIN de seguridad';
-        pin.setAttribute('aria-label', 'PIN de seguridad'); box.appendChild(pin);
+        pin.autocomplete = 'one-time-code';
+        pin.setAttribute('aria-label', 'PIN de seguridad'); panel.appendChild(pin);
+        const hint = document.createElement('small');
+        hint.textContent = 'Por seguridad, introducí el PIN acá; Jarvis no lo acepta dictado por voz.';
+        panel.appendChild(hint);
     }
+    const controls = document.createElement('div');
+    controls.className = 'action-confirmation-buttons';
     const confirm = document.createElement('button'); confirm.textContent = 'Confirmar acción';
     const cancel = document.createElement('button'); cancel.textContent = 'Cancelar';
-    for (const button of [confirm, cancel]) { button.className = 'btn'; button.type = 'button'; box.appendChild(button); }
+    for (const button of [confirm, cancel]) { button.className = 'btn'; button.type = 'button'; controls.appendChild(button); }
+    panel.appendChild(controls);
+    box.appendChild(panel);
     const submit = async approved => {
+        if (approved && pin && !pin.value.trim()) {
+            errorText.textContent = 'Ingresá el PIN para continuar.';
+            pin.focus();
+            return;
+        }
         confirm.disabled = cancel.disabled = true;
         try {
             const response = await fetch(approved ? '/api/actions/confirm' : '/api/actions/cancel', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ token: data.confirmationToken, ...(pin && approved ? { pin: pin.value } : {}) })
             });
+            if (pin) pin.value = '';
             const result = await response.json();
             if (!response.ok) throw new Error(result.message || result.error || 'No pude procesar la confirmación.');
-            box.remove();
-            jarvisBox.textContent = approved ? result.message : 'Acción cancelada.';
-            showActionToast(jarvisBox.textContent, result.ok ? 'completed' : 'failed', 5500);
-            if (result.confirmationToken) showActionConfirmation(result);
+            if (result.confirmationToken) {
+                showActionConfirmation(result);
+            } else {
+                box.remove();
+                jarvisBox.textContent = approved ? result.message : 'Acción cancelada.';
+                showActionToast(jarvisBox.textContent, result.ok ? 'completed' : 'failed', 5500);
+            }
         } catch (error) {
-            showActionToast(error.message, 'failed', 5500);
+            errorText.textContent = error.message;
             confirm.disabled = cancel.disabled = false;
+            pin?.focus();
         }
     };
     confirm.addEventListener('click', () => submit(true));
     cancel.addEventListener('click', () => submit(false));
-    jarvisBox.insertAdjacentElement('afterend', box);
+    pin?.addEventListener('keydown', event => { if (event.key === 'Enter') submit(true); });
+    document.body.appendChild(box);
+    (pin || confirm).focus();
 }
 
+socket.on('connect', async () => {
+    try {
+        const response = await fetch('/api/actions/pending');
+        if (response.ok) {
+            const pending = await response.json();
+            if (pending?.confirmationToken) showActionConfirmation(pending);
+            else document.getElementById('action-confirmation-controls')?.remove();
+        }
+    } catch (_) { /* La pantalla puede seguir funcionando aunque falle la recuperación. */ }
+});
+
 socket.on('response', (data) => {
+    if (data.confirmationResolved) document.getElementById('action-confirmation-controls')?.remove();
     showActionConfirmation(data);
     const enteringSleep = data.action === 'voice.sleep' || data.actionPayload?.voiceState === 'dormant';
     const succeeded = !data.status || data.status === 'completed';

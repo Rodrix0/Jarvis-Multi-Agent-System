@@ -164,6 +164,16 @@ runTest('Expande símbolos monetarios y porcentajes para habla fluida', () => {
     assert.strictEqual(voiceClean.includes('450 pesos'), true);
 });
 
+runTest('Una imagen Markdown se muestra en pantalla sin leer su URL ni el signo de exclamación', () => {
+    const raw = 'Listo, generé la imagen.\n\n![Imagen generada](/api/generated-images/jarvis_img_123.png)';
+    const formatted = responseFormatter.format(raw);
+
+    assert.strictEqual(formatted.screen.includes('![Imagen generada]'), true);
+    assert.strictEqual(formatted.voice.includes('/api/generated-images'), false);
+    assert.strictEqual(formatted.voice.includes('!'), false);
+    assert.strictEqual(formatted.voice.includes('Imagen generada'), true);
+});
+
 console.log('\n--- BLOQUE 7: Objetos con Canales Predefinidos y Estadísticas ---');
 
 runTest('Respeta objeto que ya define canal de voz y de pantalla explícitos', () => {

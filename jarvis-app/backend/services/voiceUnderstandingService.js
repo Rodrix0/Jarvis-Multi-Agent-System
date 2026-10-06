@@ -1,5 +1,6 @@
 const recentConversation = [];
 const LOCAL_MODEL = process.env.OLLAMA_VOICE_MODEL || 'qwen2.5:3b';
+const LOCAL_KEEP_ALIVE = process.env.OLLAMA_VOICE_KEEP_ALIVE || '90s';
 const MAX_CONTEXT_ITEMS = 6;
 
 const CRITICAL_TERMS = [
@@ -79,7 +80,7 @@ async function understand(payload = {}) {
                 prompt,
                 stream: false,
                 format: 'json',
-                keep_alive: '5m',
+                keep_alive: LOCAL_KEEP_ALIVE,
                 options: { temperature: 0.1, num_predict: 80 }
             }),
             signal: controller.signal

@@ -7,11 +7,11 @@ const compression = require('compression');
 const helmet = require('helmet');
 const multer = require('multer');
 const fs = require('fs');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const modeService = require('./services/modeService');
 const systemService = require('./services/systemService');
-const aiService = require('./services/aiService');
 const observerService = require('./services/observerService');
 const appDiscoveryService = require('./services/appDiscoveryService');
 const reminderService = require('./services/reminderService');
@@ -49,6 +49,30 @@ const app = express();
 let localVoiceStatus = { online: false, engine: 'Vosk + WebRTC VAD + faster-whisper', fullyLocal: true };
 let lastLocalSpeech = { text: '', at: 0 };
 let lastSocketSpeech = { text: '', at: 0 };
+const localVoiceJobs = new Map();
+const localVoiceCommands = new (require('./services/core/commandGate'))();
+
+function localVoiceAcknowledgement(text) {
+    const clean = String(text || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+        .replace(/\b(?:dpcumento|docuemnto|documetno|documeno|ducumento)\b/g, 'documento');
+    if (/\b(?:documento|informe|reporte|word|docx|pdf)\b/.test(clean)) return 'Okey, jefe. Me pongo a investigar y preparar el documento.';
+    if (/\b(?:busca|buscame|investiga|informacion|averigua)\b/.test(clean)) return 'Okey, jefe. Me pongo a buscar la información.';
+    if (/\b(?:imagen|foto|dibujo|ilustracion)\b/.test(clean)) return 'Okey, jefe. Me pongo a crear la imagen.';
+    if (/\b(?:carpeta|archivo|nota)\b/.test(clean) && /\b(?:crea|crear|hace|hacer|genera)\b/.test(clean)) return 'Okey, jefe. Me pongo a crear lo que pediste.';
+    if (/\b(?:abre|abri|abrir|ejecuta|inicia)\b/.test(clean)) return 'Okey, jefe. Lo abro enseguida.';
+    return 'Okey, jefe. Me pongo a trabajar.';
+}
+
+function localVoiceMustRunInline(text) {
+    const clean = String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[.,!?¿¡]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return /^(?:jarvis )?(?:apagate|dormite|duerme|modo reposo|modo descanso|prendete|despertate|activate|detener todo|para todo|cancela todo)(?: jarvis)?$/.test(clean);
+}
+
+function saveLocalVoiceJob(id, value) {
+    localVoiceJobs.set(id, value);
+    if (value.status !== 'working') setTimeout(() => localVoiceJobs.delete(id), 10 * 60 * 1000).unref?.();
+}
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
@@ -69,7 +93,8 @@ app.use(express.static(path.join(__dirname, '../frontend'), {
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: '*' },
-    perMessageDeflate: true
+    // Los eventos son pequeños y locales; comprimirlos agrega CPU y latencia.
+    perMessageDeflate: false
 });
 notificationService.setSocketIO(io);
 notificationService.setTtsService(ttsService);
@@ -99,7 +124,7 @@ homeAssistantService.init().catch(err => {
 
 // --- DASHBOARD & TELEMETRÍA (Ítem 31) ---
 const dashboardService = require('./services/diagnostics/dashboardService');
-dashboardService.startLiveStreaming(io, 2000);
+dashboardService.startLiveStreaming(io);
 
 // Reenviar eventos de Jarvis OS al HUD
 eventBus.subscribe('*', (ev) => {
@@ -698,6 +723,18 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     res.json({ filepath: absolutePath });
 });
 
+// Solo expone los PNG que creó Jarvis. No publica el resto de la carpeta de subidas.
+app.get('/api/generated-images/:name', (req, res) => {
+    const name = path.basename(String(req.params.name || ''));
+    if (!/^jarvis_(?:img|edit)_\d+\.png$/i.test(name) || name !== req.params.name) {
+        return res.status(404).json({ error: 'Imagen no encontrada.' });
+    }
+    const filePath = path.join(__dirname, 'data', 'uploads', name);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Imagen no encontrada.' });
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    return res.sendFile(filePath);
+});
+
 // --- SPOTIFY WEB API ROUTES ---
 const spotifyService = require('./services/spotifyService');
 
@@ -744,10 +781,15 @@ app.get('/api/capabilities', async (req, res) => {
 app.get('/api/actions', async (req, res) => res.json(await jarvisActionService.describe({})));
 app.post('/api/actions/execute', async (req, res) => {
     const result = await jarvisActionService.execute(req.body.id, req.body.params || {}, actionContext());
-    res.status(result.ok || result.status === 'awaiting_confirmation' ? 200 : 400).json(result);
+    res.status(result.ok || ['awaiting_confirmation', 'awaiting_pin_confirmation', 'pin_verification_failed'].includes(result.status) ? 200 : 400).json(result);
 });
 app.post('/api/actions/confirm', async (req, res) => res.json(await jarvisActionService.confirm(req.body.token, actionContext(), { pin: req.body.pin })));
 app.post('/api/actions/cancel', (req, res) => res.json({ ok: jarvisActionService.cancelConfirmation(req.body.token) }));
+app.get('/api/actions/pending', (req, res) => {
+    const address = req.socket.remoteAddress || '';
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)) return res.status(403).json({ error: 'Solo disponible desde esta computadora.' });
+    res.json(jarvisActionService.pendingConfirmation());
+});
 
 app.get('/api/memory', (req, res) => res.json(memoryService.snapshot()));
 app.post('/api/memory/preferences', (req, res) => {
@@ -865,12 +907,14 @@ app.post('/api/tv/cancel', (req, res) => {
 
 app.post('/api/tts/speak', async (req, res) => {
     try {
-        await ttsService.speak(req.body.text, req.body.voice);
-        res.json({ ok: true });
+        const result = await ttsService.speak(req.body.text, req.body.voice);
+        res.json({ ok: true, ...result });
     } catch (error) {
         res.status(503).json({ error: error.message });
     }
 });
+
+app.get('/api/tts/status', (req, res) => res.json({ speaking: ttsService.isPlaying() }));
 
 app.post('/api/tts/stop', (req, res) => {
     res.json({ ok: true, stopped: ttsService.stop() });
@@ -957,11 +1001,21 @@ app.post('/api/speak', (req, res) => {
 });
 
 // Endpoint principal para el cliente de Audio Python (Fondo)
+app.get('/api/voice/local/jobs/:id', (req, res) => {
+    const job = localVoiceJobs.get(req.params.id);
+    if (!job) return res.status(404).json({ status: 'missing', response: 'No encontré la tarea de voz.' });
+    return res.status(job.status === 'working' ? 202 : 200).json(job);
+});
+
 app.post('/api/process_speech_local', async (req, res) => {
+    let commandClaim;
     try {
     const selectedVoice = voiceInputService.chooseTranscript(req.body);
     const duplicateKey = voiceInputService.normalizeVoiceTranscript(selectedVoice.text).toLowerCase();
-    if (duplicateKey && duplicateKey === lastLocalSpeech.text && Date.now() - lastLocalSpeech.at < 1500) {
+    commandClaim = require('./services/core/commandGate').isRepeatableControl(duplicateKey)
+        ? { finish() {}, release() {} }
+        : localVoiceCommands.claim(duplicateKey);
+    if (!commandClaim) {
         return res.json({ response: '', result: { ok: true, status: 'ignored_duplicate', verified: true } });
     }
     lastLocalSpeech = { text: duplicateKey, at: Date.now() };
@@ -977,8 +1031,9 @@ app.post('/api/process_speech_local', async (req, res) => {
         provider: 'local-whisper'
     });
     const text = voiceInputService.normalizeVoiceTranscript(understoodVoice.text);
-    if (!text) return res.status(400).json({ error: "Text missing" });
+    if (!text) { commandClaim.release(); return res.status(400).json({ error: "Text missing" }); }
     if (selectedVoice.uncertain && !req.body.confirmed) {
+        commandClaim.release();
         return res.status(409).json({ status: 'voice_confirmation_required', ...selectedVoice, text, provider: understoodVoice.provider });
     }
     voiceInputService.recordTranscript({
@@ -992,39 +1047,61 @@ app.post('/api/process_speech_local', async (req, res) => {
     });
     
     console.log(`[Jarvis Audio Python]: ${text}`);
-    const ACK_PHRASES = [
-        'Enseguida, señor.',
-        'Entendido, ya me encargo.',
-        'De acuerdo, procesando la tarea.',
-        'Claro, enseguida lo hago.',
-        'Entendido, en proceso.'
-    ];
-    const ackText = ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)];
+    const ackText = localVoiceAcknowledgement(text);
     io.emit('action_status', { phase: 'accepted', message: ackText, text, speakAck: false });
 
-    const result = await jarvisActionService.process(text, actionContext(progress => io.emit('tv_progress', progress)));
-    if (result.actionId === 'voice.sleep') {
-        setVoiceState('dormant');
-    } else if (result.actionId === 'voice.wake') {
-        setVoiceState('awake');
+    const executeAndFormat = async () => {
+        const result = await jarvisActionService.process(text, actionContext(progress => io.emit('tv_progress', progress)));
+        if (result.status === 'awaiting_pin_confirmation' && io.engine.clientsCount === 0) {
+            systemService.openApp(`http://127.0.0.1:${PORT}/`).catch(error => console.warn('[PIN] No pude abrir el panel:', error.message));
+        }
+        if (result.actionId === 'voice.sleep') setVoiceState('dormant');
+        else if (result.actionId === 'voice.wake') setVoiceState('awake');
+        const formatted = responseFormatterService.format(result.message, { actionId: result.actionId, data: result.data });
+        io.emit('action_status', { phase: result.confirmationToken ? 'accepted' : result.ok === false ? 'failed' : 'completed', message: formatted.voice, text, speakAck: false });
+        io.emit('response', {
+            text: formatted.screen,
+            voiceText: formatted.voice,
+            action: result.actionId,
+            actionPayload: result.data || null,
+            suppressTts: true,
+            verified: result.verified,
+            status: result.status,
+            confirmationToken: result.confirmationToken,
+            confirmationResolved: result.confirmationResolved
+        });
+        return { response: formatted.voice, screenText: formatted.screen, result };
+    };
+
+    if (localVoiceMustRunInline(text)) {
+        try { return res.json(await executeAndFormat()); }
+        finally { commandClaim.release(); }
     }
-    const formatted = responseFormatterService.format(result.message, { actionId: result.actionId, data: result.data });
-    
-    // Sincronizar la respuesta con cualquier UI web abierta
-    io.emit('response', {
-        text: formatted.screen,
-        voiceText: formatted.voice,
-        action: result.actionId,
-        actionPayload: result.data || null,
-        suppressTts: true,
-        verified: result.verified,
-        status: result.status,
-        confirmationToken: result.confirmationToken
+
+    const backgroundJobId = crypto.randomUUID();
+    saveLocalVoiceJob(backgroundJobId, { status: 'working', response: ackText });
+    res.json({
+        response: ackText,
+        backgroundJobId,
+        result: { ok: true, status: 'accepted', verified: true }
     });
-    
-    // Responder a Python para que lo hable por TTS usando el canal de voz optimizado
-    res.json({ response: formatted.voice, screenText: formatted.screen, result });
+    setImmediate(async () => {
+        try {
+            const completed = await executeAndFormat();
+            saveLocalVoiceJob(backgroundJobId, { status: completed.result.ok === false ? 'failed' : 'completed', ...completed });
+        } catch (error) {
+            console.error('[Voz local] Tarea en segundo plano:', error.message);
+            const response = `No pude completar la orden: ${error.message}`;
+            const result = { ok: false, status: 'failed', verified: false, message: response };
+            io.emit('response', { text: response, suppressTts: true, status: 'failed', verified: false });
+            saveLocalVoiceJob(backgroundJobId, { status: 'failed', response, screenText: response, result });
+        } finally {
+            commandClaim.finish();
+        }
+    });
+    return;
     } catch (error) {
+        commandClaim?.release();
         console.error('[Voz local] Error:', error.message);
         const response = 'No pude completar la orden: ' + error.message;
         io.emit('response', { text: response, suppressTts: true, status: 'failed', verified: false });
@@ -1124,6 +1201,8 @@ io.on('connection', (socket) => {
 
     // Evento de procesamiento de voz (cuando Jarvis escucha al usuario)
     socket.on('process_speech', async (data) => {
+        // Heartbeat is every 30 seconds: don't let the browser become a second mic.
+        if (data.source === 'voice' && localVoiceStatus.online && Date.now() - Date.parse(localVoiceStatus.lastSeenAt || '') < 90000) return;
         const selectedVoice = voiceInputService.chooseTranscript(data);
         const dupKey = voiceInputService.normalizeVoiceTranscript(selectedVoice.text).toLowerCase();
         if (dupKey && dupKey === lastSocketSpeech.text && Date.now() - lastSocketSpeech.at < 1200) {
@@ -1211,7 +1290,8 @@ io.on('connection', (socket) => {
                 actionPayload: result.data || null,
                 verified: result.verified,
                 status: result.status,
-                confirmationToken: result.confirmationToken
+                confirmationToken: result.confirmationToken,
+                confirmationResolved: result.confirmationResolved
             });
             return;
         } catch (error) {
@@ -1505,7 +1585,7 @@ io.on('connection', (socket) => {
                 else {
                     const activeMode = modeService.getActiveMode();
                     const screenContext = observerService.getScreenContext();
-                    responseText = await aiService.getAIResponse(text, activeMode, screenContext, data.inpaintingMask);
+                    responseText = await require('./services/aiService').getAIResponse(text, activeMode, screenContext, data.inpaintingMask);
                 }
             }
 

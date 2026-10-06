@@ -107,11 +107,7 @@ class NotificationService {
     }
 
     enqueueTTS(text, priority = 2) {
-        // Si entra una emergencia (prioridad 0), interrumpir audio actual si existe
-        if (priority === 0 && this.currentTts) {
-            this.currentTts.abortController?.abort();
-            this.currentTts = null;
-        }
+        // Reminders can move ahead of pending notifications, but never cut a sentence.
 
         const ttsItem = {
             text,

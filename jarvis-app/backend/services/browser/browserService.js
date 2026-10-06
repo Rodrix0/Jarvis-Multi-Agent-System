@@ -23,6 +23,16 @@ class BrowserService {
         this.activePage = null;
         this.executablePath = this._detectBrowserExecutable();
         this.downloads = [];
+        this.idleTimer = null;
+        this.idleTimeoutMs = Math.max(60_000, Number(process.env.JARVIS_BROWSER_IDLE_MS) || 30 * 60 * 1000);
+    }
+
+    _touchSession() {
+        if (this.idleTimer) clearTimeout(this.idleTimer);
+        this.idleTimer = setTimeout(() => {
+            this.close().catch(() => {});
+        }, this.idleTimeoutMs);
+        this.idleTimer.unref?.();
     }
 
     /**
@@ -78,6 +88,8 @@ class BrowserService {
         if (!this.activePage || this.activePage.isClosed()) {
             this.activePage = await this.context.newPage();
         }
+
+        this._touchSession();
 
         return { browser: this.browser, context: this.context, page: this.activePage };
     }
@@ -218,6 +230,7 @@ class BrowserService {
                 timestamp: new Date().toISOString()
             };
             this.downloads.push(record);
+            this.downloads = this.downloads.slice(-50);
 
             eventBus.publish('DOWNLOAD_COMPLETED', record);
             return record;
@@ -230,6 +243,7 @@ class BrowserService {
                 timestamp: new Date().toISOString()
             };
             this.downloads.push(errRecord);
+            this.downloads = this.downloads.slice(-50);
             eventBus.publish('DOWNLOAD_FAILED', errRecord);
             throw err;
         }
@@ -364,6 +378,7 @@ class BrowserService {
      */
     async listTabs() {
         if (!this.context) return [];
+        this._touchSession();
         const pages = this.context.pages();
         const tabs = [];
         for (let i = 0; i < pages.length; i++) {
@@ -383,6 +398,7 @@ class BrowserService {
      */
     async switchTab(target) {
         if (!this.context) throw new Error('No hay contexto de navegador activo.');
+        this._touchSession();
         const pages = this.context.pages();
         if (pages.length === 0) throw new Error('No hay pestañas abiertas.');
 
@@ -412,6 +428,8 @@ class BrowserService {
      * Cierra la pestaña activa o la sesión completa del navegador.
      */
     async close() {
+        if (this.idleTimer) clearTimeout(this.idleTimer);
+        this.idleTimer = null;
         if (this.browser) {
             console.log('[BrowserService] 🛑 Cerrando sesión de navegador...');
             await this.browser.close().catch(() => {});

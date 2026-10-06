@@ -5,13 +5,10 @@ const memoryService = require('./memoryService');
 const modeService = require('./modeService');
 const observerService = require('./observerService');
 const systemService = require('./systemService');
-const aiService = require('./aiService');
 const tvService = require('./tvService');
 const tvVoiceService = require('./tvVoiceService');
-const informationDocumentService = require('./informationDocumentService');
 const voiceLearningService = require('./voiceLearningService');
 const financeService = require('./financeService');
-const downloadService = require('./downloadService');
 
 // --- V6 ENTERPRISE SERVICES ---
 const fastCommandParser = require('./ai/fastCommandParser');
@@ -421,6 +418,9 @@ function registerActions() {
         id: 'whatsapp.send', name: 'Enviar mensaje de WhatsApp', description: 'Envía un mensaje de WhatsApp a un contacto especificado.',
         parameters: { contact: 'Nombre del contacto', message: 'Mensaje a enviar' }, permission: 'standard',
         examples: ['Mandale un mensaje a Color Cartón que diga te amo', 'Enviá un mensaje a mamá que diga llego en 10', 'Un mensaje a Color Cartón que diga te amo'],
+        prepare: (params, context) => require('./communication/whatsappDraftService').prepare(params, context),
+        confirmation: params => params.reviewRequired === true,
+        confirmationMessage: ({ contact, message }) => `Preparé este mensaje para ${contact}: “${message}”. ¿Lo envío así? Podés confirmarlo o cancelarlo.`,
         execute: async ({ contact, message }) => windowsControlService.whatsapp.sendMessage(contact, message)
     });
 
@@ -540,7 +540,27 @@ function registerActions() {
     actionKernel.register({
         id:'document.research', name:'Guardar investigación en documento',
         parameters:{topic:'Tema para buscar',useLast:'Usar resultados de la última búsqueda',directory:'Carpeta de destino o ruta absoluta',fileName:'Nombre opcional',format:'docx, pdf o txt'},
-        execute: params => require('./researchDocumentService').create(params)
+        execute: params => require('./researchDocumentService').create({...params, open:true})
+    });
+
+    actionKernel.register({
+        id: 'image.generate', name: 'Generar imagen',
+        description: 'Genera una imagen local con Stable Diffusion Forge y la muestra dentro de Jarvis.',
+        parameters: { prompt: 'Descripción de la imagen', width: 'Ancho opcional', height: 'Alto opcional', steps: 'Pasos opcionales', quality: 'Perfil opcional: fast, quality o maximum' }, requiredParameters: ['prompt'], permission: 'standard', retry: false,
+        execute: async ({ prompt, width, height, steps, quality }) => {
+            const imageService = require('./imageService');
+            const filePath = await imageService.generateImage(prompt, { width, height, steps, quality });
+            const imageUrl = imageService.publicImageUrl(filePath);
+            return {
+                ok: true,
+                verified: fs.existsSync(filePath),
+                filePath,
+                imageUrl,
+                data: { kind: 'generated-image', filePath, imageUrl },
+                evidence: { fileCreated: fs.existsSync(filePath), filePath },
+                message: `Listo, generé la imagen.\n\n![Imagen generada](${imageUrl})`
+            };
+        }
     });
 
     // Vision Subsystem (Screen OCR & Error Diagnosis)
@@ -1234,11 +1254,11 @@ function registerActions() {
     actionKernel.register({
         id: 'system.media-search', name: 'Buscar contenido multimedia en la notebook',
         description: 'Abre directamente resultados de YouTube o Netflix en la computadora, sin pasar por el razonamiento general.',
-        parameters: { platform: 'youtube o netflix', query: 'Canal, película, serie o video' }, permission: 'desktop-control',
+        parameters: { platform: 'youtube, netflix o stremio', query: 'Canal, película, serie o video' }, permission: 'desktop-control',
         examples: ['Buscá el canal de Kurzgesagt en YouTube', 'Buscá The Walking Dead en Netflix en la compu'],
         execute: async ({ platform, query }) => {
             const success = await systemService.openMediaSearch(platform, query);
-            const label = platform === 'youtube' ? 'YouTube' : 'Netflix';
+            const label = { youtube: 'YouTube', netflix: 'Netflix', stremio: 'Stremio' }[platform] || platform;
             return success
                 ? { message: `Abrí la búsqueda de ${query} en ${label} desde la computadora.`, evidence: { launcherAccepted: true, platform, query } }
                 : { ok: false, message: `No pude abrir la búsqueda en ${label}.`, evidence: { launcherAccepted: false, platform, query } };
@@ -1246,11 +1266,27 @@ function registerActions() {
     });
 
     actionKernel.register({
+        id: 'information.weather', name: 'Consultar clima',
+        description: 'Consulta el clima actual y el pronóstico de hoy o mañana con una fuente meteorológica pública.',
+        parameters: { city: 'Ciudad opcional', tomorrow: 'Si se consulta el pronóstico de mañana' },
+        permission: 'standard', examples: ['¿Qué clima hace en Corrientes?', '¿Va a llover mañana?'],
+        execute: params => require('./weatherService').getWeather(params)
+    });
+
+    actionKernel.register({
+        id: 'information.weather-location.set', name: 'Cambiar ubicación del clima',
+        description: 'Guarda la ciudad indicada para las próximas consultas del clima.',
+        parameters: { city: 'Ciudad o provincia donde se encuentra el usuario' },
+        permission: 'standard', riskLevel: 'LOW', examples: ['Me encuentro en Misiones', 'Estoy en Posadas', 'Cambiá mi ubicación del clima a Corrientes'],
+        execute: params => require('./weatherService').setPreferredLocation(params)
+    });
+
+    actionKernel.register({
         id: 'document.create-info', name: 'Crear documento informativo en el Escritorio',
         description: 'Busca fuentes web y guarda su información en un documento.',
         parameters: { topic: 'Tema solicitado', directory: 'Destino opcional', fileName: 'Nombre opcional', format: 'docx, pdf o txt' }, permission: 'desktop-control',
         examples: ['Creame un informe sobre computación cuántica'],
-        execute: params => require('./researchDocumentService').create(params)
+        execute: params => require('./researchDocumentService').create({...params, open:true})
     });
 
     actionKernel.register({
@@ -1271,7 +1307,7 @@ function registerActions() {
         permission: 'desktop-control', examples: ['Descargame esto https://…', 'Bajá el audio de este enlace https://…'],
         execute: async ({ url, audioOnly = false }) => {
             if (!/^https?:\/\/\S+$/i.test(String(url || ''))) throw new Error('Necesito un enlace HTTP o HTTPS válido.');
-            const directory = await downloadService.downloadMedia(url, Boolean(audioOnly));
+            const directory = await require('./downloadService').downloadMedia(url, Boolean(audioOnly));
             return {
                 message: `Terminé la descarga y la guardé en ${directory}.`,
                 data: { directory }, evidence: { downloadCompleted: true, directory, url }
@@ -1327,7 +1363,7 @@ function registerActions() {
                 : '';
             const screenContext = observerService.getScreenContext();
             const combined = [memoryContext, preferenceContext, screenContext].filter(Boolean).join('\n\n');
-            const message = await aiService.getAIResponse(text, modeService.getActiveMode(), combined || null, context.inpaintingMask, { structuredActions: true });
+            const message = await require('./aiService').getAIResponse(text, modeService.getActiveMode(), combined || null, context.inpaintingMask, { structuredActions: true });
             if (message && typeof message === 'object') return message;
             // El texto sí fue producido, pero aiService todavía contiene herramientas
             // heredadas que no devuelven evidencia estructurada. Nunca las marcamos
@@ -1363,6 +1399,7 @@ function parseDesktopMediaSearch(text) {
 
     let platform = '';
     if (/\byoutube\b/.test(clean)) platform = 'youtube';
+    if (/\bstremio\b/.test(clean)) platform = 'stremio';
     if (/\bnetflix\b/.test(clean) && /\b(compu|computadora|pc|notebook|laptop)\b/.test(clean)) platform = 'netflix';
     if (!platform) return null;
 
@@ -1372,9 +1409,9 @@ function parseDesktopMediaSearch(text) {
     let query = clean
         .replace(/^.*?\b(?:busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar)\b\s*/, '')
         .replace(/\b(?:en|desde)\s+(?:mi\s+|la\s+)?(?:compu|computadora|pc|notebook|laptop)\b.*$/, '')
-        .replace(/^(?:por|en)\s+youtube\s+/i, '')
-        .replace(/\b(?:en|por)\s+(?:youtube|netflix)\b/g, '')
-        .replace(/\b(?:youtube|netflix)\b/g, '')
+        .replace(/^(?:por|en)\s+(?:youtube|stremio)\s+/i, '')
+        .replace(/\b(?:en|por)\s+(?:youtube|netflix|stremio)\b/g, '')
+        .replace(/\b(?:youtube|netflix|stremio)\b/g, '')
         .replace(/^\s*(?:el\s+canal|canal|la\s+pelicula|la\s+serie|pelicula|serie|video)\s+(?:de\s+)?/, '')
         .replace(/\s+/g, ' ')
         .trim();
@@ -1416,11 +1453,35 @@ function parseDollar(text) {
     return { type: financeService.requestedDollarType(clean) };
 }
 
+function parseImageGeneration(text) {
+    const raw = String(text || '').trim();
+    const clean = normalize(raw);
+    const hasCreationVerb = /\b(?:crea|crear|creame|crees|genera|generar|generame|generes|hace|hacer|haceme|hagas|dibuja|dibujar|dibujame|dibujarme|dibujes|disena|disenar|disename|disenes|pinta|pintar|pintame|pintes)\b/.test(clean)
+        || /\b(?:quiero|necesito|podrias|podes)\b.*\b(?:una|un)\s+(?:imagen|foto|fotografia|dibujo|ilustracion|render|pintura)\b/.test(clean);
+    const hasImageTarget = /\b(?:imagen|foto|fotografia|dibujo|ilustracion|render|pintura|arte visual)\b/.test(clean);
+    if (!hasCreationVerb || !hasImageTarget) return null;
+
+    // "Creá una carpeta de imágenes" es una operación de archivos, no una generación visual.
+    if (/\b(?:carpeta|directorio)\b/.test(clean)) return null;
+    if (/\b(?:edita|editar|modifica|modificar|retoca|retocar)\b/.test(clean)) return null;
+
+    const prompt = raw
+        .replace(/^(?:quiero|necesito|podr[ií]as|pod[eé]s)\s+(?:que\s+)?(?:me\s+)?/i, '')
+        .replace(/^(?:cr[eé]ame|cre[aá]|crear|crees|generame|gener[aá]|generar|generes|haceme|hac[eé]|hacer|hagas|dibujarme|dibujame|dibuj[aá]|dibujar|dibujes|diseñame|diseñ[aá]|diseñar|diseñes|pintame|pint[aá]|pintar|pintes)\s*/i, '')
+        .trim();
+    return { prompt: prompt || raw };
+}
+
 async function resolve(text) {
     registerActions();
-    let clean = String(text || '').trim().replace(/^(?:(?:hola|che)\s+)?jarvis[,\s]+/i, '').replace(/^por\s+favor[,\s]+/i, '');
+    let clean = String(text || '').trim().replace(/^[¿¡]+/, '').replace(/^(?:(?:hola|che)\s+)?jarvis[,\s]+/i, '').replace(/^por\s+favor[,\s]+/i, '');
     // Normalización fonética para términos comúnmente malinterpretados por STT
     clean = clean
+        .replace(/^(?:me\s+)?(?:puedes|pod[eé]s|podr[ií]as)\s+(?:por\s+favor\s+)?/i, '')
+        .replace(/^(?:quiero|necesito)\s+que\s+(?:me\s+)?(?:crees|hagas|generes|redactes)\s+/i, 'creame ')
+        .replace(/\bcr[eé]ame\b/gi, 'creame')
+        .replace(/\bb[uú]scame\b/gi, 'buscame')
+        .replace(/\b(?:dpcumento|docuemnto|documetno|documeno|ducumento)\b/gi, 'documento')
         .replace(/\b(?:un\s+)?(?:tequi\s*te|tequiste|tequi|te\s+que\s+te|tequis|tx\s*t|t\s+x\s+t)\b/gi, 'txt')
         .replace(/\b(crear|creame|crea|hacer|haceme|hace|generar|genera)\s+(?:un\s+)?tequila\b/gi, '$1 un txt')
         .replace(/\bmini\s+misa\b/gi, 'minimiza')
@@ -1429,8 +1490,19 @@ async function resolve(text) {
         .replace(/\bmaximisa\b/gi, 'maximiza');
     const lower = normalize(clean);
 
+    const weatherLocation = require('./weatherService').parseLocationUpdate(clean);
+    if (weatherLocation) return { id: 'information.weather-location.set', params: weatherLocation };
     const reminder = require('./agenda/reminderParser').parse(clean.replace(/^(?:hola |che )?jarvis[, ]+/i, ''));
     if (reminder) return reminder;
+    const imageGeneration = parseImageGeneration(clean);
+    if (imageGeneration) return { id: 'image.generate', params: imageGeneration };
+    const weatherRequest = require('./weatherService').parseRequest(clean);
+    if (weatherRequest) return { id: 'information.weather', params: weatherRequest };
+    // Explicit media target takes precedence over active browser/TV context.
+    if (/\bstremio\b/.test(lower)) {
+        const media = parseDesktopMediaSearch(clean);
+        if (media) return { id: 'system.media-search', params: media };
+    }
     const voiceBrowser=require('./browser/voiceNavigationService');
     const browserIntent=require('./ai/browserVoiceIntentParser').parse(clean,{active:voiceBrowser.isActive(),tv:tvVoiceService.isSessionActive(),platform:voiceBrowser.platform()});
     if(browserIntent)return browserIntent;
@@ -1568,6 +1640,7 @@ async function resolve(text) {
     if (createFolderMatch && createFolderMatch[1]) {
         let folderName = createFolderMatch[1].trim()
             .replace(/^(?:llamada|que\s+se\s+llame|que\s+diga|titulada|de\s+nombre|nombre|de)\s+/i, '')
+            .replace(/^de\s+/i, '')
             .replace(/[.!?]+$/, '')
             .trim();
         if (folderName) {
@@ -1703,10 +1776,6 @@ async function resolve(text) {
         if (tvIntent.action === 'open_search') return { id: 'tv.open-search', params: {} };
         return { id: 'tv.control', params: { intent: tvIntent } };
     }
-    if (tvVoiceService.isSessionActive() && !tvVoiceService.switchesAwayFromTv(clean)) {
-        return { id: 'tv.control', params: { intent: { action: 'clarify' } } };
-    }
-
     if (/\b(activar|activa|prende|encende)\b.*\b(observador|observacion)\b/.test(lower)) return { id: 'observer.set', params: { enabled: true } };
     if (/\b(desactivar|desactiva|apaga)\b.*\b(observador|observacion)\b/.test(lower)) return { id: 'observer.set', params: { enabled: false } };
     const mode = lower.match(/activar\s+(?:el\s+)?modo\s+(.+)/);
@@ -1727,22 +1796,36 @@ async function resolve(text) {
     return { id: 'assistant.respond', params: { text: clean, referenceContext: refs.context || [] } };
 }
 
+const executionGate = new (require('./core/commandGate'))();
+const confirmsPendingAction = text => /^(?:si|si confirmo|confirmo|autorizo|si autorizo|dale|adelante|hacelo|hazlo|si hacelo|si hazlo|si por favor|podes hacerlo|si podes hacerlo|podes hacer eso|si podes hacer eso|hace eso|si podes|si dale)(?: jarvis)?$/.test(text);
+const cancelsPendingAction = text => /^(?:no|no confirmo|no cancela(?: eso)?|cancelar|cancela|cancela eso|no lo hagas|dejalo)(?: jarvis)?$/.test(text);
+
+async function confirm(token, context = {}, options = {}) {
+    const result = await actionKernel.confirm(token, context, options);
+    if (pendingVoiceConfirmation?.result.confirmationToken === token && result.status !== 'pin_verification_failed') {
+        pendingVoiceConfirmation = null;
+    }
+    return result;
+}
+
+function cancelConfirmation(token) {
+    if (pendingVoiceConfirmation?.result.confirmationToken === token) pendingVoiceConfirmation = null;
+    return actionKernel.cancelConfirmation(token);
+}
+
 async function process(text, context = {}) {
-    const reply = normalize(text).replace(/^jarvis[, ]+/, '');
+    const reply = normalize(text).replace(/[,.]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^jarvis +/, '');
     const pending = pendingVoiceConfirmation;
-    pendingVoiceConfirmation = null;
-    if (pending && Date.now() < pending.expiresAt) {
-        if (/^(?:si|si confirmo|confirmo|si hacelo|confirmar)$/.test(reply)) {
-            if (pending.result.status === 'awaiting_pin_confirmation') {
-                pendingVoiceConfirmation = pending;
-                return { ...pending.result, message: 'Completá el PIN en el panel para confirmar esta acción.' };
-            }
-            return actionKernel.confirm(pending.result.confirmationToken, context);
+    if (pending && Date.now() >= pending.expiresAt) cancelConfirmation(pending.result.confirmationToken);
+    if (pending && Date.now() < pending.expiresAt && confirmsPendingAction(reply)) {
+        if (['awaiting_pin_confirmation', 'pin_verification_failed'].includes(pending.result.status)) {
+            return { ...pending.result, message: 'Entendido. Abrí el panel de autorización e introducí el PIN para completar esta acción.' };
         }
-        if (/^(?:no|cancelar|cancela|no confirmo)$/.test(reply)) {
-            actionKernel.cancelConfirmation(pending.result.confirmationToken);
-            return { ok: true, status: 'completed', verified: true, message: 'Cancelé la acción pendiente.' };
-        }
+        return { ...await confirm(pending.result.confirmationToken, context), confirmationResolved: true };
+    }
+    if (pending && Date.now() < pending.expiresAt && cancelsPendingAction(reply)) {
+        cancelConfirmation(pending.result.confirmationToken);
+        return { ok: true, status: 'completed', verified: true, actionId: pending.result.actionId, confirmationResolved: true, message: 'Cancelé la acción pendiente.' };
     }
     registerActions();
     const operationMetricsService = require('./diagnostics/operationMetricsService');
@@ -1761,17 +1844,33 @@ async function process(text, context = {}) {
     });
 
     let result;
+    // Repeated capture on HTTP and Socket.IO must not repeat filesystem/app effects.
+    const guarded = /^(?:document\.|file\.create$|folder\.create$|agenda\.add$|image\.generate$|system\.open$|system\.media-search$)/.test(request.id);
+    const executionKey = JSON.stringify([request.id, request.params]);
+    const claim = guarded ? executionGate.claim(executionKey) : null;
+    if (guarded && !claim) {
+        trace.finish({ status: 'SUCCESS', metadata: { duplicate: true } });
+        return { ok: true, status: 'ignored_duplicate', duplicate: true, verified: false, actionId: request.id, message: 'Ya recibí ese pedido; no lo voy a ejecutar dos veces.' };
+    }
     try {
         result = await trace.timeStage('tool_execution', async () => {
-            return actionKernel.execute(request.id, request.params, context);
+            return actionKernel.execute(request.id, request.params, { ...context, originalUtterance: text });
         });
     } catch (err) {
         trace.recordToolError(err);
         trace.finish({ status: 'FAILED', error: err });
         throw err;
+    } finally {
+        claim?.finish();
     }
 
-    if (result.confirmationToken) pendingVoiceConfirmation = { result, expiresAt: Date.now() + 60000 };
+    if (result.confirmationToken) {
+        if (pendingVoiceConfirmation && Date.now() < pendingVoiceConfirmation.expiresAt) {
+            actionKernel.cancelConfirmation(result.confirmationToken);
+            return { ...pendingVoiceConfirmation.result, message: 'Todavía espero la autorización anterior. Podés confirmarla o cancelarla antes de iniciar otra acción protegida.' };
+        }
+        pendingVoiceConfirmation = { result, expiresAt: Date.now() + 120000 };
+    }
     voiceLearningService.recordVerifiedExecution({
         utterance: text, actionId: request.id, params: request.params, result
     });
@@ -1787,4 +1886,4 @@ async function process(text, context = {}) {
 }
 
 registerActions();
-module.exports = { process, resolve, describe: actionKernel.describe, execute: actionKernel.execute, confirm: actionKernel.confirm, cancelConfirmation: actionKernel.cancelConfirmation };
+module.exports = { process, resolve, describe: actionKernel.describe, execute: actionKernel.execute, confirm, cancelConfirmation, pendingConfirmation: actionKernel.pendingConfirmation };

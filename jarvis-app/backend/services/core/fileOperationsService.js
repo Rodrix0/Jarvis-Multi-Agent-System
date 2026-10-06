@@ -34,7 +34,7 @@ class FileOperationsService {
     }
 
     async createWordDocument(filePath, title, content) {
-        const { Document, Packer, Paragraph, TextRun, HeadingLevel } = docx;
+        const { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } = docx;
 
         const paragraphs = [
             new Paragraph({
@@ -44,12 +44,38 @@ class FileOperationsService {
             })
         ];
 
-        const lines = String(content || '').split('\n').filter(Boolean);
+        const lines = String(content || '').split('\n').filter(line => line.trim());
         if (lines.length > 0) {
             lines.forEach(line => {
+                const heading = line.match(/^(#{1,6})\s+(.+)/);
+                if (heading) {
+                    const levels = [
+                        HeadingLevel.HEADING_1,
+                        HeadingLevel.HEADING_2,
+                        HeadingLevel.HEADING_3,
+                        HeadingLevel.HEADING_4,
+                        HeadingLevel.HEADING_5,
+                        HeadingLevel.HEADING_6
+                    ];
+                    paragraphs.push(new Paragraph({
+                        text: heading[2].trim(),
+                        heading: levels[heading[1].length - 1],
+                        spacing: { before: 220, after: 120 }
+                    }));
+                    return;
+                }
+                const bullet = line.match(/^[-*•]\s+(.+)/);
+                const url = line.trim().match(/^https?:\/\/\S+$/i);
                 paragraphs.push(new Paragraph({
-                    children: [new TextRun({ text: line, size: 24 })],
-                    spacing: { after: 150 }
+                    children: url
+                        ? [new ExternalHyperlink({
+                            link: url[0],
+                            children: [new TextRun({ text: url[0], style: 'Hyperlink', size: 20 })]
+                        })]
+                        : [new TextRun({ text: bullet ? bullet[1] : line, size: 22 })],
+                    ...(bullet ? { bullet: { level: 0 } } : {}),
+                    spacing: { after: url ? 180 : 130 },
+                    alignment: url ? undefined : 'both'
                 }));
             });
         } else {
@@ -59,6 +85,14 @@ class FileOperationsService {
         }
 
         const doc = new Document({
+            styles: {
+                default: {
+                    document: { run: { font: 'Aptos', size: 22, color: '222222' } },
+                    heading1: { run: { font: 'Aptos Display', size: 34, bold: true, color: '17365D' } },
+                    heading2: { run: { font: 'Aptos Display', size: 28, bold: true, color: '1F4E79' } },
+                    heading3: { run: { font: 'Aptos Display', size: 24, bold: true, color: '2F5597' } }
+                }
+            },
             sections: [{ properties: {}, children: paragraphs }]
         });
 

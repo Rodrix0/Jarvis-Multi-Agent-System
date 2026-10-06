@@ -23,6 +23,9 @@ class DashboardService {
         this.currentModel = process.env.DEFAULT_LLM_MODEL || 'Qwen 2.5';
         this.streamInterval = null;
         this.io = null;
+        this.connectedClients = new Set();
+        this.streamIntervalMs = Math.max(1000, Number(process.env.JARVIS_DASHBOARD_INTERVAL_MS) || 5000);
+        this._samplePromise = null;
 
         // Cache de VRAM y hardware para evitar sobrecarga
         this._cachedVram = { usedGB: 0, totalGB: 0, percent: 0, lastCheck: 0 };
@@ -30,7 +33,10 @@ class DashboardService {
         this._cachedCpuPercent = 0;
         this._lastCpuCheck = 0;
 
-        // Cache de estado de servicios (2.5 segundos)
+        // Las comprobaciones externas (Ollama, ComfyUI, BroadLink y nvidia-smi)
+        // son caras. El dashboard no necesita repetirlas en cada frame visual.
+        this.vramCacheMs = Math.max(5000, Number(process.env.JARVIS_VRAM_CACHE_MS) || 30000);
+        this.servicesCacheMs = Math.max(5000, Number(process.env.JARVIS_SERVICE_HEALTH_CACHE_MS) || 30000);
         this._cachedServices = null;
         this._lastServicesCheck = 0;
     }
@@ -131,7 +137,7 @@ class DashboardService {
      */
     async getVramUsage() {
         const now = Date.now();
-        if (now - this._cachedVram.lastCheck < 2500) {
+        if (now - this._cachedVram.lastCheck < this.vramCacheMs) {
             return this._cachedVram;
         }
 
@@ -173,7 +179,7 @@ class DashboardService {
      */
     async checkServices() {
         const now = Date.now();
-        if (this._cachedServices && (now - this._lastServicesCheck < 3000)) {
+        if (this._cachedServices && (now - this._lastServicesCheck < this.servicesCacheMs)) {
             return this._cachedServices;
         }
 
@@ -254,6 +260,18 @@ class DashboardService {
      * Obtiene el snapshot completo para el Dashboard de Jarvis.
      */
     async getDashboardData() {
+        // REST y Socket.IO pueden pedir el mismo snapshot simultáneamente. Una
+        // sola muestra compartida evita duplicar procesos y consultas de red.
+        if (this._samplePromise) return this._samplePromise;
+        this._samplePromise = this._collectDashboardData();
+        try {
+            return await this._samplePromise;
+        } finally {
+            this._samplePromise = null;
+        }
+    }
+
+    async _collectDashboardData() {
         const [services, vram] = await Promise.all([
             this.checkServices(),
             this.getVramUsage()
@@ -294,31 +312,62 @@ class DashboardService {
     /**
      * Inicia la transmisión continua de telemetría hacia todos los clientes Socket.IO.
      */
-    startLiveStreaming(io, intervalMs = 2000) {
+    startLiveStreaming(io, intervalMs = this.streamIntervalMs) {
         if (!io) return;
         this.io = io;
+        this.streamIntervalMs = Math.max(100, Number(intervalMs) || this.streamIntervalMs);
 
-        if (this.streamInterval) {
-            clearInterval(this.streamInterval);
-        }
-
-        this.streamInterval = setInterval(async () => {
+        const emitSnapshot = async (target = this.io) => {
             try {
                 const data = await this.getDashboardData();
-                this.io.emit('dashboard_telemetry', data);
+                target.emit('dashboard_telemetry', data);
             } catch (err) {
                 console.error('[DashboardService] Error emitiendo telemetría:', err.message);
             }
-        }, intervalMs);
+        };
 
-        console.log(`[DashboardService] 📊 Streaming de telemetría activo cada ${intervalMs}ms.`);
+        const startTimer = () => {
+            if (this.streamInterval) return;
+            this.streamInterval = setInterval(() => {
+                if (this.connectedClients.size === 0 && typeof this.io.on === 'function') {
+                    this.stopLiveStreamingTimer();
+                    return;
+                }
+                emitSnapshot();
+            }, this.streamIntervalMs);
+            this.streamInterval.unref?.();
+        };
+
+        if (typeof io.on === 'function') {
+            io.on('connection', socket => {
+                const clientId = socket.id || `client-${Date.now()}-${Math.random()}`;
+                this.connectedClients.add(clientId);
+                emitSnapshot(socket);
+                startTimer();
+                socket.once?.('disconnect', () => {
+                    this.connectedClients.delete(clientId);
+                    if (this.connectedClients.size === 0) this.stopLiveStreamingTimer();
+                });
+            });
+        } else {
+            // Compatibilidad con adaptadores simples y pruebas sin eventos de conexión.
+            this.connectedClients.add('legacy-client');
+            startTimer();
+        }
+
+        console.log(`[DashboardService] 📊 Telemetría lista bajo demanda (cada ${this.streamIntervalMs}ms con panel conectado).`);
     }
 
-    stopLiveStreaming() {
+    stopLiveStreamingTimer() {
         if (this.streamInterval) {
             clearInterval(this.streamInterval);
             this.streamInterval = null;
         }
+    }
+
+    stopLiveStreaming() {
+        this.stopLiveStreamingTimer();
+        this.connectedClients.clear();
     }
 }
 

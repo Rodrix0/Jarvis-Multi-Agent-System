@@ -21,7 +21,7 @@ function parse(text) {
     // Compound folder + file requests remain with the existing compound parser.
     if(/\bcarpeta\b.*\b(?:adentro|dentro|y)\b.*\b(?:archivo|txt|word|nota|documento)\b/.test(normalized)) return null;
     const folder=raw.match(/^(?:cre[aá](?:r|me)?|hac[eé](?:r|me)?|gener[aá](?:r|me)?)\s+(?:una\s+)?carpeta(?:\s+(.*))?$/i);
-    if(folder){let name=(folder[1]||'Nueva carpeta').replace(/^(?:llamada|con el nombre de|que se llame|de nombre)\s+/i,'').replace(/\s+(?:en|sobre)\s+(?:el|mi)\s+escritorio$/i,'');return {id:'folder.create',params:{folderName:stripQuotes(name)}};}
+    if(folder){let name=(folder[1]||'').replace(/^(?:llamada|con el nombre de|que se llame|que diga|de nombre|de)\s*/i,'').replace(/\s+(?:en|sobre)\s+(?:el|mi)\s+escritorio$/i,'').trim();return {id:'folder.create',params:{folderName:stripQuotes(name)}};}
     m=raw.match(/^(?:cre[aá](?:r|me)?|hac[eé](?:r|me)?|gener[aá](?:r|me)?)\s+(?:un\s+|una\s+)?(archivo(?:\s+de\s+texto)?|txt|nota|word|docx|pdf|xlsx|excel|pptx|powerpoint|documento(?:\s+de\s+word)?)\s*([\s\S]*)$/i);
     if(!m)return null;
     let rest=m[2];let content='';let topic=null;

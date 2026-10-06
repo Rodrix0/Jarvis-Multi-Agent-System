@@ -5,7 +5,27 @@ const modelRouterService = require('./ai/modelRouterService');
 const structuredOutputService = require('./ai/structuredOutputService');
 const toolRegistryService = require('./tools/toolRegistryService');
 const canonicalTools = require('./ai/canonicalTools');
+const { isPureConversation } = require('./ai/conversationIntent');
 const fetch = (url, options = {}) => globalThis.fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(30000) });
+let pythonSkillsCache = { items: [], checkedAt: 0, retryAfter: 0 };
+
+async function getDynamicPythonSkills() {
+    const now = Date.now();
+    if (pythonSkillsCache.checkedAt && now - pythonSkillsCache.checkedAt < 5 * 60 * 1000) {
+        return pythonSkillsCache.items;
+    }
+    if (now < pythonSkillsCache.retryAfter) return pythonSkillsCache.items;
+    try {
+        const response = await fetch('http://127.0.0.1:8000/list_skills', { signal: AbortSignal.timeout(500) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const items = await response.json();
+        pythonSkillsCache = { items: Array.isArray(items) ? items : [], checkedAt: now, retryAfter: 0 };
+    } catch (error) {
+        pythonSkillsCache.retryAfter = now + 30 * 1000;
+        console.warn('[Code-Act] Habilidades Python no disponibles; se usará la caché:', error.message);
+    }
+    return pythonSkillsCache.items;
+}
 
 // Eliminamos las credenciales de Google porque ahora somos 100% locales
 let conversationHistory = [];
@@ -111,21 +131,23 @@ function inferDeterministicIntent(userText) {
         };
     }
 
-    // Programación de Proyectos (Ingeniero).
-    if (/(crea|crear|haz|hazme|programa|desarrolla|arma|diseña|actualiza).*(página web|pagina web|web|sitio web|aplicación|app|proyecto|software)/i.test(lower)) {
-        return {
-            action: 'build_software',
-            target: text,
-            reply: 'Comenzando a desarrollar tu proyecto, señor.'
-        };
-    }
-
     // Generación de Imágenes Directa
     if (/(crea|crear|generar|genera|haz|hazme|dibuja|dibujame|diseña).*(imagen|foto|fotografia|fotografía|dibujo|render|pintura|arte)/i.test(lower)) {
         return {
             action: 'generate_image',
             target: text,
             reply: 'Iniciando el motor de renderizado de imágenes. Espere un momento...'
+        };
+    }
+
+    // Programación de Proyectos (Ingeniero). La presencia de una solicitud visual
+    // excluye esta ruta para impedir que "una imagen para mi proyecto" cree carpetas.
+    if (!/\b(imagen|foto|fotografia|fotografía|dibujo|render|pintura|arte visual)\b/i.test(lower)
+        && /(crea|crear|haz|hazme|programa|desarrolla|arma|diseña|actualiza).*(página web|pagina web|web|sitio web|aplicación|app|proyecto|software)/i.test(lower)) {
+        return {
+            action: 'build_software',
+            target: text,
+            reply: 'Comenzando a desarrollar tu proyecto, señor.'
         };
     }
 
@@ -435,6 +457,7 @@ TAREA: Leé los datos y respondé la pregunta en 1-2 oraciones.
 async function executeLlamaChat(messages, tools = null, jsonFormat = false, overrideModel = null, deadline = Date.now() + 30000) {
     let selectedModel = overrideModel;
     let fallbackModel = 'llama3.1:latest';
+    let generationOptions = { temperature: 0.2, maxTokens: 1024 };
 
     if (!selectedModel) {
         try {
@@ -443,6 +466,10 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
             const routeInfo = await modelRouterService.route(promptText, { tools: !!tools });
             selectedModel = routeInfo.model || process.env.OLLAMA_MODEL || 'hermes3:latest';
             fallbackModel = routeInfo.fallbackModel || 'llama3.1:latest';
+            generationOptions = {
+                temperature: Number.isFinite(routeInfo.temperature) ? routeInfo.temperature : 0.2,
+                maxTokens: Math.max(64, Number(routeInfo.maxTokens) || 1024)
+            };
         } catch (_) {
             selectedModel = process.env.OLLAMA_MODEL || 'hermes3:latest';
         }
@@ -452,7 +479,11 @@ async function executeLlamaChat(messages, tools = null, jsonFormat = false, over
         model: selectedModel,
         messages: messages,
         stream: false,
-        options: { temperature: 0.2 }
+        keep_alive: process.env.OLLAMA_CHAT_KEEP_ALIVE || '2m',
+        options: {
+            temperature: generationOptions.temperature,
+            num_predict: generationOptions.maxTokens
+        }
     };
 
     if (tools) {
@@ -520,6 +551,24 @@ async function fetchOllamaResponse(prompt) {
 
 async function getAIResponse(userText, activeMode, screenContext = null, inpaintingMask = null, options = {}) {
     try {
+        if (isPureConversation(userText)) {
+            const context = String(screenContext || '').slice(0, 4000);
+            const messages = [{
+                role: 'system',
+                content: `Sos Jarvis, asistente local de Rodrigo. Conversá de forma natural en español rioplatense. Respondé la pregunta concreta y no afirmes haber ejecutado acciones ni investigado en internet. Si no sabés algo, decilo. No inventes hechos actuales.${context ? `\nContexto autorizado de la conversación:\n${context}` : ''}`
+            }];
+            for (const item of conversationHistory.slice(-6)) {
+                const content = typeof item.content === 'string' ? item.content : item.content?.reply;
+                if (content && ['user', 'assistant'].includes(item.role)) messages.push({ role: item.role, content: String(content).slice(0, 1200) });
+            }
+            messages.push({ role: 'user', content: userText });
+            const response = await executeLlamaChat(messages, null, false, null, Date.now() + 15000);
+            const answer = String(response?.content || '').trim();
+            if (!answer) throw new Error('El modelo local no generó una respuesta.');
+            conversationHistory.push({ role: 'user', content: userText }, { role: 'assistant', content: answer });
+            if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
+            return answer;
+        }
         const normalizedQuestion = String(userText).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
         if (/^(?:explicame|explica|que es|quien es|como funciona|dame informacion sobre)\b/.test(normalizedQuestion) && !/\b(?:archivo|documento|pantalla|captura|portapapeles|proyecto|historial|ultima accion|esto|eso|hoy|actual|precio|cotizacion|noticia)\b/.test(normalizedQuestion)) {
             const answer = await executeLlamaChat([{ role: 'system', content: 'Respondé en español, con precisión y sin inventar datos. No afirmes haber ejecutado acciones ni consultado fuentes. Si no sabés una respuesta, decilo.' }, { role: 'user', content: userText }]);
@@ -604,24 +653,17 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
             { type: "function", function: { name: "analyze_screen", description: "OBLIGATORIA si el usuario pide ver, revisar, analizar o diagnosticar lo que aparece en pantalla, un error en pantalla o qué ventana está abierta. Captura la pantalla, extrae el texto por OCR y diagnostica el problema.", parameters: { type: "object", properties: { query: { type: "string", description: "La pregunta o duda sobre la pantalla (ej: 'fijate qué error salió')" }, reply: { type: "string", description: "Confirmación en voz alta" } }, required: ["query", "reply"] } } }
         ];
 
-        try {
-            const pythonSkillsRes = await fetch('http://127.0.0.1:8000/list_skills', { signal: AbortSignal.timeout(1500) });
-            if (pythonSkillsRes.ok) {
-                const pythonSkills = await pythonSkillsRes.json();
-                pythonSkills.forEach(skill => {
-                    tools.push({
-                        type: "function",
-                        function: {
-                            name: skill.name,
-                            description: skill.description,
-                            parameters: skill.parameters
-                        }
-                    });
-                });
-            }
-        } catch (e) {
-            console.error("[Code-Act] No se pudieron cargar habilidades dinámicas de Python:", e.message);
-        }
+        const pythonSkills = await getDynamicPythonSkills();
+        pythonSkills.forEach(skill => {
+            tools.push({
+                type: "function",
+                function: {
+                    name: skill.name,
+                    description: skill.description,
+                    parameters: skill.parameters
+                }
+            });
+        });
 
         const canonical = canonicalTools.build(userText);
         tools.unshift(...canonical.tools);
@@ -743,6 +785,16 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
             intent.reply = `Perfecto, programé el ${actionType === 'send_email' ? 'correo' : 'mensaje'} para las ${explicitTime}.`;
         }
 
+        // Todas las variantes de WhatsApp, incluidas las resueltas por el modelo,
+        // pasan por el mismo borrador y la misma autorización del núcleo.
+        if (intent.action === 'send_whatsapp') {
+            const result = await require('./actionKernelService').execute('whatsapp.send', {
+                contact: intent.target,
+                message: intent.message
+            }, { userText });
+            return options.structuredActions ? result : result.message;
+        }
+
         // Refuerzo: tema del documento extraído desde la orden del usuario.
         if (intent.action === 'create_document') {
             intent.action_type = normalizeDocumentActionType(intent.action_type);
@@ -762,14 +814,6 @@ async function getAIResponse(userText, activeMode, screenContext = null, inpaint
             if (!intent.reply || /procediendo con la acci[oó]n/i.test(intent.reply)) {
                 intent.reply = `Generando tu documento sobre ${intent.target}.`;
             }
-        }
-
-        // Hard-Override para forzar Agency cuando se menciona 4070 o multi-agente.
-        const lowerText = String(userText || '').toLowerCase();
-        if (lowerText.includes("4070") || lowerText.includes("multi-agente") || lowerText.includes("agency")) {
-            console.log("[Bypass] 🚀 Forzando Motor Multi-Agente (Agency) por palabra clave.");
-            intent.action = "build_software";
-            intent.target = userText;
         }
 
         // Eliminar fallback de recipient determinístico para dejar que Tool Calling de Llama 3.1 se encargue 100% de parsear el contacto y el mensaje exacto.
@@ -1601,14 +1645,11 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
                     const imageService = require('./imageService');
                     console.log(`[Jarvis Artista] Recibida orden de imagen: ${intent.target}`);
                     const finalPath = await imageService.generateImage(intent.target);
-                    
-                    // Abrir la imagen generada
-                    const { exec } = require('child_process');
-                    exec(`start "" "${finalPath}"`);
+                    const imageUrl = imageService.publicImageUrl(finalPath);
                     
                     conversationHistory.push({ role: "user", content: userText });
                     conversationHistory.push({ role: "assistant", content: intent });
-                    return intent.reply || "He generado la imagen exitosamente y la he abierto en su pantalla.";
+                    return `${intent.reply || "He generado la imagen exitosamente."}\n\n![Imagen generada](${imageUrl})`;
                 } catch (e) {
                     console.error("Error en generate_image:", e);
                     return "El motor de imágenes no pudo iniciarse o procesar su solicitud. " + e.message;
@@ -1628,13 +1669,11 @@ ${apiSpec ? apiSpec + "\n" : ""}The user opens this in a browser immediately. It
                     
                     console.log(`[Jarvis Artista] Recibida orden de edición de imagen: ${filepath} -> ${intent.target} | Mask: ${inpaintingMask ? "YES" : "NO"}`);
                     const finalPath = await imageService.editImage(filepath, intent.target, 0.75, inpaintingMask);
-                    
-                    const { exec } = require('child_process');
-                    exec(`start "" "${finalPath}"`);
+                    const imageUrl = imageService.publicImageUrl(finalPath);
                     
                     conversationHistory.push({ role: "user", content: userText });
                     conversationHistory.push({ role: "assistant", content: intent });
-                    return intent.reply || "He editado la foto y la he abierto en tu pantalla.";
+                    return `${intent.reply || "He editado la foto."}\n\n![Imagen editada](${imageUrl})`;
                 } catch (e) {
                     console.error("Error en edit_image:", e);
                     return "No pude editar la imagen. " + e.message;

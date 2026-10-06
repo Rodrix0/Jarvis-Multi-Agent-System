@@ -3,6 +3,8 @@ const path = require('path');
 const crypto = require('crypto');
 
 const MEMORY_PATH = process.env.JARVIS_MEMORY_PATH || path.join(__dirname, '..', 'data', 'jarvis_memory.json');
+let memoryCache = null;
+let memoryCacheMtime = -1;
 
 // Presupuesto Dinámico de Tokens (Ítem 21): sustituye el límite fijo de 240 turnos
 const MAX_TOKENS = parseInt(process.env.JARVIS_MAX_CONTEXT_TOKENS, 10) || 20000;
@@ -39,7 +41,12 @@ const EMPTY_MEMORY = {
 function read() {
     try {
         if (!fs.existsSync(MEMORY_PATH)) return structuredClone(EMPTY_MEMORY);
-        return { ...structuredClone(EMPTY_MEMORY), ...JSON.parse(fs.readFileSync(MEMORY_PATH, 'utf8')) };
+        const mtime = fs.statSync(MEMORY_PATH).mtimeMs;
+        if (!memoryCache || memoryCacheMtime !== mtime) {
+            memoryCache = { ...structuredClone(EMPTY_MEMORY), ...JSON.parse(fs.readFileSync(MEMORY_PATH, 'utf8')) };
+            memoryCacheMtime = mtime;
+        }
+        return structuredClone(memoryCache);
     } catch (error) {
         console.error('[Memoria] Archivo inválido:', error.message);
         return structuredClone(EMPTY_MEMORY);
@@ -49,8 +56,10 @@ function read() {
 function write(memory) {
     fs.mkdirSync(path.dirname(MEMORY_PATH), { recursive: true });
     const temporary = `${MEMORY_PATH}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(memory, null, 2));
+    fs.writeFileSync(temporary, JSON.stringify(memory));
     fs.renameSync(temporary, MEMORY_PATH);
+    memoryCache = structuredClone(memory);
+    memoryCacheMtime = fs.statSync(MEMORY_PATH).mtimeMs;
 }
 
 function normalize(text) {

@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const AUDIT_PATH = process.env.JARVIS_ACTION_AUDIT_PATH || path.join(__dirname, '..', 'data', 'action_audit.jsonl');
 const actions = new Map();
 const pendingConfirmations = new Map();
+const CONFIRMATION_TTL_MS = 120000;
 const requiredByAction = {
     'file.read': ['filePath'], 'file.search': ['query'], 'file.delete': ['filePath'], 'file.restore': ['identifier'],
     'file.copy': ['sourcePath', 'destinationPath'], 'file.move': ['sourcePath', 'destinationPath'], 'file.rename': ['filePath', 'newName'],
@@ -14,7 +15,7 @@ const requiredByAction = {
     'ha.get-state': ['entity_id'], 'code.autonomous_fix': ['instruction'], 'git.safe_commit': ['message'],
     'snapshot.create': ['projectPath'], 'snapshot.restore': ['snapshotId'], 'document.template_create': ['template', 'title'],
     'profile.switch': ['profileId'], 'clipboard.write': ['text'], 'goal.plan': ['instruction'], 'goal.plan_and_execute': ['instruction'],
-    'system.open': ['appName'], 'download.url': ['url'], 'whatsapp.send': ['contact', 'message'],
+    'system.open': ['appName'], 'folder.create': ['folderName'], 'download.url': ['url'], 'whatsapp.send': ['contact', 'message'],
     'audio.set-volume': ['percent'], 'display.set-brightness': ['percent'], 'audio.adjust-volume': ['delta'], 'display.adjust-brightness': ['delta']
 };
 
@@ -84,6 +85,10 @@ async function execute(id, params = {}, context = {}, options = {}) {
     if (!action) return { ok: false, status: 'failed', actionId: id, verified: true, message: `Acción desconocida: ${id}.` };
     const missing = action.requiredParameters.filter(key => params[key] === undefined || params[key] === null || (typeof params[key] === 'string' && !params[key].trim()));
     if (missing.length) return { ok: false, status: 'needs_input', actionId: id, verified: false, missingParameters: missing, message: `Para ${action.name.toLowerCase()} falta indicar: ${missing.map(key => action.parameters[key] || key).join(', ')}.` };
+    if (!options.confirmed && typeof action.prepare === 'function') {
+        try { params = await action.prepare(params, context); }
+        catch (error) { return { ok: false, status: 'failed', actionId: id, verified: false, message: `No pude preparar ${action.name}: ${error.message}` }; }
+    }
 
     const deps = await dependencyStatus(action, context);
     if (!deps.available) {
@@ -130,13 +135,14 @@ async function execute(id, params = {}, context = {}, options = {}) {
         if (!options.confirmed) {
             const token = crypto.randomUUID();
             pendingConfirmations.set(token, { id, params, riskLevel: 'CRITICAL', createdAt: Date.now() });
-            setTimeout(() => pendingConfirmations.delete(token), 60000).unref?.();
+            setTimeout(() => pendingConfirmations.delete(token), CONFIRMATION_TTL_MS).unref?.();
             return {
                 ok: false,
                 status: 'awaiting_pin_confirmation',
                 riskLevel: 'CRITICAL',
                 actionId: id,
                 confirmationToken: token,
+                expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
                 permission: action.permission,
                 verified: true,
                 message: `Esta acción es CRÍTICA (${action.name}). Requiere confirmación doble y PIN de seguridad.`
@@ -162,13 +168,14 @@ async function execute(id, params = {}, context = {}, options = {}) {
         if (!options.confirmed) {
             const token = crypto.randomUUID();
             pendingConfirmations.set(token, { id, params, riskLevel: 'HIGH', createdAt: Date.now() });
-            setTimeout(() => pendingConfirmations.delete(token), 60000).unref?.();
+            setTimeout(() => pendingConfirmations.delete(token), CONFIRMATION_TTL_MS).unref?.();
             return {
                 ok: false,
                 status: 'awaiting_confirmation',
                 riskLevel: 'HIGH',
                 actionId: id,
                 confirmationToken: token,
+                expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
                 permission: action.permission,
                 verified: true,
                 message: action.confirmationMessage?.(params) || `Esta acción es de ALTO RIESGO. Confirmá que querés ejecutar: ${action.name}.`
@@ -183,13 +190,14 @@ async function execute(id, params = {}, context = {}, options = {}) {
         if (needsConfirmation && !options.confirmed) {
             const token = crypto.randomUUID();
             pendingConfirmations.set(token, { id, params, riskLevel, createdAt: Date.now() });
-            setTimeout(() => pendingConfirmations.delete(token), 60000).unref?.();
+            setTimeout(() => pendingConfirmations.delete(token), CONFIRMATION_TTL_MS).unref?.();
             return {
                 ok: false,
                 status: 'awaiting_confirmation',
                 riskLevel,
                 actionId: id,
                 confirmationToken: token,
+                expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
                 permission: action.permission,
                 verified: true,
                 message: action.confirmationMessage?.(params) || `Confirmá que querés ejecutar: ${action.name}.`
@@ -361,9 +369,9 @@ async function confirm(token, context = {}, options = {}) {
     pendingConfirmations.delete(token);
     const pin = options.pin || context.pin;
     const result = await execute(pending.id, pending.params, context, { confirmed: true, pin });
-    if (result.status === 'pin_verification_failed' && Date.now() - pending.createdAt < 60000) {
+    if (result.status === 'pin_verification_failed' && Date.now() - pending.createdAt < CONFIRMATION_TTL_MS) {
         pendingConfirmations.set(token, pending);
-        return { ...result, confirmationToken: token };
+        return { ...result, confirmationToken: token, expiresAt: new Date(pending.createdAt + CONFIRMATION_TTL_MS).toISOString() };
     }
     return result;
 }
@@ -373,7 +381,26 @@ function cancelConfirmation(token) {
     return pendingConfirmations.delete(token);
 }
 
+function pendingConfirmation() {
+    const now = Date.now();
+    const entries = [...pendingConfirmations.entries()]
+        .filter(([, pending]) => now - pending.createdAt < CONFIRMATION_TTL_MS);
+    if (!entries.length) return null;
+    const [token, pending] = entries[entries.length - 1];
+    const action = actions.get(pending.id);
+    const critical = pending.riskLevel === 'CRITICAL';
+    return {
+        actionId: pending.id,
+        status: critical ? 'awaiting_pin_confirmation' : 'awaiting_confirmation',
+        confirmationToken: token,
+        expiresAt: new Date(pending.createdAt + CONFIRMATION_TTL_MS).toISOString(),
+        message: critical
+            ? `Esta acción es crítica (${action?.name || pending.id}). Ingresá el PIN para autorizarla.`
+            : action?.confirmationMessage?.(pending.params) || `¿Confirmás ejecutar ${action?.name || pending.id}?`
+    };
+}
+
 function catalog() {
     return [...actions.values()].map(({ id, name, description, parameters, examples, requiredParameters = [] }) => ({ id, name, description, parameters, examples, requiredParameters }));
 }
-module.exports = { register, catalog, describe, execute, confirm, cancelConfirmation };
+module.exports = { register, catalog, describe, execute, confirm, cancelConfirmation, pendingConfirmation };

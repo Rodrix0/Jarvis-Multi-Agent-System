@@ -34,7 +34,7 @@ function switchesAwayFromTv(text) {
     const normalized = normalize(text);
     if (!isSessionActive() || /\bnetflix\b/.test(normalized)) return false;
     return /\b(spotify|youtube|google|chrome|whatsapp|correo|email|calculadora|computadora|pc|recordatorio|clima|noticias|internet|otra cosa|cambiando de tema)\b/.test(normalized)
-        || /^(?:que|quien|cuando|donde|por que|explicame|contame)\b/.test(normalized);
+        || /^(?:que|quien|cuando|donde|por que|como|cual|explicame|contame|estas listo|estas lista|que opinas|que te parece|charlemos|hablemos|conversemos)\b/.test(normalized);
 }
 
 function clearDestinationPrompt() {

@@ -35,6 +35,7 @@ function mediaSearchUrl(platform, query) {
     const encoded = encodeURIComponent(String(query || '').trim());
     if (platform === 'youtube') return `https://www.youtube.com/results?search_query=${encoded}`;
     if (platform === 'netflix') return `https://www.netflix.com/search?q=${encoded}`;
+    if (platform === 'stremio') return `stremio:///search?search=${encoded}`;
     throw new Error(`Plataforma de búsqueda no admitida: ${platform}`);
 }
 
@@ -68,6 +69,7 @@ function discordLaunchCommand(environment = process.env) {
 
 async function openMediaSearch(platform, query) {
     const url = mediaSearchUrl(platform, query);
+    if (platform === 'stremio') return launchLiteral(url);
     return openApp(url);
 }
 
@@ -307,6 +309,7 @@ function launchLiteral(target) {
 async function openApp(appName, modeId = 'productividad') {
     const platform = os.platform();
     const originalTarget = String(appName || '').trim().replace(/^"|"$/g, '');
+    if (/^stremio$/i.test(originalTarget)) return launchLiteral('stremio:///board');
     // Every YouTube entry uses the same live page, including legacy learned actions.
     let youtubeTarget = /^youtube$/i.test(originalTarget);
     let youtubeUrl;

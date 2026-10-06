@@ -9,7 +9,7 @@
  * - MEDIUM: Creación o alteración reversible (crear archivo, crear carpeta, agendar recordatorio)
  *   -> Protocolo: Confirmación suave (Soft Confirmation) con capacidad de Deshacer (Undo).
  * - HIGH: Destrucción de datos del usuario (borrar carpeta, borrar archivo, matar proceso)
- *   -> Protocolo: Confirmación explícita mediante token efímero de 60s.
+ *   -> Protocolo: Confirmación explícita mediante token efímero de 120s.
  * - CRITICAL: Impacto sistémico o de hardware (apagar PC, reiniciar, resetear base de datos)
  *   -> Protocolo: Doble confirmación obligatoria + Validación criptográfica de PIN de seguridad.
  * 
@@ -23,8 +23,17 @@ const path = require('path');
 class RiskAssessmentService {
     constructor() {
         this.pinSalt = 'jarvis_security_salt_v1';
-        // PIN por defecto: "1234" (o configurado vía variable de entorno)
-        const defaultPin = process.env.JARVIS_SECURITY_PIN || '1234';
+        // El PIN biométrico configurado y el PIN de autorización deben coincidir.
+        // La variable de entorno sigue teniendo prioridad para instalaciones nuevas.
+        let configuredPin = process.env.JARVIS_SECURITY_PIN;
+        this.securityPath = path.join(__dirname, '..', '..', 'data', 'security.json');
+        if (!configuredPin) {
+            try {
+                const saved = JSON.parse(fs.readFileSync(this.securityPath, 'utf8'));
+                if (saved.pin != null && String(saved.pin).length >= 4) configuredPin = String(saved.pin);
+            } catch (_) { /* Instalación sin PIN biométrico configurado. */ }
+        }
+        const defaultPin = configuredPin || '1234';
         this.pinHash = this.hashPin(defaultPin);
 
         // Control contra fuerza bruta
@@ -45,6 +54,12 @@ class RiskAssessmentService {
      * Valida el PIN de seguridad con protección contra fuerza bruta
      */
     verifyPin(inputPin) {
+        if (!process.env.JARVIS_SECURITY_PIN) {
+            try {
+                const saved = JSON.parse(fs.readFileSync(this.securityPath, 'utf8'));
+                if (saved.pin != null && String(saved.pin).length >= 4) this.pinHash = this.hashPin(String(saved.pin));
+            } catch (_) { /* Conservamos la configuración ya cargada. */ }
+        }
         const now = Date.now();
         if (now < this.lockedUntil) {
             const waitSec = Math.ceil((this.lockedUntil - now) / 1000);

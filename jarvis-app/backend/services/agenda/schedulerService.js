@@ -4,6 +4,7 @@ const { localDate } = require('./reminderParser');
 class SchedulerService {
     constructor({ db = databaseService.db, notifications = notificationService, start = true } = {}) {
         this.db = db; this.notifications = notifications; this.pollInterval = null;
+        this.pollIntervalMs = Math.max(1000, Number(process.env.JARVIS_AGENDA_POLL_MS) || 5000);
         if (start) {
             this.startupTimer = setTimeout(() => this.checkDueReminders(), 3000);
             this.startupTimer.unref();
@@ -13,7 +14,7 @@ class SchedulerService {
     checkMissedEventsOnStartup() { return this.checkDueReminders(); }
     startScheduler() {
         if (this.pollInterval) clearInterval(this.pollInterval);
-        this.pollInterval = setInterval(() => this.checkDueReminders(), 1000);
+        this.pollInterval = setInterval(() => this.checkDueReminders(), this.pollIntervalMs);
         this.pollInterval.unref();
     }
     checkDueReminders(now = new Date()) {

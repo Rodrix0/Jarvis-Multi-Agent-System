@@ -1,6 +1,5 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
-from bs4 import BeautifulSoup
 import uvicorn
 import datetime
 import subprocess
@@ -12,10 +11,31 @@ import httpx
 import requests
 import urllib.request
 import importlib.util
-from rag_service import query_rag
-from developer_service import dev_jarvis
+
+_dev_jarvis = None
+
+
+def get_developer():
+    """Carga el agente pesado de desarrollo sólo ante una orden de programación."""
+    global _dev_jarvis
+    if _dev_jarvis is None:
+        from developer_service import dev_jarvis
+        _dev_jarvis = dev_jarvis
+    return _dev_jarvis
+
+
+def developer_session_has_active_project():
+    if _dev_jarvis is not None:
+        return bool(_dev_jarvis.active_project)
+    session_file = os.path.join(os.path.expanduser("~"), "Desktop", "Jarvis_Projects", ".jarvis_session.json")
+    try:
+        with open(session_file, "r", encoding="utf-8") as source:
+            return bool(json.load(source).get("active_project"))
+    except Exception:
+        return False
 
 app = FastAPI()
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_CHAT_KEEP_ALIVE", "2m")
 
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 if not os.path.exists(SKILLS_DIR):
@@ -39,7 +59,8 @@ async def call_ollama(prompt: str) -> str:
     data = {
         "model": "llama3.1:latest",
         "prompt": prompt,
-        "stream": False
+        "stream": False,
+        "keep_alive": OLLAMA_KEEP_ALIVE
     }
     async with httpx.AsyncClient(timeout=120) as client:
         try:
@@ -302,17 +323,19 @@ async def process_query(req: UserQuery):
     _m = _re.search(r'(?:carg[aá] el proyecto|cargar proyecto|continu[aá] con|segu[ií] con)\s+(.+)', low)
     if _m:
         nombre_proyecto = _m.group(1).strip()
+        dev_jarvis = get_developer()
         result = dev_jarvis.load_project_by_name(nombre_proyecto)
         return {"status": "success", "data": {"action": "reply", "message": result}}
 
     # --- 0b. INSTALAR DESIGN.md (solo si NO hay intención de crear proyecto) ---
-    from developer_service import install_design, resolve_design_id, DESIGNS_CATALOG
     _dm = _re.search(r'(?:instal[aá]|pon[eé]|us[aá]|aplic[aá])\s+(?:el\s+)?(?:dise[nñ]o|estilo|design|tema)\s+(.+)', low)
     _tiene_creacion = any(w in low for w in [
         "programa", "crea", "hazme", "haz ", "pagina", "página", "web",
         "proyecto", "nuevo", "sitio", "app", "landing", "usalo"
     ])
-    if _dm and dev_jarvis.active_project and not _tiene_creacion:
+    if _dm and not _tiene_creacion and developer_session_has_active_project():
+        from developer_service import install_design, resolve_design_id, DESIGNS_CATALOG
+        dev_jarvis = get_developer()
         keyword = _dm.group(1).strip()
         import os as _os
         p_path = _os.path.join(dev_jarvis.WORKSPACE if hasattr(dev_jarvis, 'WORKSPACE') else
@@ -344,6 +367,7 @@ async def process_query(req: UserQuery):
                 instruction = "Revisa el codigo y arregla cualquier error que encuentres."
             print(f"[Jarvis Logic] EDITOR CON RUTA: {detected_path}")
             print(f"[Jarvis Logic] Instruccion: {instruction[:100]}")
+            dev_jarvis = get_developer()
             result = await dev_jarvis.edit_with_context(detected_path, instruction)
             return {"status": "success", "data": {"action": "reply", "message": result}}
 
@@ -369,6 +393,7 @@ async def process_query(req: UserQuery):
 
     if es_pedido_codigo:
         print(f"[Jarvis Logic] NUEVO PROYECTO: ejecutando motor de desarrollo.")
+        dev_jarvis = get_developer()
         result = await dev_jarvis.execute_full_project(user_text)
         return {"status": "success", "data": {"action": "reply", "message": result}}
 
@@ -379,9 +404,10 @@ async def process_query(req: UserQuery):
         "crear pagina", "crear página", "agregar pagina", "agregar página",
         "haceme un archivo", "generame un archivo"
     ]
-    es_nuevo_archivo = dev_jarvis.active_project and any(w in low for w in triggers_nuevo_archivo)
+    es_nuevo_archivo = developer_session_has_active_project() and any(w in low for w in triggers_nuevo_archivo)
 
     if es_nuevo_archivo:
+        dev_jarvis = get_developer()
         print(f"[Jarvis Logic] NUEVO ARCHIVO en proyecto '{dev_jarvis.active_project}'.")
         result = await dev_jarvis.create_new_file(user_text)
         return {"status": "success", "data": {"action": "reply", "message": result}}
@@ -395,9 +421,10 @@ async def process_query(req: UserQuery):
         "cambia el color", "cambiá el color", "separá", "separa ", "dividí",
         "actualizá", "actualiza", "seguí trabajando", "sigue trabajando",
     ]
-    es_edicion = dev_jarvis.active_project and any(w in low for w in triggers_edicion)
+    es_edicion = developer_session_has_active_project() and any(w in low for w in triggers_edicion)
 
     if es_edicion:
+        dev_jarvis = get_developer()
         print(f"[Jarvis Logic] EDICION: modificando '{dev_jarvis.active_project}'.")
         result = await dev_jarvis.edit_project(user_text)
         return {"status": "success", "data": {"action": "reply", "message": result}}
@@ -426,6 +453,7 @@ CONTEXTO FINANCIERO:\n{contexto}\nPREGUNTA: {req.query}\nResponde directo con lo
             async with httpx.AsyncClient(timeout=60) as client:
                 res = await client.post("http://127.0.0.1:11434/api/generate",
                     json={"model": "llama3.1:latest", "prompt": prompt_synthesis, "stream": False,
+                          "keep_alive": OLLAMA_KEEP_ALIVE,
                           "options": {"temperature": 0.3, "num_predict": 400}})
                 return {"status": "success", "data": {"action": "reply",
                         "message": res.json().get("response", "Sin datos financieros.").strip()}}
@@ -446,6 +474,7 @@ INSTRUCCIONES:
             async with httpx.AsyncClient(timeout=60) as client:
                 res = await client.post("http://127.0.0.1:11434/api/generate",
                     json={"model": "llama3.1:latest", "prompt": prompt_synthesis, "stream": False,
+                          "keep_alive": OLLAMA_KEEP_ALIVE,
                           "options": {"temperature": 0.3, "num_predict": 400}})
                 return {"status": "success", "data": {"action": "reply",
                         "message": res.json().get("response", "Sin datos deportivos.").strip()}}
@@ -492,7 +521,8 @@ INSTRUCCIONES:
                     "model": "llama3.1:latest", 
                     "prompt": prompt_synthesis, 
                     "stream": False,
-                    "options": {"temperature": 0}
+                    "keep_alive": OLLAMA_KEEP_ALIVE,
+                    "options": {"temperature": 0, "num_predict": 600}
                 })
             return {"status": "success", "data": {"action": "reply", "message": res.json().get("response")}}
     except Exception as e: return {"status": "error", "message": str(e)}

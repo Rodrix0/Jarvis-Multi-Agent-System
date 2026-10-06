@@ -76,6 +76,23 @@ async function run() {
     assert.equal(safeLowConfidence.uncertain, false);
     assert.equal((await jarvisActions.resolve('Abrí WhatsApp')).id, 'system.open');
     assert.equal((await jarvisActions.resolve('Abrí YouTube')).id, 'browser.voice');
+    const generatedImage = await jarvisActions.resolve('Creame una imagen para mi proyecto de un gato astronauta');
+    assert.equal(generatedImage.id, 'image.generate');
+    assert.match(generatedImage.params.prompt, /imagen.*proyecto.*gato astronauta/i);
+    assert.doesNotMatch(generatedImage.params.prompt, /^me\b/i);
+    const generatedPhoto = await jarvisActions.resolve('Creame una foto de un caballo en la luna');
+    assert.equal(generatedPhoto.id, 'image.generate');
+    assert.match(generatedPhoto.params.prompt, /^una foto\b/i);
+    assert.equal((await jarvisActions.resolve('Quiero que me generes una imagen de un paisaje nevado')).id, 'image.generate');
+    assert.equal((await jarvisActions.resolve('Podrías dibujarme una ilustración de mi perro')).id, 'image.generate');
+    const imageFolder = await jarvisActions.resolve('Creame una carpeta de imágenes');
+    assert.equal(imageFolder.id, 'folder.create');
+    assert.equal(imageFolder.params.folderName, 'imágenes');
+    const politeFolder = await jarvisActions.resolve('Me puedes crear una carpeta que diga PDF Sylvie');
+    assert.equal(politeFolder.id, 'folder.create');
+    assert.equal(politeFolder.params.folderName, 'PDF Sylvie');
+    const incompleteFolder = await jarvisActions.process('Créame una carpeta que diga');
+    assert.equal(incompleteFolder.status, 'needs_input');
 
     const youtube = await jarvisActions.resolve('Buscá el canal de Kurzgesagt en YouTube');
     assert.equal(youtube.id, 'browser.voice');
@@ -131,6 +148,11 @@ async function run() {
     assert.equal(infoDocument.id, 'research.query');
     const explicitDocument = await jarvisActions.resolve('Creame un informe sobre computación cuántica');
     assert.ok(['document.create-info', 'document.research', 'file.create'].includes(explicitDocument.id));
+    const spiderDocument = await jarvisActions.resolve('Créame un dpcumento sobre las películas de Spider-Man');
+    assert.equal(spiderDocument.id, 'document.research');
+    assert.match(spiderDocument.params.topic, /películas de Spider-Man/i);
+    const accentedSearch = await jarvisActions.resolve('Búscame información sobre las películas de Spider-Man');
+    assert.equal(accentedSearch.id, 'research.query');
     const explicitSleep = await jarvisActions.resolve('Jarvis, apagate');
     assert.equal(explicitSleep.id, 'voice.sleep');
     const bareSleep = await jarvisActions.resolve('apagate');

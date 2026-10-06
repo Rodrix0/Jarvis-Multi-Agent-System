@@ -3,7 +3,9 @@ const fs=require('fs');const path=require('path');
 const jarvis=require('../services/jarvisActionService');
 const research=require('../services/ai/researchService');
 const workflow=require('../services/researchDocumentService');
+const system=require('../services/systemService');
 async function main(){
+ const originalOpen=system.openApp;let opened=0;system.openApp=async()=>{opened++;return true;};
  const original=research.research;
  let calls=0;
  research.research=async topic=>{calls++;return {ok:true,topic,uniqueSources:1,sources:[{title:'Fuente de prueba',url:'https://example.test/iguazu',content:'Información recuperada de prueba sobre Iguazú.'}]};};
@@ -17,6 +19,7 @@ async function main(){
   const read=await require('../services/desktopContentService').read({filePath:made.data.filePath});assert.match(read.data.text,/Información recuperada/);assert.match(read.data.text,/https:\/\/example.test\/iguazu/);
   const next=await jarvis.resolve('Guardá esa información en un PDF en el escritorio');assert.equal(next.id,'document.research');assert.equal(next.params.useLast,true);
   const saved=await jarvis.execute(next.id,next.params);assert.equal(saved.ok,true,saved.message);assert.equal(fs.readFileSync(saved.data.filePath).subarray(0,4).toString(),'%PDF');assert.equal(calls,1);
+  assert.equal(opened,2,'one launch for each of two distinct document requests');
   assert.equal((await jarvis.resolve('Haceme un documento sobre Córdoba en mis documentos')).params.directory,'documentos');
   assert.equal((await jarvis.resolve('Buscame información de Córdoba')).id,'research.query');
   assert.equal((await jarvis.resolve('Dame información sobre Córdoba')).id,'research.query');
@@ -26,6 +29,6 @@ async function main(){
   assert.equal((await workflow.create({useLast:true,directory:dest})).ok,false);
   const urls=research.deduplicate([{url:'https://example.test/?id=1'},{url:'https://example.test/?id=2'}]);assert.equal(urls.length,2);
   console.log('PASS: búsqueda, creación con fuentes, destino, guardado posterior sin repetir búsqueda y fallo sin archivo vacío.');
- }finally{research.research=original;global.fetch=originalFetch;}
+ }finally{research.research=original;global.fetch=originalFetch;system.openApp=originalOpen;}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

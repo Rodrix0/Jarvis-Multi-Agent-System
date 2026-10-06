@@ -36,7 +36,6 @@ import psutil
 import requests
 import sounddevice as sd
 import webrtcvad
-from faster_whisper import WhisperModel
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
 
@@ -64,10 +63,16 @@ NAME_WORDS = ("jarvis", "yarvis", "charvis", "harvis")
 audio_queue = queue.Queue(maxsize=300)
 running = True
 input_sample_rate = SAMPLE_RATE
+resample_coordinates = {}
 tts_active = threading.Event()
 tts_lock = threading.Lock()
 tts_generation = 0
+tts_pending = deque()
+tts_worker_running = False
+server_tts_active = threading.Event()
+tts_quiet_until = 0.0
 instance_mutex_handle = None
+device_cache = {"items": None, "checked_at": 0.0}
 
 
 def acquire_single_instance():
@@ -161,7 +166,10 @@ def write_state(state):
     STATE_PATH.write_text(json.dumps({"state": state, "updatedAt": time.time()}, indent=2), encoding="utf-8")
 
 
-def devices():
+def devices(force=False):
+    now = time.monotonic()
+    if not force and device_cache["items"] is not None and now - device_cache["checked_at"] < 300:
+        return device_cache["items"]
     result = []
     try:
         host_apis = sd.query_hostapis()
@@ -171,6 +179,8 @@ def devices():
                 result.append({"index": index, "name": f"{device.get('name', f'Micrófono {index}')} · {host_name}", "defaultSampleRate": device.get("default_samplerate")})
     except Exception:
         pass
+    device_cache["items"] = result
+    device_cache["checked_at"] = now
     return result
 
 
@@ -195,6 +205,7 @@ def stop_speaking():
     global tts_generation
     with tts_lock:
         tts_generation += 1
+        tts_pending.clear()
         tts_active.clear()
     try:
         requests.post(f"{NODE_URL}/api/tts/stop", timeout=2)
@@ -204,24 +215,54 @@ def stop_speaking():
 
 def speak(text):
     """Habla sin bloquear el micrófono; 'apagate' puede interrumpir la salida."""
+    global tts_worker_running
     if not text:
         return
-    stop_speaking()
     with tts_lock:
-        generation = tts_generation
+        tts_pending.append((tts_generation, str(text)))
         tts_active.set()
+        if tts_worker_running:
+            return
+        tts_worker_running = True
 
     def worker():
-        try:
-            requests.post(f"{NODE_URL}/api/tts/speak", json={"text": text}, timeout=max(15, len(text) / 8))
-        except Exception as error:
-            print(f"[Voz local] TTS no disponible: {error}")
-        finally:
+        global tts_worker_running, tts_quiet_until
+        while True:
             with tts_lock:
-                if generation == tts_generation:
+                if not tts_pending:
+                    tts_worker_running = False
                     tts_active.clear()
+                    tts_quiet_until = time.monotonic() + 0.6
+                    clear_audio_queue()
+                    return
+                generation, phrase = tts_pending.popleft()
+                if generation != tts_generation:
+                    continue
+            try:
+                response = requests.post(f"{NODE_URL}/api/tts/speak", json={"text": phrase}, timeout=1200)
+                response.raise_for_status()
+            except Exception as error:
+                print(f"[Voz local] TTS no disponible: {error}")
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+def monitor_server_speech():
+    """También suprime el eco de recordatorios y respuestas del panel."""
+    global tts_quiet_until
+    while running:
+        try:
+            speaking = requests.get(f"{NODE_URL}/api/tts/status", timeout=2).json().get("speaking", False)
+            if speaking:
+                server_tts_active.set()
+            else:
+                if server_tts_active.is_set():
+                    tts_quiet_until = time.monotonic() + 0.6
+                    clear_audio_queue()
+                server_tts_active.clear()
+        except Exception:
+            server_tts_active.clear()
+        time.sleep(0.3 if read_state() == "awake" else 1.0)
 
 
 def trigger_immediate_emergency():
@@ -274,7 +315,7 @@ def load_voice_lexicon():
 def heartbeat():
     while running:
         report_status(stage="listening")
-        time.sleep(7)
+        time.sleep(max(15, int(os.getenv("JARVIS_VOICE_HEARTBEAT_SECONDS", "30"))))
 
 
 def warm_local_understanding():
@@ -284,7 +325,8 @@ def warm_local_understanding():
             "http://127.0.0.1:11434/api/generate",
             json={
                 "model": "qwen2.5:3b", "prompt": "Respondé OK.", "stream": False,
-                "keep_alive": "5m", "options": {"num_predict": 2, "temperature": 0}
+                "keep_alive": os.getenv("OLLAMA_VOICE_KEEP_ALIVE", "90s"),
+                "options": {"num_predict": 2, "temperature": 0}
             },
             timeout=90,
         )
@@ -322,6 +364,32 @@ def send_to_jarvis(text, confidence, confirmed=False):
         return {"error": str(error), "response": "No pude comunicarme con el núcleo de Jarvis."}
 
 
+def wait_for_jarvis_job(job_id, timeout_seconds=900):
+    """Espera una tarea aceptada sin bloquear el micrófono ni el acuse inicial."""
+    deadline = time.monotonic() + timeout_seconds
+    while running and time.monotonic() < deadline:
+        try:
+            response = requests.get(f"{NODE_URL}/api/voice/local/jobs/{job_id}", timeout=5)
+            body = response.json()
+            if body.get("status") in ("completed", "failed", "missing"):
+                return body
+        except Exception as error:
+            print(f"[Voz local] Esperando tarea {job_id}: {error}")
+        time.sleep(0.45)
+    return {
+        "status": "failed",
+        "error": "timeout",
+        "response": "La tarea sigue demorando más de lo esperado. Revisá el panel para ver su estado.",
+        "result": {"ok": False, "status": "failed", "verified": False},
+    }
+
+
+def wait_until_speech_finishes(timeout_seconds=10):
+    deadline = time.monotonic() + timeout_seconds
+    while tts_active.is_set() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
 def audio_callback(indata, frames, callback_time, status):
     if status:
         print(f"[Voz local] Audio: {status}")
@@ -329,15 +397,21 @@ def audio_callback(indata, frames, callback_time, status):
         mono = np.asarray(indata[:, 0], dtype=np.int16)
         if input_sample_rate != SAMPLE_RATE:
             output_length = int(round(len(mono) * SAMPLE_RATE / input_sample_rate))
-            positions = np.linspace(0, len(mono) - 1, output_length)
-            mono = np.interp(positions, np.arange(len(mono)), mono).astype(np.int16)
+            cache_key = (len(mono), output_length)
+            if cache_key not in resample_coordinates:
+                resample_coordinates[cache_key] = (
+                    np.linspace(0, len(mono) - 1, output_length),
+                    np.arange(len(mono)),
+                )
+            positions, source_positions = resample_coordinates[cache_key]
+            mono = np.interp(positions, source_positions, mono).astype(np.int16)
         payload = mono[:FRAME_SAMPLES].tobytes()
         if len(payload) == FRAME_BYTES:
             audio_queue.put_nowait(payload)
     except queue.Full:
         try:
             audio_queue.get_nowait()
-            audio_queue.put_nowait(bytes(indata))
+            audio_queue.put_nowait(payload)
         except queue.Empty:
             pass
 
@@ -388,18 +462,45 @@ class LocalVoiceEngine:
             "espera", "esperate", "corta", "cortala", "jarvis para",
             "jarvis parate", "jarvis detente", "jarvis callate",
             "jarvis stop", "jarvis silencio", "no para", "no espera",
+            "jarvis apagate", "jarvis dormite",
             "[unk]"
         ])
         self.barge_recognizer = KaldiRecognizer(self.wake_model, SAMPLE_RATE, barge_grammar)
         self.whisper = None
         self.whisper_lock = threading.Lock()
+        self.whisper_release_timer = None
         self.wake_name_until = 0.0
         self.wake_word_until = 0.0
-        self.last_state_check = 0.0
 
     def ensure_whisper(self):
+        self.cancel_whisper_release()
         with self.whisper_lock:
             self._load_whisper()
+
+    def cancel_whisper_release(self):
+        timer = self.whisper_release_timer
+        self.whisper_release_timer = None
+        if timer:
+            timer.cancel()
+
+    def schedule_whisper_release(self):
+        """Libera el modelo grande tras un rato dormido, sin penalizar pausas breves."""
+        self.cancel_whisper_release()
+        delay = max(30, int(os.getenv("JARVIS_WHISPER_IDLE_UNLOAD_SECONDS", "120")))
+        timer = threading.Timer(delay, self.release_whisper)
+        timer.daemon = True
+        self.whisper_release_timer = timer
+        timer.start()
+
+    def release_whisper(self):
+        with self.whisper_lock:
+            model = self.whisper
+            self.whisper = None
+            self.whisper_release_timer = None
+        if model is not None:
+            del model
+            gc.collect()
+            report_status(stage="dormant", whisperLoaded=False)
 
     def warm_whisper(self):
         try:
@@ -410,6 +511,9 @@ class LocalVoiceEngine:
     def _load_whisper(self):
         if self.whisper is not None:
             return
+        # CTranslate2/CUDA reservan mucha memoria aun sin transcribir. Cargarlos
+        # recién al despertar mantiene el detector Vosk liviano en reposo.
+        from faster_whisper import WhisperModel
         model_name = self.settings.get("whisperModel", "turbo")
         requested_device = self.settings.get("whisperDevice", "cuda")
         device = "cuda" if requested_device in ("cuda", "auto") else "cpu"
@@ -487,34 +591,18 @@ class LocalVoiceEngine:
         }
 
     def wake_detected(self, frame):
-        if self.wake_recognizer.AcceptWaveform(frame):
-            text = normalized(json.loads(self.wake_recognizer.Result()).get("text", ""))
-        else:
-            text = normalized(json.loads(self.wake_recognizer.PartialResult()).get("partial", ""))
+        # Las hipótesis parciales de una gramática pequeña suelen convertir una
+        # conversación cualquiera en "activa" o "arriba". Esperamos una frase
+        # final y exigimos el nombre de Jarvis junto a la activación.
+        if not self.wake_recognizer.AcceptWaveform(frame):
+            return False
+        text = normalized(json.loads(self.wake_recognizer.Result()).get("text", ""))
         if not text:
             return False
 
-        now = time.monotonic()
-        # Frases directas y completas
-        if any(p in text for p in ("jarvis prendete", "prendete jarvis", "jarvis despertate", "despertate jarvis", "hola jarvis", "hey jarvis", "ok jarvis")):
-            self.wake_name_until = self.wake_word_until = 0.0
-            self.wake_recognizer.Reset()
-            return True
-
-        has_wake = any(word in text for word in WAKE_WORDS)
-        has_name = any(word in text for word in NAME_WORDS)
-
-        # Si dijo cualquier palabra clave para despertar ("prendete", "despertate", "activa", "arriba")
-        if has_wake:
-            self.wake_name_until = self.wake_word_until = 0.0
-            self.wake_recognizer.Reset()
-            return True
-
-        if has_name:
-            self.wake_name_until = now + 2.5
-
-        # Si dijo "jarvis" solo y limpio
-        if text.strip() in ("jarvis", "hola jarvis", "hey jarvis"):
+        has_wake = any(re.search(rf"\b{re.escape(word)}\b", text) for word in WAKE_WORDS)
+        has_name = any(re.search(rf"\b{re.escape(word)}\b", text) for word in NAME_WORDS)
+        if has_name and has_wake:
             self.wake_name_until = self.wake_word_until = 0.0
             self.wake_recognizer.Reset()
             return True
@@ -545,17 +633,17 @@ class LocalVoiceEngine:
         if self.barge_recognizer.AcceptWaveform(frame):
             text = normalized(json.loads(self.barge_recognizer.Result()).get("text", ""))
         else:
-            text = normalized(json.loads(self.barge_recognizer.PartialResult()).get("partial", ""))
+            return False, ""
         if not text:
             return False, ""
 
         detected_words = (
             "para", "parate", "detente", "detene", "frena", "frenate",
             "callate", "silencio", "silenciate", "stop", "basta",
-            "espera", "esperate", "corta", "cortala"
+            "espera", "esperate", "corta", "cortala", "apagate", "dormite"
         )
         for w in detected_words:
-            if w in text:
+            if re.fullmatch(r"(?:jarvis|yarvis|charvis|harvis)\s+" + w, text):
                 self.barge_recognizer.Reset()
                 return True, w
         return False, ""
@@ -596,11 +684,30 @@ class LocalVoiceEngine:
             else:
                 result = send_to_jarvis(text, confidence)
 
+            background_job_id = result.get("backgroundJobId")
+            if background_job_id:
+                speak(result.get("response") or "Okey, jefe. Me pongo a trabajar.")
+                result = wait_for_jarvis_job(background_job_id)
+                # Si la acción terminó muy rápido, dejamos terminar el acuse para
+                # que la respuesta final no lo corte a mitad de frase.
+                wait_until_speech_finishes()
+
             if result.get("confirmation"):
                 self.pending = result.get("text", text)
                 speak(f"Entendí: {self.pending}. ¿Es correcto?")
                 clear_audio_queue()
                 self.suppress_until = time.monotonic() + 0.8
+                return
+            if result.get("error"):
+                # Si el núcleo se reinicia o deja de responder, no seguimos
+                # interpretando conversación ambiente como órdenes autónomas.
+                self.state = "dormant"
+                self.pending = None
+                write_state(self.state)
+                self.schedule_whisper_release()
+                clear_audio_queue()
+                report_status(stage="dormant", state="dormant", stageDetail="node_unavailable")
+                speak("Perdí la conexión con el núcleo. Quedé en reposo.")
                 return
             response_text = result.get("response") or result.get("result", {}).get("message") or result.get("error")
             voice_state = result.get("result", {}).get("data", {}).get("voiceState")
@@ -608,8 +715,7 @@ class LocalVoiceEngine:
                 stop_speaking()
                 self.state = "dormant"
                 write_state(self.state)
-                # Keep the cached Whisper model for the next command.
-                gc.collect()
+                self.schedule_whisper_release()
                 threading.Thread(target=unload_local_understanding, daemon=True).start()
                 clear_audio_queue()
                 report_status(stage="dormant", state="dormant")
@@ -617,6 +723,7 @@ class LocalVoiceEngine:
             elif voice_state == "awake":
                 self.state = "awake"
                 write_state(self.state)
+                self.cancel_whisper_release()
                 report_status(stage="awake", state="awake")
 
             speak(response_text)
@@ -667,7 +774,6 @@ class LocalVoiceEngine:
             samplerate=input_sample_rate, blocksize=input_blocksize, device=device,
             channels=1, dtype="int16", callback=audio_callback,
         ):
-            threading.Thread(target=self.warm_whisper, daemon=True).start()
             state_check_frames = 0
             while running:
                 frame = audio_queue.get()
@@ -687,34 +793,16 @@ class LocalVoiceEngine:
                             self.wake_recognizer.Reset()
                             self.sleep_recognizer.Reset()
                             self.suppress_until = time.monotonic() + 2.0
-                            # Keep the cached Whisper model for the next command.
-                            gc.collect()
+                            self.schedule_whisper_release()
                             threading.Thread(target=unload_local_understanding, daemon=True).start()
                 if len(frame) != FRAME_BYTES or time.monotonic() < self.suppress_until:
                     continue
-
-                now = time.monotonic()
-                if now - self.last_state_check > 0.8:
-                    self.last_state_check = now
-                    disk_state = read_state()
-                    if disk_state != self.state:
-                        print(f"[Voz local] Estado sincronizado desde sistema: {disk_state}")
-                        self.state = disk_state
-                        if self.state == "dormant":
-                            stop_speaking()
-                            # Keep the cached Whisper model for the next command.
-                            gc.collect()
-                            threading.Thread(target=unload_local_understanding, daemon=True).start()
-                            clear_audio_queue()
-                            report_status(stage="dormant", state="dormant")
-                        else:
-                            threading.Thread(target=self.warm_whisper, daemon=True).start()
-                            report_status(stage="awake", state="awake")
 
                 if self.state == "dormant":
                     if self.wake_detected(frame):
                         self.state = "awake"
                         write_state(self.state)
+                        self.cancel_whisper_release()
                         report_status(stage="awake", state="awake")
                         threading.Thread(target=self.warm_whisper, daemon=True).start()
                         speak("Estoy en línea. ¿Qué necesitás?")
@@ -724,26 +812,18 @@ class LocalVoiceEngine:
 
                 # Mientras Jarvis habla no transcribimos su propia voz. Conservamos
                 # un reconocedor mínimo y barato exclusivamente para interrumpirlo.
-                if tts_active.is_set():
-                    # 1. Apagado explícito hacia reposo ("apagate", "dormite")
-                    if self.sleep_detected(frame):
-                        stop_speaking()
-                        self.state = "dormant"
-                        self.pending = None
-                        write_state(self.state)
-                        # Keep the cached Whisper model for the next command.
-                        gc.collect()
-                        clear_audio_queue()
-                        report_status(stage="dormant")
-                        threading.Thread(target=unload_local_understanding, daemon=True).start()
-                        tts_overlap_streak = 0
-                        continue
-
+                if tts_active.is_set() or server_tts_active.is_set():
                     # 2. Barge-in por palabra clave ("pará", "detente", "silencio", "stop", etc.)
                     is_barge, barge_word = self.barge_detected(frame)
                     if is_barge:
                         print(f"[Voz local] Barge-in detectado por palabra clave: {barge_word!r}")
                         trigger_barge_in(reason="keyword", detected=barge_word)
+                        if barge_word in ("apagate", "dormite"):
+                            self.state = "dormant"
+                            self.pending = None
+                            write_state(self.state)
+                            self.schedule_whisper_release()
+                            report_status(stage="dormant")
                         clear_audio_queue()
                         self.suppress_until = time.monotonic() + 0.15
                         tts_overlap_streak = 0
@@ -753,7 +833,7 @@ class LocalVoiceEngine:
                     # 3. Barge-in acústico por voz humana sobre el audio
                     level = rms(frame)
                     is_speech = self.vad.is_speech(frame, SAMPLE_RATE)
-                    if is_speech and level >= minimum_voice_level * 2.8:
+                    if self.settings.get("acousticBargeInEnabled", False) and is_speech and level >= minimum_voice_level * 2.8:
                         tts_overlap_streak += 1
                         if tts_overlap_streak >= 4:  # ~120ms continuos de voz
                             print(f"[Voz local] Barge-in acústico detectado (RMS={level:.3f})")
@@ -771,6 +851,13 @@ class LocalVoiceEngine:
                     continue
                 else:
                     tts_overlap_streak = 0
+
+                if time.monotonic() < tts_quiet_until:
+                    capturing = False
+                    utterance = []
+                    pre_roll.clear()
+                    voiced_streak = 0
+                    continue
 
                 is_voice = self.vad.is_speech(frame, SAMPLE_RATE)
                 level = rms(frame)
@@ -822,6 +909,7 @@ if __name__ == "__main__":
     write_state(read_state())
     try:
         threading.Thread(target=heartbeat, daemon=True).start()
+        threading.Thread(target=monitor_server_speech, daemon=True).start()
         LocalVoiceEngine().run()
     except KeyboardInterrupt:
         pass
