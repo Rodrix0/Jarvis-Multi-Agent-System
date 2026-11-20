@@ -10,6 +10,7 @@ backend/data/broadlink.json
 backend/data/local_voice_state.json
 backend/data/local_voice_utterance.wav
 backend/data/voice_settings.json
+backend/data/weather_location.json
 backend/data/jarvis_started_processes.json
 logs/
 

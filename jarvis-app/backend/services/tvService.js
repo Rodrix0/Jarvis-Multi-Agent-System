@@ -2,12 +2,12 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const CONFIG_PATH = path.join(__dirname, '..', 'data', 'broadlink.json');
-const TV_STATE_PATH = path.join(__dirname, '..', 'data', 'tv_state.json');
+const CONFIG_PATH = require("./dataPaths").dataPath("broadlink.json");
+const TV_STATE_PATH = require("./dataPaths").dataPath("tv_state.json");
 const BRIDGE_PATH = path.join(__dirname, '..', '..', 'python_engine', 'broadlink_remote.py');
 const VENV_PYTHON = path.join(__dirname, '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe');
 const executionManager = require('./core/executionManager');
-const ALLOWED_BUTTONS = ['power', 'up', 'down', 'left', 'right', 'ok', 'back', 'netflix', 'volup', 'voldown', 'vol_up', 'vol_down', 'mute', 'home'];
+const ALLOWED_BUTTONS = ['power', 'up', 'down', 'left', 'right', 'ok', 'back', 'netflix', 'youtube', 'volup', 'voldown', 'vol_up', 'vol_down', 'mute', 'home'];
 const KEYBOARD_ROWS = ['abcdef', 'ghijkl', 'mnopqr', 'stuvwx', 'yz1234', '567890'];
 
 const DEFAULT_CONFIG = {
@@ -144,7 +144,7 @@ async function discover() {
 async function isAvailable() {
     const config = getConfig();
     if (!config.device.host) return false;
-    if (Date.now() - availabilityCache.checkedAt < 4000) return availabilityCache.value;
+    if (Date.now() - availabilityCache.checkedAt < (availabilityCache.value ? 4000 : 15000)) return availabilityCache.value;
     try {
         const result = await runBridge(['check'], 3000);
         availabilityCache = { value: result.available === true, checkedAt: Date.now() };
@@ -157,7 +157,6 @@ async function isAvailable() {
 
 async function learnButton(button) {
     let normalizedBtn = button.replace('_', '').toLowerCase();
-    if (button === 'home') normalizedBtn = 'power';
     if (!ALLOWED_BUTTONS.includes(button) && !ALLOWED_BUTTONS.includes(normalizedBtn)) throw new Error('Botón IR no permitido.');
     
     await runBridge(['learn', normalizedBtn, '--timeout', '20'], 28000);
@@ -175,7 +174,7 @@ async function learnButton(button) {
     return getPublicStatus();
 }
 
-async function sendButtons(buttons, delayMs) {
+async function sendButtons(buttons, delayMs = 180) {
     if (!buttons.length) return;
     const invalid = buttons.filter(button => !ALLOWED_BUTTONS.includes(button));
     if (invalid.length) throw new Error(`Secuencia IR inválida: ${invalid.join(', ')}`);
@@ -195,7 +194,7 @@ function normalizeSearchTitle(title) {
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/[^a-z0-9]/g, '')
-        .slice(0, 10);
+        .slice(0, 120);
 }
 
 function keyboardPosition(character) {
@@ -331,7 +330,7 @@ async function playNetflix(options = {}, onProgress = () => {}) {
             await sleep(config.netflix.bootWaitMs, job);
         }
 
-        if (config.netflix.pressNetflixAfterBoot) {
+        if (config.codes.netflix) {
             progress('netflix', 'Abriendo Netflix…');
             await sendButtons(['netflix'], config.netflix.keyDelayMs || 350);
             await sleep(config.netflix.appWaitMs, job);
@@ -357,7 +356,7 @@ async function playNetflix(options = {}, onProgress = () => {}) {
 
         progress('search_type', `Escribiendo “${title}” en el teclado…`);
         const playFirst = options.playFirst !== false;
-        await sendButtons(buildNetflixSearchSequence(title, playFirst), config.netflix.keyDelayMs || 350);
+        await sendButtons(buildNetflixSearchSequence(title, playFirst), config.netflix.keyboardKeyDelayMs || 1100);
         await sleep(config.netflix.resultLoadMs || 2500, job);
 
         if (playFirst && config.netflix.pressPlayAfterResult) {
@@ -400,7 +399,7 @@ async function searchNetflix(title, options = {}, onProgress = () => {}) {
         const playFirst = options.playFirst !== false;
         await sendButtons(
             buildNetflixSearchSequence(query, playFirst),
-            config.netflix.keyDelayMs || 350
+            config.netflix.keyboardKeyDelayMs || 1100
         );
         await sleep(config.netflix.resultLoadMs || 2500, job);
 
@@ -480,7 +479,8 @@ async function getVolume() {
         ok: true,
         volume: state.volume,
         muted: state.muted,
-        message: `El volumen de la televisión está al ${state.volume}%.`
+        estimated: true,
+        message: `El último volumen estimado de la televisión es ${state.volume}%. El control infrarrojo no permite leer el nivel real.`
     };
 }
 
@@ -499,7 +499,7 @@ async function setVolume(percent) {
     const diff = target - state.volume;
     if (diff !== 0) {
         const button = diff > 0 ? upBtn : downBtn;
-        const count = Math.min(50, Math.abs(diff));
+        const count = Math.abs(diff);
         await sendButtons(repeat(button, count), 180);
     }
     state.volume = target;
@@ -512,6 +512,8 @@ async function setVolume(percent) {
 }
 
 async function adjustVolume(delta) {
+    if (!Number.isFinite(Number(delta))) return { ok: false, message: 'El cambio de volumen debe ser numérico.' };
+    delta = Math.round(Number(delta));
     const config = getConfig();
     const upBtn = getVolButton(config, true);
     const downBtn = getVolButton(config, false);
@@ -522,10 +524,11 @@ async function adjustVolume(delta) {
         };
     }
     const state = getTvState();
-    const count = Math.min(30, Math.abs(delta));
+    const target = Math.max(0, Math.min(100, state.volume + delta));
+    const count = Math.abs(target - state.volume);
     const button = delta > 0 ? upBtn : downBtn;
     await sendButtons(repeat(button, count), 180);
-    state.volume = Math.max(0, Math.min(100, state.volume + delta));
+    state.volume = target;
     saveTvState(state);
     const actionWord = delta > 0 ? 'Subí' : 'Bajé';
     return {
@@ -547,7 +550,20 @@ function calibrateVolume(actual) {
     };
 }
 
+async function runProgram(steps, onProgress = () => {}) {
+    if (currentJob) throw new Error('Ya hay una operación de TV en curso. Podés cancelarla.');
+    const job = {cancelled:false}; currentJob=job;
+    try { for(let i=0;i<steps.length;i++) {
+        if(job.cancelled)throw new Error('Automatización cancelada.');
+        onProgress({stage:'tv_program',message:'TV: paso '+(i+1)+' de '+steps.length});
+        if(steps[i].button)await sendButtons([steps[i].button]);
+        await sleep(steps[i].waitMs || 350,job);
+    } return {ok:true,message:'Envié la secuencia a la TV. Verificá el resultado en su pantalla.',evidence:{signalSent:true}};
+    } finally {if(currentJob===job)currentJob=null;}
+}
+
 module.exports = {
+    runProgram,
     ALLOWED_BUTTONS,
     getPublicStatus,
     saveSettings,

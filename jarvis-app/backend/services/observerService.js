@@ -8,7 +8,7 @@ let pollingInterval = null;
 
 // Verifica si la carpeta de scripts y data existen
 const scriptsDir = path.join(__dirname, '..', 'scripts');
-const dataDir = path.join(__dirname, '..', 'data');
+const dataDir = require("./dataPaths").dataPath();
 if (!fs.existsSync(scriptsDir)) fs.mkdirSync(scriptsDir, { recursive: true });
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 

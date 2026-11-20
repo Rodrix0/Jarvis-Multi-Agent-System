@@ -280,7 +280,8 @@ class Jarvis3D {
 
     scheduleNextFrame() {
         if (document.hidden || this.animationTimer) return;
-        const frameDelay = this.state === 'idle' ? 100 : 34;
+        // En reposo alcanza con 5 FPS; durante escucha o habla conserva fluidez.
+        const frameDelay = this.state === 'idle' ? 200 : 34;
         this.animationTimer = setTimeout(() => {
             this.animationTimer = null;
             this.animationFrame = requestAnimationFrame(() => {

@@ -1,0 +1,13 @@
+diff --git a/webui-user.bat b/webui-user.bat
+index 0d5ca0d7..f65ba91d 100644
+--- a/webui-user.bat
++++ b/webui-user.bat
+@@ -3,7 +3,7 @@
+ set PYTHON=C:\Users\Rodrigo\AppData\Local\Programs\Python\Python310\python.exe
+ set GIT=
+ set VENV_DIR=
+-set COMMANDLINE_ARGS=--api --listen --xformers --cuda-malloc --medvram --always-offload-from-vram --opt-split-attention
++set COMMANDLINE_ARGS=--api --xformers --cuda-malloc
+ @REM Uncomment following code to reference an existing A1111 checkout.
+ @REM set A1111_HOME=Your A1111 checkout dir
+ @REM

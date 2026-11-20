@@ -1,15 +1,14 @@
+const path = require('path');
+const fs = require('fs');
 const actionKernel = require('./actionKernelService');
 const memoryService = require('./memoryService');
 const modeService = require('./modeService');
 const observerService = require('./observerService');
 const systemService = require('./systemService');
-const aiService = require('./aiService');
 const tvService = require('./tvService');
 const tvVoiceService = require('./tvVoiceService');
-const informationDocumentService = require('./informationDocumentService');
 const voiceLearningService = require('./voiceLearningService');
 const financeService = require('./financeService');
-const downloadService = require('./downloadService');
 
 // --- V6 ENTERPRISE SERVICES ---
 const fastCommandParser = require('./ai/fastCommandParser');
@@ -20,12 +19,71 @@ const trashService = require('./core/trashService');
 const memoryServiceV6 = require('./memory/memoryService');
 const routineService = require('./automation/routineService');
 const windowsControlService = require('./windowsControlService');
+const homeAssistantService = require('./homeassistant/homeAssistantService');
 
 let registered = false;
+let pendingVoiceConfirmation = null;
 
 function registerActions() {
+    actionKernel.register({id:'browser.voice',name:'Navegar por voz',description:'Busca, abre enlaces y elige resultados visibles manteniendo la página actual.',parameters:{command:'open, search, select, point, click, scroll, back, inspect, clarify o stop',expectedHref:'Enlace señalado al interpretar la orden',question:'Aclaración si falta contexto',site:'youtube, google o URL',resultType:'channel o video',query:'Consulta',index:'Posición acumulativa del resultado',label:'Nombre del enlace o botón',direction:'up o down'},permission:'desktop-control',retry:false,
+        execute:params=>require('./browser/voiceNavigationService').execute(params)});
+    actionKernel.register({id:'tv.learned-app',name:'Aplicación aprendida en TV',parameters:{app:'youtube o netflix',title:'Texto o título',open:'Abrir aplicación',writeOnly:'Escribir en teclado ya abierto',powerOn:'Encender solo por pedido explícito'},permission:'physical-device',retry:false,
+        execute:async(params,context)=>{const result=await require('./tvLearningService').execute(params,context.onTvProgress);tvVoiceService.activateSession();return result;}});
+    actionKernel.register({id:'tv.power-signal',name:'Encendido de TV',parameters:{},permission:'physical-device',retry:false,
+        execute:async()=>{await tvService.sendButtons(['power']);tvVoiceService.activateSession();return {ok:true,message:'Envié la señal de encendido/apagado. El control infrarrojo no informa el estado de la TV.',evidence:{signalSent:true}};}});
     if (registered) return;
     registered = true;
+
+    const desktopContent = require('./desktopContentService');
+    for (const [id, name, execute, riskLevel] of [
+        ['power.lock', 'Bloquear Windows', () => windowsControlService.power.lockWorkstation(), 'MEDIUM'],
+        ['power.suspend', 'Suspender computadora', () => windowsControlService.power.suspendSystem(), 'HIGH'],
+        ['power.shutdown', 'Apagar computadora', () => windowsControlService.power.shutdownSystem(), 'CRITICAL'],
+        ['power.restart', 'Reiniciar computadora', () => windowsControlService.power.restartSystem(), 'CRITICAL'],
+        ['system.get-overview', 'Consultar estado de la computadora', () => windowsControlService.metrics.getSystemOverview(), 'LOW'],
+        ['tv.toggle-mute', 'Silenciar televisión', async () => { await tvService.sendButtons(['mute']); return { ok: true, verified: false, message: 'Envié la señal de silencio a la televisión.', evidence: { signalSent: true } }; }, 'LOW']
+    ]) actionKernel.register({ id, name, permission: 'desktop-control', parameters: {}, riskLevel, execute });
+    actionKernel.register({ id: 'process.close', name: 'Cerrar aplicación', permission: 'desktop-control', requiredParameters: ['appName'], parameters: { appName: 'Nombre del proceso de la aplicación' }, execute: ({ appName }) => windowsControlService.process.closeApplication(appName) });
+    for (const [id, name, method, parameters] of [
+        ['file.copy', 'Copiar archivo', 'copyFile', { sourcePath: 'Archivo de origen', destinationPath: 'Archivo o carpeta de destino' }],
+        ['file.move', 'Mover archivo', 'moveFile', { sourcePath: 'Archivo de origen', destinationPath: 'Archivo o carpeta de destino' }],
+        ['file.rename', 'Renombrar archivo', 'renameFile', { filePath: 'Archivo de origen', newName: 'Nombre nuevo' }]
+    ]) actionKernel.register({ id, name, parameters, permission: 'standard', execute: async params => {
+        const source = await desktopContent.resolveFile(params.sourcePath || params.filePath);
+        if (!source) return { ok: false, message: 'No encontré el archivo de origen.' };
+        let destination = params.newName;
+        if (id !== 'file.rename') {
+            destination = desktopContent.location(params.destinationPath);
+            if (fs.existsSync(destination) && fs.statSync(destination).isDirectory()) destination = path.join(destination, path.basename(source));
+        }
+        return windowsControlService.file[method](source, destination);
+    } });
+    actionKernel.register({ id: 'assistant.capabilities', name: 'Listar capacidades', permission: 'standard', execute: () => {
+        const actions = actionKernel.catalog().filter(a => a.id !== 'assistant.respond');
+        return { ok: true, data: { actions }, message: actions.map(a => `${a.name}${a.examples?.[0] ? ': '+a.examples[0] : ''}`).join('\n') };
+    } });
+    for (const [id, name, parameters, execute] of [
+        ['directory.list', 'Leer contenido de una carpeta', { directory: 'Carpeta o escritorio', recursive: 'Incluir subcarpetas' }, p => desktopContent.list(p)],
+        ['file.read', 'Leer archivo', { filePath: 'Nombre o ruta del archivo' }, p => desktopContent.read(p)],
+        ['file.search', 'Buscar archivo', { query: 'Nombre buscado', baseDir: 'Carpeta opcional' }, p => desktopContent.search(p)]
+    ]) actionKernel.register({ id, name, parameters, permission: 'standard', execute });
+
+    for (const [id, name, execute] of [
+        ['audio.adjust-volume', 'Subir o bajar volumen', ({ delta }) => windowsControlService.audio.adjustVolume(delta)],
+        ['audio.get-volume', 'Consultar volumen', () => windowsControlService.audio.getVolume()],
+        ['display.adjust-brightness', 'Subir o bajar brillo', ({ delta }) => windowsControlService.display.adjustBrightness(delta)],
+        ['display.get-brightness', 'Consultar brillo', () => windowsControlService.display.getBrightness()]
+    ]) actionKernel.register({ id, name, permission: 'desktop-control', parameters: { delta: 'Cambio en puntos porcentuales' }, retry: false, execute });
+
+    const agenda = require('./agenda/agendaService');
+    actionKernel.register({ id: 'agenda.add', name: 'Crear recordatorio', permission: 'standard', parameters: { title: 'Tarea', targetDate: 'Fecha local', targetTime: 'HH:MM', recurrence: 'none o daily' }, retry: false, execute: params => agenda.addReminder(params) });
+    actionKernel.register({ id: 'agenda.clarify', name: 'Completar recordatorio', permission: 'standard', execute: () => ({ ok: false, message: 'Decime la tarea y cuándo avisarte. Por ejemplo: recordame tomar agua en diez minutos, o recordame llamar mañana a las 18:30.' }) });
+    actionKernel.register({ id: 'agenda.list', name: 'Consultar recordatorios', permission: 'standard', execute: () => {
+        const reminders = agenda.listReminders();
+        const legacy = require('./reminderService').getLocalReminders().filter(r => !r.done);
+        const lines = [...reminders.map(r => r.title + ' — ' + (r.target_date || 'próxima fecha') + ' ' + r.target_time), ...legacy.map(r => (r.message || r.target) + ' — ' + r.time)];
+        return { ok: true, reminders, message: lines.length ? lines.join('\n') : 'No tenés recordatorios pendientes.' };
+    } });
 
     // Emergency Stop
     actionKernel.register({
@@ -39,6 +97,222 @@ function registerActions() {
         id: 'undo.last', name: 'Deshacer última acción', description: 'Revierte la última acción reversible realizada.',
         parameters: {}, permission: 'standard', examples: ['Deshacé lo último'],
         execute: async () => undoManager.undoLast('GLOBAL')
+    });
+
+    // Task Management (Ítem 25)
+    actionKernel.register({
+        id: 'task.cancel', name: 'Cancelar tarea', description: 'Cancela la tarea activa especificada o la más reciente.',
+        parameters: { target: 'Tipo o nombre de la tarea a cancelar' }, permission: 'standard', examples: ['Cancelá', 'Cancelá la descarga', 'Detener tarea'],
+        execute: async ({ target } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            return taskManager.cancelCurrent(target);
+        }
+    });
+    actionKernel.register({
+        id: 'task.pause', name: 'Pausar tarea', description: 'Pausa la tarea en ejecución.',
+        parameters: { target: 'Tipo o ID de la tarea' }, permission: 'standard', examples: ['Pausá la descarga', 'Pausá'],
+        execute: async ({ target } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            const active = taskManager.getActiveTasks();
+            if (active.length === 0) return { ok: false, message: 'No hay ninguna tarea activa para pausar.' };
+            const task = target ? active.find(t => t.type.includes(target) || t.id === target) || active[active.length - 1] : active[active.length - 1];
+            return taskManager.pause(task.id);
+        }
+    });
+    actionKernel.register({
+        id: 'task.resume', name: 'Reanudar tarea', description: 'Reanuda una tarea pausada.',
+        parameters: { target: 'Tipo o ID de la tarea' }, permission: 'standard', examples: ['Reanudá la descarga', 'Continuá la tarea'],
+        execute: async ({ target } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            const paused = taskManager.listTasks({ status: 'PAUSED' });
+            if (paused.length === 0) return { ok: false, message: 'No hay ninguna tarea pausada para reanudar.' };
+            const task = target ? paused.find(t => t.type.includes(target) || t.id === target) || paused[0] : paused[0];
+            return taskManager.resume(task.id);
+        }
+    });
+    actionKernel.register({
+        id: 'task.list', name: 'Listar tareas activas', description: 'Informa las tareas actualmente en ejecución.',
+        parameters: {}, permission: 'standard', examples: ['Qué tareas hay activas', 'Listar tareas'],
+        execute: async () => {
+            const taskManager = require('./core/taskManagerService');
+            const active = taskManager.getActiveTasks();
+            if (active.length === 0) return { ok: true, count: 0, message: 'No hay ninguna tarea activa en este momento.' };
+            const summary = active.map((t, idx) => `${idx + 1}. [${t.type}] ${t.description} (${t.status})`).join('\n');
+            return {
+                ok: true,
+                count: active.length,
+                tasks: active,
+                message: `Hay ${active.length} tarea${active.length > 1 ? 's' : ''} activa${active.length > 1 ? 's' : ''}:\n${summary}`
+            };
+        }
+    });
+
+    // Persistent Task Recovery (Ítem 28)
+    actionKernel.register({
+        id: 'task.recover', name: 'Recuperar tareas interrumpidas', description: 'Escanea SQLite y recupera tareas huérfanas de sesiones anteriores.',
+        parameters: {}, permission: 'standard', examples: ['Recuperar tareas pendientes', 'Continuar tareas interrumpidas'],
+        execute: async () => {
+            const taskManager = require('./core/taskManagerService');
+            const res = await taskManager.recoverOrphanTasks();
+            return {
+                ok: true,
+                count: res.count,
+                recovered: res.recovered,
+                data: res,
+                message: res.count > 0
+                    ? `Se recuperaron ${res.count} tarea${res.count > 1 ? 's' : ''} pendiente${res.count > 1 ? 's' : ''} de sesiones anteriores.`
+                    : 'No había tareas pendientes para recuperar.'
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'task.retry', name: 'Reintentar tarea', description: 'Reintenta una tarea específica por ID o la más reciente fallida.',
+        parameters: { taskId: 'ID de la tarea' }, permission: 'standard', examples: ['Reintentar tarea', 'Reintentar'],
+        execute: async ({ taskId } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            let targetId = taskId;
+            if (!targetId) {
+                const failed = taskManager.listTasks({ status: 'FAILED' });
+                if (failed.length > 0) targetId = failed[0].id;
+            }
+            if (!targetId) return { ok: false, message: 'No se indicó una tarea para reintentar.' };
+            return taskManager.retryTask(targetId);
+        }
+    });
+    actionKernel.register({
+        id: 'task.history', name: 'Historial de tareas persistentes', description: 'Consulta el registro de tareas en SQLite con puntos de control.',
+        parameters: { limit: 'Límite de registros' }, permission: 'standard', examples: ['Ver historial de tareas', 'Registro de tareas'],
+        execute: async ({ limit = 20 } = {}) => {
+            const taskManager = require('./core/taskManagerService');
+            const history = taskManager.listTasks({ limit: Number(limit) || 20, fromDb: true });
+            return {
+                ok: true,
+                count: history.length,
+                tasks: history,
+                data: { count: history.length, tasks: history },
+                message: `Se encontraron ${history.length} tareas en el registro histórico.`
+            };
+        }
+    });
+
+    // Conditional Automation Engine (Ítem 27)
+    actionKernel.register({
+        id: 'automation.create-rule', name: 'Crear automatización condicional', description: 'Crea una regla de automatización reactiva por eventos y condiciones.',
+        parameters: { rule: 'Objeto o especificación de la regla (trigger, filters, actions)' }, permission: 'standard', examples: ['Crear regla', 'Automatizar cuando termine la descarga'],
+        execute: async (params = {}) => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            const ruleData = params.rule || params;
+            const created = conditionalAutomation.createRule(ruleData);
+            return {
+                ok: true,
+                rule: created,
+                data: { rule: created },
+                message: `Automatización "${created.name}" creada con éxito (ID: ${created.id}).`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'automation.list-rules', name: 'Listar automatizaciones', description: 'Lista todas las reglas de automatización condicional configuradas.',
+        parameters: {}, permission: 'standard', examples: ['Listar automatizaciones', 'Ver reglas de automatización'],
+        execute: async () => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            const rules = conditionalAutomation.getAllRules();
+            if (rules.length === 0) return { ok: true, count: 0, rules: [], data: { count: 0, rules: [] }, message: 'No hay reglas de automatización configuradas.' };
+            const summary = rules.map((r, i) => `${i + 1}. [${r.enabled ? 'ACTIVA' : 'INACTIVA'}] "${r.name}" (Evento: ${r.trigger.event})`).join('\n');
+            return {
+                ok: true,
+                count: rules.length,
+                rules,
+                data: { count: rules.length, rules },
+                message: `Hay ${rules.length} automatización${rules.length > 1 ? 'es' : ''}:\n${summary}`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'automation.toggle-rule', name: 'Alternar regla de automatización', description: 'Habilita o deshabilita una regla por ID.',
+        parameters: { id: 'ID de la regla', enabled: 'Opcional booleano' }, permission: 'standard', examples: ['Pausar regla', 'Activar regla'],
+        execute: async ({ id, enabled } = {}) => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            const updated = conditionalAutomation.toggleRule(id, enabled);
+            if (!updated) return { ok: false, message: `No se encontró la regla ${id}.` };
+            return {
+                ok: true,
+                rule: updated,
+                data: { rule: updated },
+                message: `Regla "${updated.name}" ahora está ${updated.enabled ? 'activada' : 'desactivada'}.`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'automation.delete-rule', name: 'Eliminar regla de automatización', description: 'Elimina definitivamente una regla de automatización.',
+        parameters: { id: 'ID de la regla a eliminar' }, permission: 'standard', examples: ['Borrar regla de automatización'],
+        execute: async ({ id } = {}) => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            const deleted = conditionalAutomation.deleteRule(id);
+            return {
+                ok: deleted,
+                message: deleted ? `Regla ${id} eliminada.` : `No se pudo eliminar la regla ${id}.`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'automation.test-rule', name: 'Probar regla de automatización', description: 'Ejecuta una simulación (dry-run) de una regla contra datos de prueba.',
+        parameters: { id: 'ID de la regla', mockPayload: 'Datos simulados del evento' }, permission: 'standard', examples: ['Probar automatización'],
+        execute: async ({ id, mockPayload = {} } = {}) => {
+            const conditionalAutomation = require('./automation/conditionalAutomationService');
+            return conditionalAutomation.testRule(id, mockPayload);
+        }
+    });
+
+    // Home Assistant & Domótica (Ítem 29)
+    actionKernel.register({
+        id: 'ha.command', name: 'Comando de domótica', description: 'Ejecuta una acción o servicio sobre dispositivos inteligentes en Home Assistant.',
+        parameters: { text: 'Orden en lenguaje natural', domain: 'Dominio HA', service: 'Servicio HA', entity_id: 'Entidad de HA' }, permission: 'standard',
+        examples: ['Prende la luz del living', 'Pone el aire a 24 grados', 'Apaga las luces', 'Prende el enchufe'],
+        execute: async (params = {}) => {
+            let res;
+            if (params.text) {
+                res = await homeAssistantService.executeCommand(params.text);
+            } else if (params.domain && params.service) {
+                res = await homeAssistantService.callService(params.domain, params.service, params);
+            } else {
+                return { ok: false, message: 'Faltan parámetros para la orden de domótica.' };
+            }
+            return { ok: res?.success !== false, data: res, message: res?.message || 'Comando de domótica ejecutado.' };
+        }
+    });
+    actionKernel.register({
+        id: 'ha.get-state', name: 'Consultar estado de dispositivo', description: 'Consulta el valor o estado de un sensor o entidad de Home Assistant.',
+        parameters: { entity_id: 'ID de la entidad a consultar' }, permission: 'standard', examples: ['Estado de la luz', 'Temperatura del living'],
+        execute: async ({ entity_id } = {}) => {
+            const state = homeAssistantService.getState(entity_id);
+            if (!state) return { ok: false, message: `Dispositivo ${entity_id} no encontrado.` };
+            return {
+                ok: true,
+                data: { entity_id, state: state.state, attributes: state.attributes },
+                message: `El estado de ${entity_id} es ${state.state}.`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'ha.list-devices', name: 'Listar dispositivos inteligentes', description: 'Lista todos los dispositivos domóticos sincronizados.',
+        parameters: { domain: 'Filtro opcional por dominio (light, climate, switch, sensor)' }, permission: 'standard', examples: ['Listar luces', 'Ver dispositivos inteligentes'],
+        execute: async ({ domain } = {}) => {
+            const devices = homeAssistantService.listDevices(domain);
+            return {
+                ok: true,
+                data: { count: devices.length, devices },
+                message: `Se encontraron ${devices.length} dispositivos${domain ? ` en el dominio ${domain}` : ''}.`
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'ha.sync', name: 'Sincronizar Home Assistant', description: 'Sincroniza el inventario completo de entidades con Home Assistant.',
+        parameters: {}, permission: 'standard', examples: ['Sincronizar domótica', 'Actualizar dispositivos'],
+        execute: async () => {
+            await homeAssistantService.syncAllStates();
+            return { ok: true, data: { ok: true }, message: 'Dispositivos de Home Assistant sincronizados con éxito.' };
+        }
     });
 
     // Windows Audio
@@ -87,27 +361,334 @@ function registerActions() {
         execute: async () => windowsControlService.clipboard.readClipboard()
     });
 
+    // Antivirus, Malware Scanner & PC Health System
+    actionKernel.register({
+        id: 'security.scan-file', name: 'Escanear archivo con antivirus', description: 'Analiza un archivo con VirusTotal y Windows Defender.',
+        parameters: { filePath: 'Ruta del archivo a analizar' }, permission: 'standard', examples: ['Escanear archivo', 'Analizar archivo descargado'],
+        execute: async ({ filePath } = {}) => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.scanFile(filePath);
+        }
+    });
+    actionKernel.register({
+        id: 'security.scan-latest-download', name: 'Escanear última descarga', description: 'Detecta y escanea el último instalador o archivo descargado.',
+        parameters: {}, permission: 'standard', examples: ['Escaneá la última descarga', 'Analizá lo que descargué', 'Fijate si la descarga tiene virus'],
+        execute: async () => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.scanLatestDownload();
+        }
+    });
+    actionKernel.register({
+        id: 'security.system-health', name: 'Salud de PC y estado de virus', description: 'Consulta el estado de salud del equipo, protección en tiempo real y amenazas activas.',
+        parameters: {}, permission: 'standard', examples: ['Cómo está la salud de mi PC', 'Tengo algún virus', 'Analizá mi equipo', 'Mi PC está sana'],
+        execute: async () => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.getSystemHealth();
+        }
+    });
+    actionKernel.register({
+        id: 'security.system-scan', name: 'Ejecutar escaneo de virus en PC', description: 'Inicia un escaneo rápido del sistema con Windows Defender.',
+        parameters: {}, permission: 'standard', examples: ['Hacé un escaneo de virus', 'Buscá virus en mi equipo', 'Escaneá la computadora'],
+        execute: async () => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.runQuickSystemScan();
+        }
+    });
+    actionKernel.register({
+        id: 'security.quarantine-file', name: 'Aislar archivo en cuarentena', description: 'Mueve un archivo malicioso a la carpeta protegida de cuarentena de JARVIS.',
+        parameters: { filePath: 'Ruta del archivo a aislar' }, permission: 'standard', examples: ['Aislá este archivo', 'Mandalo a cuarentena'],
+        execute: async ({ filePath } = {}) => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.quarantineFile(filePath);
+        }
+    });
+    actionKernel.register({
+        id: 'security.delete-file', name: 'Eliminar archivo malicioso', description: 'Elimina de forma permanente un archivo infectado.',
+        parameters: { filePath: 'Ruta del archivo a eliminar' }, permission: 'standard', examples: ['Borrá el archivo infectado', 'Eliminá el virus'],
+        execute: async ({ filePath } = {}) => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.deleteFile(filePath);
+        }
+    });
+
+    // Window & Tab Controls (Fast deterministic UI actions)
+    actionKernel.register({
+        id: 'window.minimize', name: 'Minimizar ventana', description: 'Minimiza la ventana activa.',
+        parameters: {}, permission: 'standard', examples: ['Minimiza', 'Minimizar ventana'],
+        execute: async () => windowsControlService.windowTab.minimizeActive()
+    });
+    actionKernel.register({
+        id: 'window.minimize-all', name: 'Minimizar todo / Mostrar escritorio', description: 'Minimiza todas las ventanas abiertas.',
+        parameters: {}, permission: 'standard', examples: ['Minimiza todo', 'Mostrar escritorio'],
+        execute: async () => windowsControlService.windowTab.minimizeAll()
+    });
+    actionKernel.register({
+        id: 'window.maximize', name: 'Maximizar ventana', description: 'Maximiza la ventana activa.',
+        parameters: {}, permission: 'standard', examples: ['Maximiza', 'Pantalla completa'],
+        execute: async () => windowsControlService.windowTab.maximizeActive()
+    });
+    actionKernel.register({
+        id: 'window.close', name: 'Cerrar ventana', description: 'Cierra la ventana o aplicación activa.',
+        parameters: {}, permission: 'standard', examples: ['Cerrar ventana', 'Cerra el programa'],
+        execute: async () => windowsControlService.windowTab.closeWindow()
+    });
+    actionKernel.register({
+        id: 'window.next', name: 'Cambiar de ventana', description: 'Cambia a la siguiente ventana abierta.',
+        parameters: {}, permission: 'standard', examples: ['Cambia de ventana', 'Siguiente ventana'],
+        execute: async () => windowsControlService.windowTab.nextWindow()
+    });
+    actionKernel.register({
+        id: 'tab.next', name: 'Siguiente pestaña', description: 'Avanza a la siguiente pestaña en el navegador o editor.',
+        parameters: {}, permission: 'standard', examples: ['Siguiente pestaña', 'Cambia de pestaña'],
+        execute: async () => windowsControlService.windowTab.nextTab()
+    });
+    actionKernel.register({
+        id: 'tab.prev', name: 'Pestaña anterior', description: 'Retrocede a la pestaña anterior en el navegador o editor.',
+        parameters: {}, permission: 'standard', examples: ['Pestaña anterior', 'Anterior pestaña'],
+        execute: async () => windowsControlService.windowTab.prevTab()
+    });
+    actionKernel.register({
+        id: 'tab.close', name: 'Cerrar pestaña', description: 'Cierra la pestaña actual.',
+        parameters: {}, permission: 'standard', examples: ['Cerrar pestaña', 'Cerra'],
+        execute: async () => windowsControlService.windowTab.closeTab()
+    });
+    actionKernel.register({
+        id: 'tab.new', name: 'Nueva pestaña', description: 'Abre una nueva pestaña.',
+        parameters: {}, permission: 'standard', examples: ['Nueva pestaña'],
+        execute: async () => windowsControlService.windowTab.newTab()
+    });
+    actionKernel.register({
+        id: 'tab.go-to', name: 'Ir a pestaña específica', description: 'Cambia a una pestaña específica por número (1 a 9).',
+        parameters: { index: 'Número de pestaña' }, permission: 'standard', examples: ['Andá a la pestaña 4', 'Pestaña 5', 'Ir a la pestaña 1'],
+        execute: async ({ index }) => windowsControlService.windowTab.goToTab(index)
+    });
+
+    // WhatsApp Messaging
+    actionKernel.register({
+        id: 'whatsapp.send', name: 'Enviar mensaje de WhatsApp', description: 'Envía un mensaje de WhatsApp a un contacto especificado.',
+        parameters: { contact: 'Nombre del contacto', message: 'Mensaje a enviar' }, permission: 'standard',
+        examples: ['Mandale un mensaje a Color Cartón que diga te amo', 'Enviá un mensaje a mamá que diga llego en 10', 'Un mensaje a Color Cartón que diga te amo'],
+        prepare: (params, context) => require('./communication/whatsappDraftService').prepare(params, context),
+        confirmation: params => params.reviewRequired === true,
+        confirmationMessage: ({ contact, message }) => `Preparé este mensaje para ${contact}: “${message}”. ¿Lo envío así? Podés confirmarlo o cancelarlo.`,
+        execute: async ({ contact, message }) => windowsControlService.whatsapp.sendMessage(contact, message)
+    });
+
+    // Búsqueda de Comercios y Lugares Locales (Paso 2: Maps + WhatsApp)
+    actionKernel.register({
+        id: 'places.search',
+        name: 'Buscar comercios y lugares locales',
+        description: 'Busca cafeterías, librerías, restaurantes y negocios con buenas reseñas y enlaces a Google Maps, con opción de enviarlos por WhatsApp.',
+        parameters: { category: 'Rubro del comercio', location: 'Ciudad o zona', contact: 'Contacto opcional para enviar por WhatsApp' },
+        permission: 'standard',
+        examples: ['Búscame buenas cafeterías en Corrientes Capital y envíaselos por WhatsApp a Color Cartón', 'Busca librerías cerca de mi zona'],
+        execute: params => require('./placesService').searchPlaces(params)
+    });
+
+    // UI Automation (Semantic Windows Control)
+    const uiAutomationService = require('./windows/uiAutomationService');
+    actionKernel.register({
+        id: 'ui.click', name: 'Hacer clic semántico en botón', description: 'Hace clic en un botón o control de una ventana por su nombre visible sin depender de coordenadas fijas.',
+        parameters: { window: 'Título de la ventana', element: 'Nombre del botón o control' }, permission: 'standard',
+        examples: ['Hacé clic en Aceptar', 'Apretá el botón Descargar en Chrome', 'Hacé clic en Cerrar en el Bloc de notas'],
+        execute: async ({ window, element, options }) => {
+            const res = await uiAutomationService.clickElement(window, element, options);
+            return {
+                ok: true,
+                message: `Hice clic en "${element}" en la ventana "${window}". Método: ${res.method || 'UIAutomation'}.`,
+                data: res
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'ui.type', name: 'Escribir texto en campo', description: 'Escribe texto en un campo o caja de búsqueda de una ventana.',
+        parameters: { window: 'Título de la ventana', element: 'Nombre del campo de texto', text: 'Texto a ingresar' }, permission: 'standard',
+        examples: ['Escribí en el campo Buscar', 'Escribí en la barra de direcciones'],
+        execute: async ({ window, element, text, options }) => {
+            const res = await uiAutomationService.setText(window, element, text, options);
+            return {
+                ok: true,
+                message: `Escribí "${text}" en el campo "${element || 'principal'}" de "${window}".`,
+                data: res
+            };
+        }
+    });
+    actionKernel.register({
+        id: 'ui.inspect', name: 'Inspeccionar controles de ventana', description: 'Lista los botones y campos visibles de una ventana.',
+        parameters: { window: 'Título de la ventana' }, permission: 'standard',
+        execute: async ({ window }) => {
+            const win = await uiAutomationService.findWindow(window);
+            if (!win) return { ok: false, message: `No encontré la ventana "${window}".` };
+            const hwnd = win.Hwnd || win.hwnd;
+            const res = await uiAutomationService._runBridge(['-Action', 'find-elements', '-Hwnd', String(hwnd)]);
+            return {
+                ok: true,
+                message: `Inspección completada: ${res.count || 0} controles encontrados.`,
+                window: win,
+                elementsCount: res.count || 0,
+                elements: res.elements || []
+            };
+        }
+    });
+
+    // Autonomous Browser Subsystem (Playwright)
+    const browserService = require('./browser/browserService');
+    actionKernel.register({
+        id: 'browser.open', name: 'Abrir página web en navegador autónomo', description: 'Navega a un sitio web en el navegador autónomo Playwright.',
+        parameters: { url: 'URL del sitio web' }, permission: 'standard',
+        execute: async ({ url, options }) => {
+            const res = await browserService.openPage(url, options);
+            return { ok: true, message: `Página "${res.title}" cargada exitosamente.`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.click', name: 'Hacer clic en elemento web', description: 'Hace clic en un botón, enlace o elemento de la página web actual.',
+        parameters: { selector: 'Selector CSS o texto del elemento' }, permission: 'standard',
+        execute: async ({ selector, options }) => {
+            const res = await browserService.click(selector, options);
+            return { ok: true, message: `Clic ejecutado en "${selector}".`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.type', name: 'Escribir en formulario web', description: 'Escribe texto en un campo de texto o búsqueda web.',
+        parameters: { selector: 'Selector del campo', text: 'Texto a escribir' }, permission: 'standard',
+        execute: async ({ selector, text, options }) => {
+            const res = await browserService.write(selector, text, options);
+            return { ok: true, message: `Escribí en "${selector}".`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.get-text', name: 'Leer contenido web', description: 'Extrae el texto visible de la página o de un elemento.',
+        parameters: { selector: 'Selector opcional (por defecto toda la página)' }, permission: 'standard',
+        execute: async ({ selector, options }) => {
+            const res = await browserService.getText(selector || 'body', options);
+            return { ok: true, message: res || 'La página no contiene texto visible.', data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.scroll', name: 'Desplazar página web', description: 'Hace scroll hacia abajo o arriba en la página web.',
+        parameters: { direction: 'down o up', amount: 'Píxeles' }, permission: 'standard',
+        execute: async ({ direction, amount, options }) => {
+            const res = await browserService.scroll(direction, amount, options);
+            return { ok: true, message: `Scroll realizado.`, data: res };
+        }
+    });
+    actionKernel.register({
+        id: 'browser.close', name: 'Cerrar navegador autónomo', description: 'Cierra la sesión del navegador autónomo.',
+        parameters: {}, permission: 'standard',
+        execute: async () => {
+            const res = await browserService.close();
+            return { ok: true, message: 'Navegador autónomo cerrado.', data: res };
+        }
+    });
+
+    // Advanced Web Research Subsystem
+    const researchService = require('./ai/researchService');
+    actionKernel.register({
+        id: 'research.query', name: 'Investigación web profunda', description: 'Realiza una investigación analítica multi-fuente con subconsultas y síntesis comparada.',
+        parameters: { question: 'Pregunta o tema a investigar', options: 'Opciones adicionales (timeout, maxSources)' }, permission: 'standard',
+        execute: async ({ question, query, options }) => {
+            const topic = question || query;
+            const res = await require('./researchDocumentService').search(topic, {quick:false,...options});
+            return {
+                ok: true,
+                message: res.uniqueSources ? require('./researchDocumentService').format(res) : `No pude obtener fuentes para ${topic}.`,
+                data: res
+            };
+        }
+    });
+
+    actionKernel.register({
+        id:'document.research', name:'Guardar investigación en documento',
+        parameters:{topic:'Tema para buscar',useLast:'Usar resultados de la última búsqueda',directory:'Carpeta de destino o ruta absoluta',fileName:'Nombre opcional',format:'docx, pdf o txt'},
+        execute: params => require('./researchDocumentService').create({...params, open:true})
+    });
+
+    actionKernel.register({
+        id: 'image.generate', name: 'Generar imagen',
+        description: 'Genera una imagen local con Stable Diffusion Forge y la muestra dentro de Jarvis.',
+        parameters: { prompt: 'Descripción de la imagen', width: 'Ancho opcional', height: 'Alto opcional', steps: 'Pasos opcionales', quality: 'Perfil opcional: fast, quality o maximum' }, requiredParameters: ['prompt'], permission: 'standard', retry: false,
+        execute: async ({ prompt, width, height, steps, quality }) => {
+            const imageService = require('./imageService');
+            const filePath = await imageService.generateImage(prompt, { width, height, steps, quality });
+            const imageUrl = imageService.publicImageUrl(filePath);
+            return {
+                ok: true,
+                verified: fs.existsSync(filePath),
+                filePath,
+                imageUrl,
+                data: { kind: 'generated-image', filePath, imageUrl },
+                evidence: { fileCreated: fs.existsSync(filePath), filePath },
+                message: `Listo, generé la imagen.\n\n![Imagen generada](${imageUrl})`
+            };
+        }
+    });
+
+    // Vision Subsystem (Screen OCR & Error Diagnosis)
+    const visionService = require('./vision/visionService');
+    actionKernel.register({
+        id: 'vision.analyze-screen', name: 'Analizar pantalla y diagnosticar error', description: 'Captura la pantalla, extrae el texto por OCR e interpreta el error o contenido visible.',
+        parameters: { query: 'Pregunta o consulta del usuario', imagePath: 'Ruta de imagen opcional' }, permission: 'standard', examples: ['Fijate qué error salió', 'Qué dice la pantalla'],
+        execute: async ({ query, imagePath }) => {
+            const res = await visionService.analyzeScreen(query || '¿Qué error o situación aparece en pantalla?', imagePath);
+            return {
+                ok: res.ok !== false,
+                reply: res.reply,
+                message: res.reply,
+                context: res.context
+            };
+        }
+    });
+
     // File & Folder Operations with Rollback
     const fileOperationsService = require('./core/fileOperationsService');
+    const verificationService = require('./core/verificationService');
     actionKernel.register({
         id: 'file.create', name: 'Crear archivo o documento', description: 'Crea un archivo (.txt, .docx) o nota en el Escritorio o carpeta.',
         parameters: { fileName: 'Nombre del archivo', content: 'Contenido opcional', format: 'txt o docx', folderName: 'Carpeta opcional', topic: 'Tema opcional' }, permission: 'standard',
-        execute: async ({ fileName, content, format = 'txt', folderName, topic }) => fileOperationsService.createFile({ fileName, content, format, folderName, topic })
+        execute: async ({ fileName, content, format = 'txt', folderName, topic }) => fileOperationsService.createFile({ fileName, content, format, folderName, topic }),
+        verifier: async (output, { fileName, folderName }) => {
+            const target = output?.filePath || (folderName && fileName ? path.join(fileOperationsService.getDesktopPath(), folderName, fileName) : null);
+            if (target) {
+                return verificationService.verifyFileCreated(target, { timeoutMs: 2000 });
+            }
+            return { verified: true };
+        }
     });
     actionKernel.register({
         id: 'folder.create', name: 'Crear carpeta', description: 'Crea una carpeta en el Escritorio.',
         parameters: { folderName: 'Nombre de la carpeta' }, permission: 'standard',
-        execute: async ({ folderName }) => fileOperationsService.createFolder({ folderName })
+        execute: async ({ folderName }) => fileOperationsService.createFolder({ folderName }),
+        verifier: async (output, { folderName }) => {
+            const target = output?.folderPath || (folderName ? path.join(fileOperationsService.getDesktopPath(), folderName) : null);
+            if (target) {
+                return verificationService.verifyFolderCreated(target, { timeoutMs: 2000 });
+            }
+            return { verified: true };
+        }
     });
     actionKernel.register({
         id: 'folder.delete', name: 'Eliminar carpeta', description: 'Mueve una carpeta a la papelera segura de Jarvis.',
         parameters: { folderName: 'Nombre de la carpeta' }, permission: 'standard',
-        execute: async ({ folderName }) => fileOperationsService.deleteFolder(folderName)
+        execute: async ({ folderName }) => fileOperationsService.deleteFolder(folderName),
+        verifier: async (output, { folderName }) => {
+            if (folderName) {
+                const target = path.join(fileOperationsService.getDesktopPath(), folderName);
+                return verificationService.verifyDeleted(target, { timeoutMs: 2000 });
+            }
+            return { verified: true };
+        }
     });
     actionKernel.register({
         id: 'file.delete', name: 'Mover archivo a papelera segura', description: 'Mueve un archivo a la papelera segura de Jarvis.',
         parameters: { filePath: 'Ruta o nombre del archivo' }, permission: 'standard',
-        execute: async ({ filePath }) => trashService.moveToTrash(filePath)
+        execute: async ({ filePath }) => trashService.moveToTrash(filePath),
+        verifier: async (output, { filePath }) => {
+            if (filePath && filePath !== 'last_screenshot') {
+                return verificationService.verifyDeleted(filePath, { timeoutMs: 2000 });
+            }
+            return { verified: true };
+        }
     });
     actionKernel.register({
         id: 'file.restore', name: 'Restaurar archivo de papelera', description: 'Restaura un archivo previamente eliminado.',
@@ -132,6 +713,357 @@ function registerActions() {
         execute: async ({ topic }) => memoryServiceV6.forgetMemory(topic)
     });
 
+    // --- Coding Agent Autónomo (Ítem 41) ---
+    const { codingAgentService } = require('./developer/codingAgentService');
+    actionKernel.register({
+        id: 'code.autonomous_fix',
+        name: 'Reparar código con Coding Agent',
+        description: 'Mapea el repositorio, localiza archivos relevantes, modifica código, compila, auto-repara errores y genera diff.',
+        parameters: { instruction: 'Instrucción o bug a solucionar', projectPath: 'Ruta al proyecto o repositorio' },
+        permission: 'standard',
+        riskLevel: 'MEDIUM',
+        examples: ['Arreglá el sistema de inventario de mi Unity', 'Repará el error en el controller de mi API'],
+        execute: async ({ instruction, projectPath }) => {
+            const targetPath = projectPath || process.cwd();
+            const result = await codingAgentService.executeAutonomousFix({
+                projectPath: targetPath,
+                instruction
+            });
+            return {
+                ok: result.ok,
+                data: result,
+                message: result.report || result.error
+            };
+        }
+    });
+
+    // --- Integración Git con Gobernanza de Ramas Protegidas (Ítem 42) ---
+    const { gitIntegrationService } = require('./developer/gitIntegrationService');
+    actionKernel.register({
+        id: 'git.status',
+        name: 'Estado de Git',
+        description: 'Consulta el estado detallado del repositorio Git (rama, modificaciones, staged, untracked).',
+        parameters: { projectPath: 'Ruta del repositorio (opcional)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath } = {}) => {
+            const res = gitIntegrationService.getStatus(projectPath);
+            return { ok: res.isGit, data: res, message: res.isGit ? `Rama: ${res.branch}, Cambios: ${res.totalChanges}` : res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.diff',
+        name: 'Diferencias Git',
+        description: 'Muestra las diferencias (diff) del repositorio o de un archivo específico.',
+        parameters: { projectPath: 'Ruta del repo', file: 'Archivo específico (opcional)', staged: 'Ver solo staged' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath, file, staged } = {}) => {
+            const res = gitIntegrationService.getDiff(projectPath, { file, staged });
+            return { ok: res.ok, data: res, message: res.diff };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.safe_branch',
+        name: 'Asegurar Rama Segura',
+        description: 'Garantiza que Jarvis trabaje en una rama segura (jarvis/<slug>) sin tocar ramas protegidas como main o master.',
+        parameters: { projectPath: 'Ruta del repo', taskName: 'Nombre descriptivo de la tarea o fix' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath, taskName } = {}) => {
+            const res = gitIntegrationService.ensureSafeBranch(projectPath, taskName);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.safe_commit',
+        name: 'Commit Seguro con Política',
+        description: 'Realiza un commit en Git validando que la rama actual NO esté protegida y agregando firma de auditoría.',
+        parameters: { projectPath: 'Ruta del repo', message: 'Mensaje de commit', files: 'Archivos específicos (opcional)' },
+        permission: 'standard',
+        riskLevel: 'MEDIUM',
+        execute: async ({ projectPath, message, files } = {}) => {
+            const res = gitIntegrationService.commit(projectPath, message, { files });
+            return { ok: res.ok, data: res, message: res.summary || res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.rollback',
+        name: 'Rollback Git Seguro',
+        description: 'Restaura el árbol de trabajo o revierte el último commit preservando la integridad.',
+        parameters: { projectPath: 'Ruta del repo', mode: 'working_tree o commit' },
+        permission: 'standard',
+        riskLevel: 'MEDIUM',
+        execute: async ({ projectPath, mode } = {}) => {
+            const res = gitIntegrationService.rollback(projectPath, mode);
+            return { ok: res.ok, data: res, message: res.message || res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'git.summary',
+        name: 'Resumen de Cambios Git',
+        description: 'Compara la rama actual de Jarvis contra la base (main) y genera un reporte legible de cambios.',
+        parameters: { projectPath: 'Ruta del repo', baseBranch: 'Rama base (default: main)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath, baseBranch } = {}) => {
+            const res = gitIntegrationService.summarizeWork(projectPath, baseBranch);
+            return { ok: res.ok, data: res, message: res.summary || res.error };
+        }
+    });
+
+    // --- Snapshots Universales antes de Modificar Proyectos (Ítem 43) ---
+    const { snapshotService } = require('./developer/snapshotService');
+    actionKernel.register({
+        id: 'snapshot.create',
+        name: 'Crear Snapshot de Proyecto',
+        description: 'Genera un punto de restauración atómico (Git o Manifiesto) antes de realizar modificaciones en un proyecto o carpeta.',
+        parameters: { projectPath: 'Ruta del proyecto', label: 'Etiqueta descriptiva del snapshot' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath, label } = {}) => {
+            const res = await snapshotService.createSnapshot(projectPath, label);
+            return { ok: true, data: res, message: `Snapshot ${res.id} creado (${res.provider}, ${res.filesCount} archivos).` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'snapshot.restore',
+        name: 'Restaurar Snapshot de Proyecto',
+        description: 'Restaura un snapshot atómico revirtiendo cambios en archivos y limpiando archivos nuevos agregados.',
+        parameters: { snapshotId: 'ID del snapshot a restaurar' },
+        permission: 'standard',
+        riskLevel: 'HIGH',
+        execute: async ({ snapshotId } = {}) => {
+            const res = await snapshotService.restoreSnapshot(snapshotId);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    actionKernel.register({
+        id: 'snapshot.list',
+        name: 'Listar Snapshots',
+        description: 'Lista los snapshots disponibles para un proyecto o carpeta.',
+        parameters: { projectPath: 'Ruta del proyecto (opcional)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ projectPath } = {}) => {
+            const list = snapshotService.listSnapshots(projectPath);
+            return { ok: true, data: list, message: `${list.length} snapshots disponibles.` };
+        }
+    });
+
+    // --- Motor de Plantillas de Documentos y Estilos Guardados (Ítem 44) ---
+    const { documentTemplateService } = require('./developer/documentTemplateService');
+    actionKernel.register({
+        id: 'document.template_create',
+        name: 'Crear Documento desde Plantilla',
+        description: 'Genera un documento Word (.docx) formal utilizando plantillas (universidad, cv, informe_tecnico, monografia, presentacion, trabajo_practico) y estilos guardados.',
+        parameters: { template: 'Nombre de la plantilla', style: 'Estilo visual (opcional)', title: 'Título del documento', data: 'Datos estructurados para la plantilla' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ template, style, title, data = {} } = {}) => {
+            const res = await documentTemplateService.renderDocument({ template, style, data, title });
+            return { ok: res.ok, data: res, message: `Documento generado con plantilla '${res.template}' y estilo '${res.style}' en: ${res.filePath}` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'document.template_list',
+        name: 'Listar Plantillas de Documentos',
+        description: 'Lista todas las plantillas de documentos profesionales disponibles en Jarvis.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const templates = documentTemplateService.listTemplates();
+            return { ok: true, data: templates, message: `${templates.length} plantillas disponibles.` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'document.style_list',
+        name: 'Listar Estilos Guardados',
+        description: 'Lista los estilos de diseño visual (incorporados y personalizados) para documentos.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const styles = documentTemplateService.listStyles();
+            return { ok: true, data: styles, message: `${styles.length} estilos de diseño disponibles.` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'document.style_save',
+        name: 'Guardar Estilo de Documento',
+        description: 'Guarda un nuevo estilo visual personalizado con paleta de colores y tipografía.',
+        parameters: { name: 'Nombre del estilo', styleConfig: 'Configuración visual (font, primaryColor, secondaryColor...)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ name, styleConfig } = {}) => {
+            const saved = documentTemplateService.saveStyle(name, styleConfig);
+            return { ok: true, data: saved, message: `Estilo '${saved.name}' guardado exitosamente.` };
+        }
+    });
+
+    // --- Sistema de Perfiles de Comportamiento (Ítem 45) ---
+    const { behaviorProfileService } = require('./intelligence/behaviorProfileService');
+    actionKernel.register({
+        id: 'profile.switch',
+        name: 'Cambiar Perfil de Comportamiento',
+        description: 'Conmuta el perfil activo (NORMAL, CODING, GAMING, STUDY, HOME) adaptando herramientas, modelos LLM y verbosidad.',
+        parameters: { profileId: 'ID del perfil (NORMAL, CODING, GAMING, STUDY, HOME)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ profileId } = {}) => {
+            const res = behaviorProfileService.switchProfile(profileId);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    actionKernel.register({
+        id: 'profile.current',
+        name: 'Consultar Perfil Activo',
+        description: 'Obtiene la configuración del perfil de comportamiento activo en Jarvis.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const profile = behaviorProfileService.getActiveProfile();
+            return { ok: true, data: profile, message: `Perfil activo: ${profile.name} (${profile.id})` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'profile.list',
+        name: 'Listar Perfiles de Comportamiento',
+        description: 'Lista los perfiles de comportamiento disponibles en Jarvis.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const profiles = behaviorProfileService.listProfiles();
+            return { ok: true, data: profiles, message: `${profiles.length} perfiles disponibles.` };
+        }
+    });
+
+    // --- Contexto de Actividad en Tiempo Real (Ítem 46) ---
+    const { activityContextService } = require('./intelligence/activityContextService');
+    actionKernel.register({
+        id: 'context.current',
+        name: 'Contexto de Actividad Actual',
+        description: 'Obtiene el contexto en tiempo real: aplicación activa, archivo en foco, proyecto, monitor, hora y dispositivos cercanos.',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const ctx = await activityContextService.getCurrentContext();
+            return { ok: true, data: ctx, message: `Activo: ${ctx.app} | Archivo: ${ctx.file || 'Ninguno'} | Proyecto: ${ctx.project || 'Ninguno'}` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'context.resolve_implicit',
+        name: 'Resolver Comando Implícito',
+        description: 'Interpreta y resuelve órdenes con pronombres ("compilalo", "guardalo", "cerralo") según la app y archivo activo.',
+        parameters: { utterance: 'Comando del usuario (e.g. "compilalo", "cerralo")' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ utterance } = {}) => {
+            const res = await activityContextService.resolveImplicitCommand(utterance);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    // --- Clipboard Inteligente Bajo Demanda (Ítem 47) ---
+    const { smartClipboardService } = require('./intelligence/smartClipboardService');
+    actionKernel.register({
+        id: 'clipboard.process',
+        name: 'Procesar Portapapeles Inteligente',
+        description: 'Procesa el portapapeles bajo comando ("arreglame esto", "mandale esto a mamá", "explicame esto", "traducí esto").',
+        parameters: { utterance: 'Comando o instrucción deíctica del usuario', explicitText: 'Texto opcional' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ utterance, explicitText } = {}) => {
+            const res = await smartClipboardService.processClipboardIntent({ utterance, explicitText });
+            return { ok: res.ok, data: res, message: res.message || res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'clipboard.read',
+        name: 'Leer Portapapeles Bajo Demanda',
+        description: 'Lee el contenido actual del portapapeles de Windows de forma segura (sin espionaje pasivo).',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async () => {
+            const text = smartClipboardService.readClipboard();
+            const type = smartClipboardService.classifyContent(text);
+            return { ok: true, data: { text, type }, message: `Portapapeles (${type}): ${text.slice(0, 60)}...` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'clipboard.write',
+        name: 'Escribir en Portapapeles',
+        description: 'Copia un texto en el portapapeles de Windows.',
+        parameters: { text: 'Texto a escribir' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ text } = {}) => {
+            const ok = smartClipboardService.writeClipboard(text);
+            return { ok, message: ok ? 'Copiado al portapapeles.' : 'Error al copiar al portapapeles.' };
+        }
+    });
+
+    // --- Historial de Acciones y Timeline (Ítem 48) ---
+    const { actionTimelineService } = require('./core/actionTimelineService');
+    actionKernel.register({
+        id: 'timeline.query',
+        name: 'Consultar Historial de Acciones',
+        description: 'Responde consultas sobre las acciones recientes de Jarvis (ej. "¿qué hiciste en los últimos 20 minutos?").',
+        parameters: { utterance: 'Consulta temporal del usuario' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ utterance } = {}) => {
+            const res = actionTimelineService.queryTimeline(utterance);
+            return { ok: res.ok, data: res, message: res.message };
+        }
+    });
+
+    actionKernel.register({
+        id: 'timeline.recent',
+        name: 'Listar Línea Temporal',
+        description: 'Obtiene la lista cronológica de las acciones ejecutadas en los últimos minutos.',
+        parameters: { minutes: 'Ventana en minutos (default: 20)' },
+        permission: 'standard',
+        riskLevel: 'LOW',
+        execute: async ({ minutes = 20 } = {}) => {
+            const res = actionTimelineService.getTimeline(Number(minutes));
+            return { ok: true, data: res, message: res.formattedText };
+        }
+    });
+
+    actionKernel.register({
+        id: 'timeline.undo_last',
+        name: 'Deshacer Último Cambio',
+        description: 'Revierte la última acción reversible registrada en la línea temporal (archivos, código, git o sistema).',
+        parameters: {},
+        permission: 'standard',
+        riskLevel: 'MEDIUM',
+        execute: async () => {
+            const res = await actionTimelineService.undoLastAction();
+            return { ok: res.ok, data: res, message: res.message || res.error };
+        }
+    });
+
     // Routines & Explanations
     actionKernel.register({
         id: 'routine.execute', name: 'Ejecutar rutina', description: 'Ejecuta una rutina de sistema configurada.',
@@ -140,22 +1072,119 @@ function registerActions() {
     });
     actionKernel.register({
         id: 'explain.query', name: 'Explicar decisión o historial', description: 'Explica decisiones operativas y muestra historial.',
-        parameters: { query: 'Consulta de explicación' }, permission: 'standard',
+        parameters: { query: 'Consulta de explicación' }, permission: 'standard', riskLevel: 'LOW',
         execute: async ({ query }) => {
             const explanation = await explanationService.explainDecision(query);
-            return { message: explanation };
+            return { ok: true, message: explanation, explanation };
+        }
+    });
+
+    actionKernel.register({
+        id: 'explain.last_decision', name: 'Explicar última decisión', description: 'Retorna la trazabilidad y explicación detallada de la última decisión tomada.',
+        parameters: { tool: 'Filtro opcional por herramienta' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ tool } = {}) => {
+            const dec = explanationService.getLastDecision(tool);
+            if (!dec) return { ok: false, message: 'No hay decisiones registradas recientemente.' };
+            return { ok: true, data: dec, message: dec.userExplanation };
+        }
+    });
+
+    actionKernel.register({
+        id: 'explain.action', name: 'Explicar acción específica', description: 'Consulta la explicación y motivo de una acción específica.',
+        parameters: { action: 'Nombre o filtro de la acción' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ action } = {}) => {
+            const explanation = await explanationService.explainDecision(action);
+            return { ok: true, message: explanation };
+        }
+    });
+
+    // --- Sistema de Objetivos Jerárquicos y Ejecución Autónoma (Ítem 50) ---
+    const goalManager = require('./goals/goalManagerService');
+    actionKernel.register({
+        id: 'goal.plan', name: 'Planificar Objetivo', description: 'Desglosa una meta de alto nivel en un plan de subobjetivos jerárquicos.',
+        parameters: { instruction: 'Meta o instrucción del usuario' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ instruction } = {}) => {
+            const goal = goalManager.planGoalFromInstruction(instruction);
+            return { ok: true, goal, message: `Objetivo planificado con ${goal.subgoals.length} subobjetivos.` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.plan_and_execute', name: 'Planificar y Ejecutar Objetivo', description: 'Planifica y comienza la ejecución autónoma paso a paso de una meta.',
+        parameters: { instruction: 'Meta o instrucción del usuario', maxSteps: 'Número máximo de pasos' }, permission: 'standard', riskLevel: 'MEDIUM',
+        execute: async ({ instruction, maxSteps = 20 } = {}) => {
+            const goal = goalManager.planGoalFromInstruction(instruction);
+            const res = await goalManager.executeGoalStepByStep(goal.id, { maxSteps: Number(maxSteps) });
+            return { ok: res.ok, data: res, message: `Ejecutados ${res.stepsExecuted} pasos para el objetivo "${goal.title}". Progreso: ${res.progress.progressPercentage}%.` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.step', name: 'Avanzar Paso de Objetivo', description: 'Ejecuta el siguiente subobjetivo pendiente de un objetivo activo.',
+        parameters: { goalId: 'ID del objetivo' }, permission: 'standard', riskLevel: 'MEDIUM',
+        execute: async ({ goalId } = {}) => {
+            const res = await goalManager.stepGoal(goalId);
+            return { ok: res.ok, data: res, message: res.message || res.error };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.progress', name: 'Consultar Progreso de Objetivo', description: 'Consulta el estado actual, porcentaje de avance y lista de subobjetivos.',
+        parameters: { goalId: 'ID del objetivo' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ goalId } = {}) => {
+            const prog = goalManager.getGoalProgress(goalId);
+            if (!prog) return { ok: false, message: 'Objetivo no encontrado.' };
+            return { ok: true, data: prog, progress: prog, message: `Objetivo "${prog.title}": ${prog.progressPercentage}% (${prog.completedSteps}/${prog.totalSteps} pasos).` };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.pause', name: 'Pausar Objetivo', description: 'Pausa temporalmente la ejecución autónoma de un objetivo.',
+        parameters: { goalId: 'ID del objetivo' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ goalId } = {}) => {
+            const res = goalManager.pauseGoal(goalId);
+            return { ok: true, data: res, message: 'Objetivo pausado con éxito.' };
+        }
+    });
+
+    actionKernel.register({
+        id: 'goal.resume', name: 'Reanudar Objetivo', description: 'Reanuda la ejecución autónoma de un objetivo pausado.',
+        parameters: { goalId: 'ID del objetivo' }, permission: 'standard', riskLevel: 'LOW',
+        execute: async ({ goalId } = {}) => {
+            const res = goalManager.resumeGoal(goalId);
+            return { ok: true, data: res, message: 'Objetivo reanudado con éxito.' };
         }
     });
 
     actionKernel.register({
         id: 'voice.wake', name: 'Despertar a Jarvis', description: 'Sale del modo descanso y acepta órdenes hasta que el usuario lo apague.',
-        parameters: {}, permission: 'standard', examples: ['Jarvis, prendete'],
-        execute: async () => ({ message: 'Estoy en línea. ¿Qué necesitás?', data: { voiceState: 'awake' }, evidence: { stateChanged: true } })
+        parameters: {}, permission: 'standard', examples: ['Jarvis, prendete', 'Prendete', 'Despertate'],
+        execute: async () => {
+            const statePath = require("./dataPaths").dataPath("local_voice_state.json");
+            let wasAwake = false;
+            try {
+                const cur = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+                if (cur && cur.state === 'awake') wasAwake = true;
+            } catch (_) {}
+            try {
+                fs.writeFileSync(statePath, JSON.stringify({ state: 'awake', updatedAt: Date.now() }, null, 2));
+            } catch (_) {}
+            if (wasAwake) {
+                return { message: 'Ya estoy en línea y escuchando. ¿Qué necesitás?', data: { voiceState: 'awake' }, evidence: { stateChanged: false } };
+            }
+            return { message: 'Estoy en línea. ¿Qué necesitás?', data: { voiceState: 'awake' }, evidence: { stateChanged: true } };
+        }
     });
     actionKernel.register({
         id: 'voice.sleep', name: 'Poner a Jarvis en descanso', description: 'Ignora órdenes normales y conserva solamente la escucha de la frase de activación.',
-        parameters: {}, permission: 'standard', examples: ['Jarvis, apagate'],
-        execute: async () => ({ message: 'Entendido, entrando en modo espera.', data: { voiceState: 'dormant' }, evidence: { stateChanged: true } })
+        parameters: {}, permission: 'standard', examples: ['Jarvis, apagate', 'Apagate', 'Dormite', 'Modo descanso'],
+        execute: async () => {
+            const statePath = require("./dataPaths").dataPath("local_voice_state.json");
+            try {
+                fs.writeFileSync(statePath, JSON.stringify({ state: 'dormant', updatedAt: Date.now() }, null, 2));
+            } catch (_) {}
+            return { message: 'Entendido, entrando en modo espera.', data: { voiceState: 'dormant' }, evidence: { stateChanged: true } };
+        }
     });
 
     actionKernel.register({
@@ -255,7 +1284,10 @@ function registerActions() {
         dependencies: [{ id: 'broadlink', label: 'BroadLink configurado', check: async () => ({ available: await tvService.isAvailable(), detail: 'Debe estar en la misma red que la PC.' }) }],
         examples: ['Prendé la tele y abrí Netflix', 'Buscá The Walking Dead', 'Bajá dos veces'],
         execute: async ({ intent }, context) => {
+            const learning=require('./tvLearningService');
+            if(intent.title && learning.get().netflix?.search?.length) return learning.execute({app:'netflix',title:intent.title,open:intent.action==='netflix',powerOn:intent.powerOn===true},context.onTvProgress);
             const message = await context.executeTvIntent(intent, context.onTvProgress);
+            learning.setActiveApp('netflix');
             return { message, evidence: { intent: intent.action, deviceAccepted: true } };
         }
     });
@@ -265,22 +1297,29 @@ function registerActions() {
         description: 'Abre una aplicación detectada o un sitio conocido y comprueba si el lanzador aceptó la orden.',
         parameters: { appName: 'Aplicación o sitio' }, permission: 'desktop-control',
         examples: ['Abrí Spotify', 'Abrí Netflix en la computadora'],
+        retry: false,
         execute: async ({ appName }) => {
-            const success = await systemService.openApp(appName, modeService.getActiveMode().id);
+            const success = await systemService.openApp(appName, modeService.getActiveMode()?.id || 'productividad');
             return success
-                ? { message: `Abrí ${appName} en la computadora.`, evidence: { launcherAccepted: true, appName } }
+                ? { message: `Envié la orden de abrir ${appName}.`, evidence: { launcherAccepted: true, appName } }
                 : { ok: false, message: `No pude abrir ${appName}.`, evidence: { launcherAccepted: false, appName } };
+        },
+        verifier: async (output, { appName }) => {
+            return {
+                verified: output?.evidence?.launcherAccepted === true,
+                evidence: { launcherAccepted: output?.evidence?.launcherAccepted === true, appName, scope: 'launcher' }
+            };
         }
     });
 
     actionKernel.register({
         id: 'system.media-search', name: 'Buscar contenido multimedia en la notebook',
         description: 'Abre directamente resultados de YouTube o Netflix en la computadora, sin pasar por el razonamiento general.',
-        parameters: { platform: 'youtube o netflix', query: 'Canal, película, serie o video' }, permission: 'desktop-control',
+        parameters: { platform: 'youtube, netflix o stremio', query: 'Canal, película, serie o video' }, permission: 'desktop-control',
         examples: ['Buscá el canal de Kurzgesagt en YouTube', 'Buscá The Walking Dead en Netflix en la compu'],
         execute: async ({ platform, query }) => {
             const success = await systemService.openMediaSearch(platform, query);
-            const label = platform === 'youtube' ? 'YouTube' : 'Netflix';
+            const label = { youtube: 'YouTube', netflix: 'Netflix', stremio: 'Stremio' }[platform] || platform;
             return success
                 ? { message: `Abrí la búsqueda de ${query} en ${label} desde la computadora.`, evidence: { launcherAccepted: true, platform, query } }
                 : { ok: false, message: `No pude abrir la búsqueda en ${label}.`, evidence: { launcherAccepted: false, platform, query } };
@@ -288,19 +1327,27 @@ function registerActions() {
     });
 
     actionKernel.register({
+        id: 'information.weather', name: 'Consultar clima',
+        description: 'Consulta el clima actual y el pronóstico de hoy o mañana con una fuente meteorológica pública.',
+        parameters: { city: 'Ciudad opcional', tomorrow: 'Si se consulta el pronóstico de mañana' },
+        permission: 'standard', examples: ['¿Qué clima hace en Corrientes?', '¿Va a llover mañana?'],
+        execute: params => require('./weatherService').getWeather(params)
+    });
+
+    actionKernel.register({
+        id: 'information.weather-location.set', name: 'Cambiar ubicación del clima',
+        description: 'Guarda la ciudad indicada para las próximas consultas del clima.',
+        parameters: { city: 'Ciudad o provincia donde se encuentra el usuario' },
+        permission: 'standard', riskLevel: 'LOW', examples: ['Me encuentro en Misiones', 'Estoy en Posadas', 'Cambiá mi ubicación del clima a Corrientes'],
+        execute: params => require('./weatherService').setPreferredLocation(params)
+    });
+
+    actionKernel.register({
         id: 'document.create-info', name: 'Crear documento informativo en el Escritorio',
-        description: 'Genera localmente un informe de Word cuando el usuario pide información sobre un tema.',
-        parameters: { topic: 'Tema solicitado' }, permission: 'desktop-control',
-        dependencies: [{ id: 'ollama', label: 'Motor local Ollama', check: () => true }],
-        examples: ['Dame información sobre computación cuántica', 'Buscame info de Alan Turing'],
-        execute: async ({ topic }) => {
-            const result = await informationDocumentService.createOnDesktop(topic);
-            return {
-                message: `Preparé la información sobre ${topic} y guardé el documento en tu Escritorio como ${require('path').basename(result.filePath)}.`,
-                data: { filePath: result.filePath },
-                evidence: { fileCreated: true, filePath: result.filePath }
-            };
-        }
+        description: 'Busca fuentes web y guarda su información en un documento.',
+        parameters: { topic: 'Tema solicitado', directory: 'Destino opcional', fileName: 'Nombre opcional', format: 'docx, pdf o txt' }, permission: 'desktop-control',
+        examples: ['Creame un informe sobre computación cuántica'],
+        execute: params => require('./researchDocumentService').create({...params, open:true})
     });
 
     actionKernel.register({
@@ -318,14 +1365,42 @@ function registerActions() {
         id: 'download.url', name: 'Descargar un enlace',
         description: 'Descarga localmente el enlace explícito entregado por el usuario.',
         parameters: { url: 'Enlace HTTP o HTTPS', audioOnly: 'Descargar solamente audio' },
-        permission: 'desktop-control', examples: ['Descargame esto https://…', 'Bajá el audio de este enlace https://…'],
+        permission: 'desktop-control', examples: ['Descargame esto https://...', 'Bajá el audio de este enlace https://...'],
         execute: async ({ url, audioOnly = false }) => {
             if (!/^https?:\/\/\S+$/i.test(String(url || ''))) throw new Error('Necesito un enlace HTTP o HTTPS válido.');
-            const directory = await downloadService.downloadMedia(url, Boolean(audioOnly));
+            const downloadService = require('./downloadService');
+            const info = await downloadService.prepareDownload(url, Boolean(audioOnly));
+
+            const downloadPromise = downloadService.downloadMedia(url, Boolean(audioOnly));
+
+            if (info.isBackgroundEligible) {
+                downloadPromise.catch(err => {
+                    console.error('[DownloadService] Error en descarga en segundo plano:', err.message);
+                });
+                return {
+                    message: `Inicié la descarga de "${info.title}" (${info.sizeFormatted}) en segundo plano. Te avisaré ni bien se complete.`,
+                    data: { directory: info.directory, title: info.title },
+                    evidence: { downloadStarted: true, directory: info.directory, url, title: info.title }
+                };
+            }
+
+            const directory = await downloadPromise;
             return {
-                message: `Terminé la descarga y la guardé en ${directory}.`,
-                data: { directory }, evidence: { downloadCompleted: true, directory, url }
+                message: `Terminé la descarga de "${info.title}" y la guardé en ${directory}.`,
+                data: { directory, title: info.title },
+                evidence: { downloadCompleted: true, directory, url, title: info.title }
             };
+        }
+    });
+
+    actionKernel.register({
+        id: 'download.status', name: 'Consultar estado y progreso de descarga',
+        description: 'Informa el porcentaje, velocidad y tamaño descargado de la tarea activa.',
+        parameters: {}, permission: 'standard',
+        examples: ['Cómo va la descarga', 'Cuánto porcentaje ya descargó', 'Estado de la descarga', 'Cuánto falta para que termine'],
+        execute: async () => {
+            const downloadService = require('./downloadService');
+            return downloadService.getDownloadStatus();
         }
     });
 
@@ -377,7 +1452,8 @@ function registerActions() {
                 : '';
             const screenContext = observerService.getScreenContext();
             const combined = [memoryContext, preferenceContext, screenContext].filter(Boolean).join('\n\n');
-            const message = await aiService.getAIResponse(text, modeService.getActiveMode(), combined || null, context.inpaintingMask);
+            const message = await require('./aiService').getAIResponse(text, modeService.getActiveMode(), combined || null, context.inpaintingMask, { structuredActions: true });
+            if (message && typeof message === 'object') return message;
             // El texto sí fue producido, pero aiService todavía contiene herramientas
             // heredadas que no devuelven evidencia estructurada. Nunca las marcamos
             // como ejecución verificada hasta que migren a una acción propia.
@@ -407,20 +1483,30 @@ function parsePreference(text) {
 
 function parseDesktopMediaSearch(text) {
     const clean = normalize(text);
+    const wantsTv = /\b(tele|television|tv)\b/.test(clean);
+    if (wantsTv) return null;
+
+    let platform = '';
+    if (/\byoutube\b/.test(clean)) platform = 'youtube';
+    if (/\bstremio\b/.test(clean)) platform = 'stremio';
+    if (/\bnetflix\b/.test(clean) && /\b(compu|computadora|pc|notebook|laptop)\b/.test(clean)) platform = 'netflix';
+    if (!platform) {
+        if (/\b(pelicula|serie|temporada|capitulo|anime|film)\b/.test(clean)) {
+            platform = 'stremio';
+        } else {
+            return null;
+        }
+    }
+
     const wantsSearch = /\b(busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar)\b/.test(clean);
     if (!wantsSearch) return null;
-    const wantsTv = /\b(tele|television|tv)\b/.test(clean);
-    const wantsComputer = /\b(compu|computadora|pc|notebook|laptop)\b/.test(clean);
-    let platform = '';
-    if (/\byoutube\b/.test(clean) && !wantsTv) platform = 'youtube';
-    if (/\bnetflix\b/.test(clean) && wantsComputer && !wantsTv) platform = 'netflix';
-    if (!platform) return null;
 
     let query = clean
         .replace(/^.*?\b(?:busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar)\b\s*/, '')
         .replace(/\b(?:en|desde)\s+(?:mi\s+|la\s+)?(?:compu|computadora|pc|notebook|laptop)\b.*$/, '')
-        .replace(/\b(?:en|por)\s+(?:youtube|netflix)\b/g, '')
-        .replace(/\b(?:youtube|netflix)\b/g, '')
+        .replace(/^(?:por|en)\s+(?:youtube|stremio)\s+/i, '')
+        .replace(/\b(?:en|por)\s+(?:youtube|netflix|stremio)\b/g, '')
+        .replace(/\b(?:youtube|netflix|stremio)\b/g, '')
         .replace(/^\s*(?:el\s+canal|canal|la\s+pelicula|la\s+serie|pelicula|serie|video)\s+(?:de\s+)?/, '')
         .replace(/\s+/g, ' ')
         .trim();
@@ -430,6 +1516,7 @@ function parseDesktopMediaSearch(text) {
 
 function parseInformationDocument(text) {
     const clean = String(text || '').trim();
+    if (!/\b(?:documento|informe|word|resumen|reporte|docx|guard[aá]|guardalo|guard[aá]melo)\b/i.test(clean)) return null;
     
     // Formas variadas: "quiero buscar información de...", "haceme un documento de...", "crear informe sobre...", etc.
     const match = clean.match(/(?:dame|busc(?:a|ame)|consegui(?:me)?|investiga|quiero\s+buscar|necesito)\s+(?:algo\s+de\s+)?(?:informaci[oó]n|info|datos)(?:\s+(?:detallada|completa|completos))?\s+(?:sobre|de|acerca\s+de)\s+(.+)/i)
@@ -461,22 +1548,138 @@ function parseDollar(text) {
     return { type: financeService.requestedDollarType(clean) };
 }
 
+function parseImageGeneration(text) {
+    const raw = String(text || '').trim();
+    const clean = normalize(raw);
+    const hasCreationVerb = /\b(?:crea|crear|creame|crees|genera|generar|generame|generes|hace|hacer|haceme|hagas|dibuja|dibujar|dibujame|dibujarme|dibujes|disena|disenar|disename|disenes|pinta|pintar|pintame|pintes)\b/.test(clean)
+        || /\b(?:quiero|necesito|podrias|podes)\b.*\b(?:una|un)\s+(?:imagen|foto|fotografia|dibujo|ilustracion|render|pintura)\b/.test(clean);
+    const hasImageTarget = /\b(?:imagen|foto|fotografia|dibujo|ilustracion|render|pintura|arte visual)\b/.test(clean);
+    if (!hasCreationVerb || !hasImageTarget) return null;
+
+    // "Creá una carpeta de imágenes" es una operación de archivos, no una generación visual.
+    if (/\b(?:carpeta|directorio)\b/.test(clean)) return null;
+    if (/\b(?:edita|editar|modifica|modificar|retoca|retocar)\b/.test(clean)) return null;
+
+    const prompt = raw
+        .replace(/^(?:quiero|necesito|podr[ií]as|pod[eé]s)\s+(?:que\s+)?(?:me\s+)?/i, '')
+        .replace(/^(?:cr[eé]ame|cre[aá]|crear|crees|generame|gener[aá]|generar|generes|haceme|hac[eé]|hacer|hagas|dibujarme|dibujame|dibuj[aá]|dibujar|dibujes|diseñame|diseñ[aá]|diseñar|diseñes|pintame|pint[aá]|pintar|pintes)\s*/i, '')
+        .trim();
+    return { prompt: prompt || raw };
+}
+
 async function resolve(text) {
     registerActions();
-    let clean = String(text || '').trim();
+    let clean = String(text || '').trim().replace(/^[¿¡]+/, '').replace(/^(?:(?:hola|che)\s+)?jarvis[,\s]+/i, '').replace(/^por\s+favor[,\s]+/i, '');
     // Normalización fonética para términos comúnmente malinterpretados por STT
     clean = clean
+        .replace(/^(?:me\s+)?(?:puedes|pod[eé]s|podr[ií]as)\s+(?:por\s+favor\s+)?/i, '')
+        .replace(/^(?:quiero|necesito)\s+que\s+(?:me\s+)?(?:crees|hagas|generes|redactes)\s+/i, 'creame ')
+        .replace(/\bcr[eé]ame\b/gi, 'creame')
+        .replace(/\bb[uú]scame\b/gi, 'buscame')
+        .replace(/\b(?:dpcumento|docuemnto|documetno|documeno|ducumento)\b/gi, 'documento')
         .replace(/\b(?:un\s+)?(?:tequi\s*te|tequiste|tequi|te\s+que\s+te|tequis|tx\s*t|t\s+x\s+t)\b/gi, 'txt')
-        .replace(/\b(crear|creame|crea|hacer|haceme|hace|generar|genera)\s+(?:un\s+)?tequila\b/gi, '$1 un txt');
+        .replace(/\b(crear|creame|crea|hacer|haceme|hace|generar|genera)\s+(?:un\s+)?tequila\b/gi, '$1 un txt')
+        .replace(/\bmini\s+misa\b/gi, 'minimiza')
+        .replace(/\bminimisa\b/gi, 'minimiza')
+        .replace(/\bmaxi\s+misa\b/gi, 'maximiza')
+        .replace(/\bmaximisa\b/gi, 'maximiza');
     const lower = normalize(clean);
 
-    // 1. Wake & Sleep
-    if (/^jarvis\s+(?:prendete|despertate|reactivate)$/.test(lower)) return { id: 'voice.wake', params: {} };
-    if (/^jarvis\s+(?:apagate|dormite|modo descanso|entra en modo descanso)$/.test(lower)) return { id: 'voice.sleep', params: {} };
+    const weatherLocation = require('./weatherService').parseLocationUpdate(clean);
+    if (weatherLocation) return { id: 'information.weather-location.set', params: weatherLocation };
+    const reminder = require('./agenda/reminderParser').parse(clean.replace(/^(?:hola |che )?jarvis[, ]+/i, ''));
+    if (reminder) return reminder;
+    const imageGeneration = parseImageGeneration(clean);
+    if (imageGeneration) return { id: 'image.generate', params: imageGeneration };
+    const weatherRequest = require('./weatherService').parseRequest(clean);
+    if (weatherRequest) return { id: 'information.weather', params: weatherRequest };
+    const placesRequest = require('./placesService').parseRequest(clean);
+    if (placesRequest) return { id: 'places.search', params: placesRequest };
+    // Explicit media target takes precedence over active browser/TV context.
+    if (/\b(?:stremio|pelicula|serie|anime|film)\b/.test(lower)) {
+        const media = parseDesktopMediaSearch(clean);
+        if (media) return { id: 'system.media-search', params: media };
+    }
+    const voiceBrowser=require('./browser/voiceNavigationService');
+    const browserIntent=require('./ai/browserVoiceIntentParser').parse(clean,{active:voiceBrowser.isActive(),tv:tvVoiceService.isSessionActive(),platform:voiceBrowser.platform()});
+    if(browserIntent)return browserIntent;
+    const catalogIntent = require('./ai/catalogIntentParser').parse(clean, actionKernel.catalog());
+    if (catalogIntent) return catalogIntent;
+
+    const tvRequested = /\b(tele|television|tv)\b/.test(lower);
+    const pcRequested = /\b(compu|computadora|pc|navegador)\b/.test(lower);
+    if (/^(?:prende|prender|encende|encender|apaga|apagar)\s+(?:la\s+)?(?:tele|television|tv)$/.test(lower)) return {id:'tv.power-signal',params:{}};
+    if (!pcRequested && (tvRequested || tvVoiceService.isSessionActive())) {
+        const write = clean.match(/^(?:escrib[ií](?:me)?|escribe|escribir|tipe[aá])\s+(.+)$/i);
+        if(write)return {id:'tv.learned-app',params:{app:/youtube/i.test(clean)?'youtube':/netflix/i.test(clean)?'netflix':require('./tvLearningService').getActiveApp(),title:write[1].replace(/\s+en\s+(?:la\s+)?(?:tele|tv|netflix|youtube)$/i,''),open:false,writeOnly:true}};
+        if (tvVoiceService.isSessionActive() && /^(?:busca|buscame|pone|poneme|reproduci)\s+/.test(lower) && !/\b(informacion|archivo|documento|youtube|netflix|spotify)\b/.test(lower)) {
+            const app=require('./tvLearningService').getActiveApp();
+            if(app==='youtube')return {id:'tv.learned-app',params:{app,title:clean.replace(/^\S+\s+/,''),open:false}};
+            const intent=tvVoiceService.parseTvIntent(clean);
+            if(intent)return {id:'tv.control',params:{intent}};
+        }
+        if (/\byoutube\b/.test(lower) && /^(?:abri|abrir|abre|pone|poneme|busca|buscame|reproduci|prende|encende)/.test(lower)) {
+            const title=clean.match(/^(?:busc[aá](?:me)?|pon[eé](?:me)?|reproduc[ií])\s+(.+?)\s+en\s+youtube/i)?.[1] || '';
+            return {id:'tv.learned-app',params:{app:'youtube',title,open:true,powerOn:/^(?:prende|encende).*?(?:tele|tv)/.test(lower)}};
+        }
+    }
+    const researchIntent = require('./ai/researchIntentParser').parse(clean);
+    if (researchIntent) return researchIntent;
+    const fileIntent = require('./ai/fileIntentParser').parse(clean);
+    if (fileIntent) return fileIntent;
+    // These intents must precede generic audio, deletion and application rules.
+    const earlyDownload = parseDownload(clean);
+    if (earlyDownload) return { id: 'download.url', params: earlyDownload };
+
+    const directOpen = clean.match(/^(?:(?:hola|che)\s+)?(?:jarvis[, ]+)?(?:abrir|abr[ií](?:me)?|abre|abra|abrirme)\s+(.+)$/i);
+    if (directOpen && !/\b(?:netflix|youtube|pesta[ñn]a)\b/i.test(directOpen[1])) {
+        const command = systemService.handleSystemCommand(clean);
+        if (command.isSystemCommand) return { id: 'system.open', params: { appName: command.appName } };
+    }
+
+    // 1. Wake & Sleep (ignorar si es sobre tele, luces o apps externas)
+    const isDeviceTarget = /\b(?:tele|television|tv|pantalla|monitor|pc|computadora|luz|luces|aire)\b/i.test(lower);
+    if (!isDeviceTarget) {
+        const words = lower.split(/\s+/).filter(Boolean);
+        const hasActionIntent = /\b(?:abre|abra|abri|abrir|carpeta|busca|buscar|pone|pon|reproduce|reproducir|crea|crear|borra|borrar|escribe|escribir|jugar|juego|descarga|descargas|watsap|wasap|whatsapp)\b/i.test(lower);
+        const isSleepKeyword = /\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(lower);
+        const isNegated = /\bno\s+(?:te\s+)?apagu/i.test(lower);
+        if (!hasActionIntent && words.length <= 5 && ((isSleepKeyword && !isNegated && /^(?:apagate|dormite|duermete|a dormir|a descansar|modo descanso|modo reposo|silenciate|desactivate)(?: jarvis)?$/.test(lower))
+            || /^(?:buenas\s+noches(?:\s+jarvis)?|hasta\s+luego(?:\s+jarvis)?|chau\s+jarvis|adios\s+jarvis)$/i.test(lower))) {
+            return { id: 'voice.sleep', params: {} };
+        }
+        if (/^(?:prendete|encendete|desperta(?:te)?|despierta|despiertate|reactivate|activate|arriba|levantate)(?: jarvis)?$/i.test(lower)
+            || /^(?:hola\s+jarvis|buen\s+dia\s+jarvis|buenas\s+jarvis|hey\s+jarvis|che\s+jarvis|ok\s+jarvis|jarvis)$/i.test(lower)) {
+            return { id: 'voice.wake', params: {} };
+        }
+    }
 
     // 2. Parada de Emergencia (Voz)
     if (/\b(?:detener todo|para todo|parar todo|abortar|emergencia|cancela todo|cancelar todo)\b/i.test(lower)) {
         return { id: 'emergency.stop', params: {} };
+    }
+
+    // 2.5 Gestión y Cancelación de Tareas (Ítem 25)
+    if (/\b(?:cancel(?:a|ar|ame)|deten(?:er|e)|fren(?:a|ar))\s+(?:la\s+)?(?:descarga|bajada)\b/i.test(lower)) {
+        return { id: 'task.cancel', params: { target: 'download' } };
+    }
+    if (/\b(?:cancel(?:a|ar|ame)|deten(?:er|e)|fren(?:a|ar))\s+(?:la\s+)?(?:instalacion|tarea|accion|proceso|busqueda|investigacion)\b/i.test(lower)) {
+        return { id: 'task.cancel', params: { target: 'task' } };
+    }
+    if (/^(?:(?:jarvis\s+)?(?:cancel(?:a|ar|ame)|fren(?:a|ar))\s*)$/i.test(lower) || /^(?:cancel[aá]|cancelar|cancela\s+eso|cancela\s+la\s+orden)$/i.test(lower)) {
+        return { id: 'task.cancel', params: { target: null } };
+    }
+    if (/\b(?:paus(?:a|ar|ame)|pon\s+en\s+pausa)\s+(?:la\s+)?(?:descarga|tarea|proceso)\b/i.test(lower) || /^(?:paus[aá]|pausar)$/i.test(lower)) {
+        return { id: 'task.pause', params: { target: null } };
+    }
+    if (/\b(?:reanud(?:a|ar|ame)|continu(?:a|ar|ame)|segu[ií]|seguir)\s+(?:la\s+)?(?:descarga|tarea|proceso)\b/i.test(lower) || /^(?:reanud[aá]|reanudar|continuar)$/i.test(lower)) {
+        return { id: 'task.resume', params: { target: null } };
+    }
+    if (/\b(?:qu[eé]\s+tareas\s+(?:hay|est[aá]n)\s+activas|listar\s+tareas|tareas\s+activas)\b/i.test(lower)) {
+        return { id: 'task.list', params: {} };
+    }
+    if (/\b(?:como\s+va|cuanto\s+(?:va|falta|porcentaje)|estado|progreso)\s+(?:de\s+la\s+)?(?:descarga|bajada)\b/i.test(lower) || /\b(?:cuanto\s+descargo|porcentaje\s+de\s+(?:la\s+)?descarga)\b/i.test(lower)) {
+        return { id: 'download.status', params: {} };
     }
 
     // 3. Deshacer Global (Undo)
@@ -501,7 +1704,7 @@ async function resolve(text) {
     }
 
     // 6. Explicabilidad e Historial
-    if (/\b(?:qu[eé]\s+hiciste|ultimas\s+acciones|por\s+qu[eé]\s+me\s+preguntaste|explicame)\b/i.test(lower)) {
+    if (/\b(?:qu[eé]\s+hiciste|ultimas\s+acciones|por\s+qu[eé]\s+me\s+preguntaste|explicame\s+(?:tu\s+)?(?:ultima\s+)?(?:accion|decision))\b/i.test(lower)) {
         return { id: 'explain.query', params: { query: clean } };
     }
 
@@ -533,18 +1736,25 @@ async function resolve(text) {
     }
 
     // 7.2 Crear carpeta sola
-    const createFolderMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|gener[aá]|generar)\s+(?:una\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|que\s+se\s+llame\s+|titulada|de\s+nombre\s+|de\s+)?\s*([a-zA-Z0-9_\-áéíóúÁÉÍÓÚñÑ ]+)$/i);
+    const createFolderMatch = clean.match(/^(?:cre[aá]|creame|crear|hac[eé]|haceme|hacer|gener[aá]|generar)\s+(?:una\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|que\s+se\s+llame\s+|que\s+diga\s+|titulada|de\s+nombre\s+|de\s+)?\s*([a-zA-Z0-9_\-áéíóúÁÉÍÓÚñÑ ]+)$/i);
     if (createFolderMatch && createFolderMatch[1]) {
-        let folderName = createFolderMatch[1].trim().replace(/^de\s+/i, '').replace(/[.!?]+$/, '').trim();
+        let folderName = createFolderMatch[1].trim()
+            .replace(/^(?:llamada|que\s+se\s+llame|que\s+diga|titulada|de\s+nombre|nombre|de)\s+/i, '')
+            .replace(/^de\s+/i, '')
+            .replace(/[.!?]+$/, '')
+            .trim();
         if (folderName) {
             return { id: 'folder.create', params: { folderName } };
         }
     }
 
     // 7.3 Eliminar carpeta
-    const delFolderMatch = lower.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:la\s+|esta\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|de\s+nombre\s+|titulada|de\s+)?\s*([a-zA-Z0-9_\-\.áéíóúñ ]+)$/i);
+    const delFolderMatch = clean.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:la\s+|esta\s+)?carpeta\s*(?:llamada|con\s+(?:el\s+)?nombre\s+(?:de\s+)?|de\s+nombre\s+|que\s+se\s+llame\s+|que\s+diga\s+|titulada|de\s+)?\s*([a-zA-Z0-9_\-\.áéíóúÁÉÍÓÚñÑ ]+)$/i);
     if (delFolderMatch && delFolderMatch[1]) {
-        let folderName = delFolderMatch[1].trim().replace(/^de\s+/i, '').replace(/[.!?]+$/, '').trim();
+        let folderName = delFolderMatch[1].trim()
+            .replace(/^(?:llamada|que\s+se\s+llame|que\s+diga|titulada|de\s+nombre|nombre|de)\s+/i, '')
+            .replace(/[.!?]+$/, '')
+            .trim();
         if (folderName) {
             return { id: 'folder.delete', params: { folderName } };
         }
@@ -603,7 +1813,7 @@ async function resolve(text) {
     }
 
     // 7.8 Borrado de archivos generales
-    const delFileMatch = lower.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:el\s+archivo\s+|la\s+foto\s+|la\s+imagen\s+|el\s+documento\s+|el\s+|la\s+)?([a-zA-Z0-9_\-\.áéíóúñ ]+?)(?:\s+de\s+mi\s+escritorio|\s+del\s+escritorio)?$/i);
+    const delFileMatch = clean.match(/^(?:borr(?:ar|[aá]|ame)|elimin(?:ar|[aá]|ame)|sac(?:ar|[aá]|ame)|quit(?:ar|[aá]|ame)|mand(?:ar|[aá]|ame)\s+a\s+la\s+papelera)\s+(?:el\s+archivo\s+|la\s+foto\s+|la\s+imagen\s+|el\s+documento\s+|el\s+|la\s+)?([a-zA-Z0-9_\-\.áéíóúÁÉÍÓÚñÑ ]+?)(?:\s+de\s+mi\s+escritorio|\s+del\s+escritorio)?$/i);
     if (delFileMatch && delFileMatch[1]) {
         let target = delFileMatch[1].trim();
         if (target) {
@@ -612,7 +1822,7 @@ async function resolve(text) {
     }
 
     // 7.9 Restaurar archivos
-    const restoreFileMatch = lower.match(/^(?:recuper(?:ar|[aá]|ame)|restaur(?:ar|[aá]|ame))\s+(?:el\s+archivo\s+|la\s+carpeta\s+)?([a-zA-Z0-9_\-\.áéíóúñ ]+?)(?:\s+de\s+la\s+papelera)?$/i);
+    const restoreFileMatch = clean.match(/^(?:recuper(?:ar|[aá]|ame)|restaur(?:ar|[aá]|ame))\s+(?:el\s+archivo\s+|la\s+carpeta\s+)?([a-zA-Z0-9_\-\.áéíóúÁÉÍÓÚñÑ ]+?)(?:\s+de\s+la\s+papelera)?$/i);
     if (restoreFileMatch && restoreFileMatch[1]) {
         return { id: 'file.restore', params: { identifier: restoreFileMatch[1].trim() } };
     }
@@ -649,8 +1859,6 @@ async function resolve(text) {
         if (tvIntent.action === 'calibrate_volume') return { id: 'tv.calibrate-volume', params: { level: tvIntent.level } };
         if (tvIntent.action === 'learn_button') return { id: 'tv.learn-button', params: { button: tvIntent.button } };
         if (tvIntent.action === 'toggle_mute') return { id: 'tv.toggle-mute', params: {} };
-        if (tvIntent.action === 'enter_netflix') return { id: 'tv.enter-netflix', params: {} };
-        if (tvIntent.action === 'open_search') return { id: 'tv.open-search', params: {} };
 
         if (tvIntent.action === 'open_pc') return { id: 'system.open', params: { appName: 'Netflix' } };
         const broadLinkAvailable = await tvService.isAvailable();
@@ -659,16 +1867,15 @@ async function resolve(text) {
             if (tvIntent.title) {
                 return { id: 'system.media-search', params: { platform: 'netflix', query: tvIntent.title } };
             }
-            if (['choose_device', 'netflix', 'continue_watching', 'search'].includes(tvIntent.action)) {
+            if (['choose_device', 'netflix', 'continue_watching', 'search', 'enter_netflix', 'open_search'].includes(tvIntent.action)) {
                 return { id: 'system.open', params: { appName: 'Netflix' } };
             }
         }
+        // Power is a toggle: only send it when the user explicitly requests it.
+        if (tvIntent.action === 'enter_netflix') return { id: 'tv.enter-netflix', params: {} };
+        if (tvIntent.action === 'open_search') return { id: 'tv.open-search', params: {} };
         return { id: 'tv.control', params: { intent: tvIntent } };
     }
-    if (tvVoiceService.isSessionActive() && !tvVoiceService.switchesAwayFromTv(clean)) {
-        return { id: 'tv.control', params: { intent: { action: 'clarify' } } };
-    }
-
     if (/\b(activar|activa|prende|encende)\b.*\b(observador|observacion)\b/.test(lower)) return { id: 'observer.set', params: { enabled: true } };
     if (/\b(desactivar|desactiva|apaga)\b.*\b(observador|observacion)\b/.test(lower)) return { id: 'observer.set', params: { enabled: false } };
     const mode = lower.match(/activar\s+(?:el\s+)?modo\s+(.+)/);
@@ -681,21 +1888,102 @@ async function resolve(text) {
     const learned = voiceLearningService.resolveVerifiedPhrase(clean);
     if (learned) return learned;
 
+    if(voiceBrowser.isActive()){
+        try {const interpreted=await voiceBrowser.interpret(clean);if(interpreted)return interpreted;}
+        catch(error){return {id:'browser.voice',params:{command:'clarify',question:'La interpretación de navegación tardó demasiado o falló. Podés repetir el pedido; no ejecuté una selección.'}};}
+    }
     const refs = memoryService.resolveReferences(clean);
     return { id: 'assistant.respond', params: { text: clean, referenceContext: refs.context || [] } };
 }
 
+const executionGate = new (require('./core/commandGate'))();
+const confirmsPendingAction = text => /^(?:si|si confirmo|confirmo|autorizo|si autorizo|dale|adelante|hacelo|hazlo|si hacelo|si hazlo|si por favor|podes hacerlo|si podes hacerlo|podes hacer eso|si podes hacer eso|hace eso|si podes|si dale)(?: jarvis)?$/.test(text);
+const cancelsPendingAction = text => /^(?:no|no confirmo|no cancela(?: eso)?|cancelar|cancela|cancela eso|no lo hagas|dejalo)(?: jarvis)?$/.test(text);
+
+async function confirm(token, context = {}, options = {}) {
+    const result = await actionKernel.confirm(token, context, options);
+    if (pendingVoiceConfirmation?.result.confirmationToken === token && result.status !== 'pin_verification_failed') {
+        pendingVoiceConfirmation = null;
+    }
+    return result;
+}
+
+function cancelConfirmation(token) {
+    if (pendingVoiceConfirmation?.result.confirmationToken === token) pendingVoiceConfirmation = null;
+    return actionKernel.cancelConfirmation(token);
+}
+
 async function process(text, context = {}) {
+    const reply = normalize(text).replace(/[,.]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^jarvis +/, '');
+    const pending = pendingVoiceConfirmation;
+    if (pending && Date.now() >= pending.expiresAt) cancelConfirmation(pending.result.confirmationToken);
+    if (pending && Date.now() < pending.expiresAt && confirmsPendingAction(reply)) {
+        if (['awaiting_pin_confirmation', 'pin_verification_failed'].includes(pending.result.status)) {
+            return { ...pending.result, message: 'Entendido. Abrí el panel de autorización e introducí el PIN para completar esta acción.' };
+        }
+        return { ...await confirm(pending.result.confirmationToken, context), confirmationResolved: true };
+    }
+    if (pending && Date.now() < pending.expiresAt && cancelsPendingAction(reply)) {
+        cancelConfirmation(pending.result.confirmationToken);
+        return { ok: true, status: 'completed', verified: true, actionId: pending.result.actionId, confirmationResolved: true, message: 'Cancelé la acción pendiente.' };
+    }
     registerActions();
-    const request = await resolve(text);
-    memoryService.addTurn('user', text, { actionId: request.id });
-    const result = await actionKernel.execute(request.id, request.params, context);
+    const operationMetricsService = require('./diagnostics/operationMetricsService');
+    const trace = operationMetricsService.startTrace('turn', { text });
+
+    let request;
+    try {
+        request = await trace.timeStage('intent_detection', async () => resolve(text));
+    } catch (err) {
+        trace.finish({ status: 'FAILED', error: err });
+        throw err;
+    }
+
+    await trace.timeStage('memory_search', async () => {
+        memoryService.addTurn('user', text, { actionId: request.id });
+    });
+
+    let result;
+    // Repeated capture on HTTP and Socket.IO must not repeat filesystem/app effects.
+    const guarded = /^(?:document\.|file\.create$|folder\.create$|agenda\.add$|image\.generate$|system\.open$|system\.media-search$)/.test(request.id);
+    const executionKey = JSON.stringify([request.id, request.params]);
+    const claim = guarded ? executionGate.claim(executionKey) : null;
+    if (guarded && !claim) {
+        trace.finish({ status: 'SUCCESS', metadata: { duplicate: true } });
+        return { ok: true, status: 'ignored_duplicate', duplicate: true, verified: false, actionId: request.id, message: 'Ya recibí ese pedido; no lo voy a ejecutar dos veces.' };
+    }
+    try {
+        result = await trace.timeStage('tool_execution', async () => {
+            return actionKernel.execute(request.id, request.params, { ...context, originalUtterance: text });
+        });
+    } catch (err) {
+        trace.recordToolError(err);
+        trace.finish({ status: 'FAILED', error: err });
+        throw err;
+    } finally {
+        claim?.finish();
+    }
+
+    if (result.confirmationToken) {
+        if (pendingVoiceConfirmation && Date.now() < pendingVoiceConfirmation.expiresAt) {
+            actionKernel.cancelConfirmation(result.confirmationToken);
+            return { ...pendingVoiceConfirmation.result, message: 'Todavía espero la autorización anterior. Podés confirmarla o cancelarla antes de iniciar otra acción protegida.' };
+        }
+        pendingVoiceConfirmation = { result, expiresAt: Date.now() + 120000 };
+    }
     voiceLearningService.recordVerifiedExecution({
         utterance: text, actionId: request.id, params: request.params, result
     });
     if (result.message) memoryService.addTurn('assistant', result.message, { actionId: request.id, status: result.status, verified: result.verified });
+
+    trace.finish({
+        status: result.ok !== false ? 'SUCCESS' : 'FAILED',
+        error: result.ok !== false ? null : result.message,
+        metadata: { actionId: request.id }
+    });
+
     return result;
 }
 
 registerActions();
-module.exports = { process, resolve, describe: actionKernel.describe, execute: actionKernel.execute, confirm: actionKernel.confirm, cancelConfirmation: actionKernel.cancelConfirmation };
+module.exports = { process, resolve, describe: actionKernel.describe, execute: actionKernel.execute, confirm, cancelConfirmation, pendingConfirmation: actionKernel.pendingConfirmation };

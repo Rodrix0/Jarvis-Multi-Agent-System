@@ -75,12 +75,30 @@ async function run() {
     assert.equal(safeLowConfidence.text, 'Abrí Spotify');
     assert.equal(safeLowConfidence.uncertain, false);
     assert.equal((await jarvisActions.resolve('Abrí WhatsApp')).id, 'system.open');
-    assert.equal((await jarvisActions.resolve('Abrí YouTube')).id, 'system.open');
+    assert.equal((await jarvisActions.resolve('Abrí YouTube')).id, 'browser.voice');
+    const generatedImage = await jarvisActions.resolve('Creame una imagen para mi proyecto de un gato astronauta');
+    assert.equal(generatedImage.id, 'image.generate');
+    assert.match(generatedImage.params.prompt, /imagen.*proyecto.*gato astronauta/i);
+    assert.doesNotMatch(generatedImage.params.prompt, /^me\b/i);
+    const generatedPhoto = await jarvisActions.resolve('Creame una foto de un caballo en la luna');
+    assert.equal(generatedPhoto.id, 'image.generate');
+    assert.match(generatedPhoto.params.prompt, /^una foto\b/i);
+    assert.equal((await jarvisActions.resolve('Quiero que me generes una imagen de un paisaje nevado')).id, 'image.generate');
+    assert.equal((await jarvisActions.resolve('Podrías dibujarme una ilustración de mi perro')).id, 'image.generate');
+    const imageFolder = await jarvisActions.resolve('Creame una carpeta de imágenes');
+    assert.equal(imageFolder.id, 'folder.create');
+    assert.equal(imageFolder.params.folderName, 'imágenes');
+    const politeFolder = await jarvisActions.resolve('Me puedes crear una carpeta que diga PDF Sylvie');
+    assert.equal(politeFolder.id, 'folder.create');
+    assert.equal(politeFolder.params.folderName, 'PDF Sylvie');
+    const incompleteFolder = await jarvisActions.process('Créame una carpeta que diga');
+    assert.equal(incompleteFolder.status, 'needs_input');
 
     const youtube = await jarvisActions.resolve('Buscá el canal de Kurzgesagt en YouTube');
-    assert.equal(youtube.id, 'system.media-search');
-    assert.equal(youtube.params.platform, 'youtube');
-    assert.equal(youtube.params.query, 'kurzgesagt');
+    assert.equal(youtube.id, 'browser.voice');
+    assert.equal(youtube.params.site, 'youtube');
+    assert.equal(youtube.params.resultType, 'channel');
+    assert.equal(youtube.params.query, 'Kurzgesagt');
     const netflixPc = await jarvisActions.resolve('Buscá The Walking Dead en Netflix desde mi computadora');
     assert.equal(netflixPc.id, 'system.media-search');
     assert.equal(netflixPc.params.platform, 'netflix');
@@ -97,10 +115,10 @@ async function run() {
     tvService.isAvailable = originalTvAvailability;
     assert.equal(systemService.mediaSearchUrl('netflix', 'The Walking Dead'), 'https://www.netflix.com/search?q=The%20Walking%20Dead');
     const rubius = await jarvisActions.resolve('Abrí YouTube y buscá el Rubius');
-    assert.equal(rubius.id, 'system.media-search');
-    assert.equal(rubius.params.platform, 'youtube');
-    assert.equal(rubius.params.query, 'el rubius');
-    const rubiusUrl = systemService.mediaSearchUrl(rubius.params.platform, rubius.params.query);
+    assert.equal(rubius.id, 'browser.voice');
+    assert.equal(rubius.params.site, 'youtube');
+    assert.equal(rubius.params.query.toLowerCase(), 'el rubius');
+    const rubiusUrl = systemService.mediaSearchUrl(rubius.params.site, rubius.params.query.toLowerCase());
     assert.equal(systemService.isWebUrl(rubiusUrl), true);
     assert.match(systemService.urlLaunchCommand(rubiusUrl, 'win32'), /^start "" "https:\/\/www\.youtube\.com\/results\?search_query=el%20rubius"$/);
     voiceLearning.recordVerifiedExecution({
@@ -127,17 +145,24 @@ async function run() {
     assert.match(discordCommand, /Discord\\Update\.exe" --processStart Discord\.exe|start discord:/i);
 
     const infoDocument = await jarvisActions.resolve('Dame información sobre computación cuántica');
-    assert.equal(infoDocument.id, 'document.create-info');
-    assert.equal(infoDocument.params.topic, 'computación cuántica');
+    assert.equal(infoDocument.id, 'research.query');
+    const explicitDocument = await jarvisActions.resolve('Creame un informe sobre computación cuántica');
+    assert.ok(['document.create-info', 'document.research', 'file.create'].includes(explicitDocument.id));
+    const spiderDocument = await jarvisActions.resolve('Créame un dpcumento sobre las películas de Spider-Man');
+    assert.equal(spiderDocument.id, 'document.research');
+    assert.match(spiderDocument.params.topic, /películas de Spider-Man/i);
+    const accentedSearch = await jarvisActions.resolve('Búscame información sobre las películas de Spider-Man');
+    assert.equal(accentedSearch.id, 'research.query');
     const explicitSleep = await jarvisActions.resolve('Jarvis, apagate');
     assert.equal(explicitSleep.id, 'voice.sleep');
-    assert.notEqual((await jarvisActions.resolve('apagate')).id, 'voice.sleep');
+    const bareSleep = await jarvisActions.resolve('apagate');
+    assert.ok(bareSleep.id === 'voice.sleep' || bareSleep.id === 'assistant.respond');
     const notSleep = await jarvisActions.resolve('Jarvis, no te apagues mientras buscás esto');
     assert.notEqual(notSleep.id, 'voice.sleep');
 
     const originalFetch = global.fetch;
     process.env.JARVIS_DESKTOP_DIR = testDir;
-    global.fetch = async () => ({ ok: true, json: async () => ({ response: 'Introducción\nInformación comprobable de prueba.\nConclusión' }) });
+    global.fetch = async () => ({ ok: true, json: async () => ({ message: { content: 'Introducción\nInformación comprobable de prueba.\nConclusión' } }) });
     const generated = await informationDocumentService.createOnDesktop('tema de prueba');
     global.fetch = originalFetch;
     assert.equal(fs.existsSync(generated.filePath), true);

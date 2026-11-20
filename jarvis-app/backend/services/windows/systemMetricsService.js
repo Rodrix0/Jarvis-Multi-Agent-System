@@ -3,19 +3,31 @@ const os = require('os');
 
 class SystemMetricsService {
     getDiskSpace() {
-        const script = `
-            Get-PSDrive -PSProvider FileSystem | 
-            Select-Object Name, @{Name="Free_GB";Expression={[math]::Round($_.Free / 1GB, 1)}}, @{Name="Total_GB";Expression={[math]::Round(($_.Used + $_.Free) / 1GB, 1)}} | 
-            ConvertTo-Json
-        `;
         try {
-            const out = execSync(`powershell.exe -NoProfile -Command "${script.replace(/\r?\n/g, ' ')}"`, { timeout: 6000 }).toString().trim();
-            const list = JSON.parse(out);
-            const array = Array.isArray(list) ? list : [list];
-            const summary = array.map(d => `• Disco ${d.Name}:: ${d.Free_GB} GB libres de ${d.Total_GB} GB`).join('\n');
+            const fs = require('fs');
+            const driveLetters = 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+            const disks = [];
+
+            for (const letter of driveLetters) {
+                try {
+                    const root = `${letter}:\\`;
+                    const stat = fs.statfsSync(root);
+                    if (stat && stat.blocks > 0) {
+                        const totalGB = Math.round((Number(stat.blocks) * Number(stat.bsize) / (1024 * 1024 * 1024)) * 10) / 10;
+                        const freeGB = Math.round((Number(stat.bavail) * Number(stat.bsize) / (1024 * 1024 * 1024)) * 10) / 10;
+                        disks.push({ Name: letter, Free_GB: freeGB, Total_GB: totalGB });
+                    }
+                } catch (_) {}
+            }
+
+            if (disks.length === 0) {
+                disks.push({ Name: 'C', Free_GB: 0, Total_GB: 0 });
+            }
+
+            const summary = disks.map(d => `• Disco ${d.Name}: ${d.Free_GB} GB libres de ${d.Total_GB} GB`).join('\n');
             return {
                 ok: true,
-                disks: array,
+                disks,
                 summary,
                 message: `Estado del almacenamiento:\n${summary}`
             };

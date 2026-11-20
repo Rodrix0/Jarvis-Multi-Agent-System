@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $logDir = Join-Path $projectRoot 'logs'
 $dataDir = Join-Path $projectRoot 'backend\data'
+$voiceStatePath = Join-Path $dataDir 'local_voice_state.json'
 $voicePython = Join-Path $projectRoot 'python_engine\voice_venv\Scripts\python.exe'
 $voiceScript = Join-Path $projectRoot 'python_engine\voice_assistant.py'
 $pythonEngine = Join-Path $projectRoot 'python_engine\venv\Scripts\python.exe'
@@ -111,6 +112,10 @@ if (-not (Test-Path -LiteralPath $voicePython) -or -not (Test-Path -LiteralPath 
 $voiceAlreadyRunning = Test-LocalVoiceService
 
 if (-not $voiceAlreadyRunning) {
+    # Un reinicio nunca debe reanudar una conversación antigua. Si el proceso
+    # anterior terminó mientras estaba despierto, arrancar así capturaría audio
+    # ambiente y ejecutaría frases que no fueron dirigidas a Jarvis.
+    '{"state":"dormant","updatedAt":0}' | Set-Content -LiteralPath $voiceStatePath -Encoding UTF8
     $started.LocalVoice = Start-HiddenProcess -Name 'Jarvis Local Voice' `
         -FilePath $voicePython -Arguments @($voiceScript) -WorkingDirectory $projectRoot
     for ($attempt = 0; $attempt -lt 60; $attempt++) {

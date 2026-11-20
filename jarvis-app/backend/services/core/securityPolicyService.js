@@ -21,7 +21,7 @@ const CRITICAL_PATH_PREFIXES = [
     'c:\\programdata\\microsoft'
 ];
 
-const BACKEND_DATA_DIR = path.resolve(__dirname, '..', '..', 'data').toLowerCase();
+const BACKEND_DATA_DIR = require("../dataPaths").dataPath().toLowerCase();
 
 class SecurityPolicyService {
     getActionLevel(actionId) {

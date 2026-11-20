@@ -1,4 +1,7 @@
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+function powershell(script, timeout) {
+    return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout, windowsHide: true, encoding: 'utf8' }).trim();
+}
 const securityPolicyService = require('../core/securityPolicyService');
 
 class ProcessService {
@@ -20,7 +23,7 @@ class ProcessService {
         `;
 
         try {
-            const out = execSync(`powershell.exe -NoProfile -Command "${script.replace(/\r?\n/g, ' ')}"`, { timeout: 6000 }).toString().trim();
+            const out = powershell(script, 6000);
             if (out.includes('NOT_FOUND')) {
                 return { ok: false, code: 'ERR_PROCESS_NOT_RUNNING', message: `No se encontró la aplicación ${appName} en ejecución.` };
             }
@@ -37,10 +40,10 @@ class ProcessService {
 
         try {
             if (/^\d+$/.test(clean)) {
-                execSync(`taskkill.exe /PID ${clean} /F`, { timeout: 5000 });
+                execFileSync('taskkill.exe', ['/PID', clean, '/F'], { timeout: 5000, windowsHide: true });
             } else {
                 const img = clean.endsWith('.exe') ? clean : `${clean}.exe`;
-                execSync(`taskkill.exe /IM ${img} /F`, { timeout: 5000 });
+                execFileSync('taskkill.exe', ['/IM', img, '/F'], { timeout: 5000, windowsHide: true });
             }
             return { ok: true, message: `Proceso ${clean} terminado forzosamente.` };
         } catch (err) {
@@ -56,7 +59,7 @@ class ProcessService {
             ConvertTo-Json -Compress
         `;
         try {
-            const out = execSync(`powershell.exe -NoProfile -Command "${script.replace(/\r?\n/g, ' ')}"`, { timeout: 8000 }).toString().trim();
+            const out = powershell(script, 8000);
             const list = JSON.parse(out);
             const array = Array.isArray(list) ? list : [list];
             const summary = array.map(p => `• ${p.ProcessName}: ${p.RAM_MB || 0} MB RAM (${p.CPU_Seconds || 0}s CPU)`).join('\n');

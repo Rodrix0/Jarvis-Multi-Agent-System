@@ -5,12 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JARVIS OS</title>
     
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="style.css?v=20261030-red-black">
+    <link rel="stylesheet" href="workspace.css?v=20261030-main-status">
+    <link rel="icon" type="image/svg+xml" href="assets/jarvis-avatar.svg">
 
     <!-- Librerias para mejorar la interfaz visual MD/MATH -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="vendor/marked/marked.umd.js"></script>
+    <script id="MathJax-script" async src="vendor/mathjax/es5/tex-mml-chtml.js"></script>
 
     <style>
         .action-tool-bar { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
@@ -41,8 +43,16 @@
                 <button id="btn-open-brain-modal" class="voice-test-btn" type="button" title="Voz, memoria y acciones">
                     <i class="fa-solid fa-brain"></i> Voz y memoria
                 </button>
-                <div class="system-status">
-                    <span class="status-dot"></span> Online
+                <button id="btn-open-dashboard" class="voice-test-btn" type="button" title="Panel de Telemetría y Diagnóstico (Ítem 31)" style="border-color: var(--accent); color: var(--accent);">
+                    <i class="fa-solid fa-gauge-high"></i> Dashboard
+                </button>
+                <div id="jarvis-power-badge" class="jarvis-power-badge awake" title="Clic para alternar entre PRENDIDO y APAGADO">
+                    <span class="power-dot"></span>
+                    <div class="power-info">
+                        <span id="power-status-title" class="power-title">JARVIS PRENDIDO</span>
+                        <span id="power-status-sub" class="power-sub">Escucha activa</span>
+                    </div>
+                    <i class="fa-solid fa-power-off power-icon"></i>
                 </div>
             </div>
         </header>
@@ -62,13 +72,17 @@
 
             <!-- CENTER PANEL: AI INTERFACE -->
             <section class="center-panel">
+                <div id="hud-power-banner" class="hud-power-banner awake" title="Estado operativo de Jarvis">
+                    <span class="banner-pill"><i id="hud-power-icon" class="fa-solid fa-bolt"></i> <strong id="hud-power-state">PRENDIDO</strong></span>
+                    <span id="hud-power-hint">Escucha activa — Di tu orden directamente</span>
+                </div>
                 <div class="visualizer-container" id="visualizer-container" style="position: relative; height: 350px;">
-                    <!-- El canvas 3D se inyectará aquí -->
+                    <!-- Avatar vectorial con estados de voz y actividad -->
                 </div>
 
                 <div class="transcript-box">
-                    <div id="user-transcript" class="user-text">Esperando interacción...</div>
-                    <div id="jarvis-response" class="jarvis-text">Sistema Jarvis. Inicia el sistema para interactuar.</div>
+                    <div id="user-transcript" class="user-text">Listo para recibir órdenes</div>
+                    <div id="jarvis-response" class="jarvis-text">Sistema Jarvis en línea. Escribe o habla para dar una orden.</div>
                     
                     <div class="action-tool-bar">
                         <button id="btn-stop-audio" class="hud-btn btn-stop"><i class="fa-solid fa-volume-xmark"></i> Detener Audio</button>
@@ -89,8 +103,8 @@
                             <input type="hidden" id="context-file-path">
                         </div>
                         <div class="context-group input-text">
-                            <input type="text" id="manual-text-input" placeholder="O escribe tu comando textualmente aquí y presiona Enter..." autocomplete="off">
-                            <button id="btn-send-text"><i class="fa-solid fa-paper-plane"></i></button>
+                            <textarea id="manual-text-input" rows="1" placeholder="Pedile algo a Jarvis…" aria-label="Mensaje para Jarvis" autocomplete="off"></textarea>
+                            <button id="btn-send-text" type="button" aria-label="Enviar mensaje"><span aria-hidden="true">↑</span></button>
                         </div>
                     </div>
 
@@ -170,6 +184,7 @@
             <div class="tv-tabs">
                 <button type="button" class="tv-tab-btn active" data-tab="learning" onclick="switchTvTab('learning', this)">Aprender Botones</button>
                 <button type="button" class="tv-tab-btn" data-tab="testing" onclick="switchTvTab('testing', this)">Pruebas Rápidas</button>
+                <button type="button" class="tv-tab-btn" data-tab="apps" onclick="switchTvTab('apps', this); loadTvLearning()">Aprendizaje TV</button>
                 <button type="button" class="tv-tab-btn" data-tab="setup" onclick="switchTvTab('setup', this)">Configuración</button>
             </div>
 
@@ -189,6 +204,28 @@
                 </div>
             </div>
 
+            <div class="tv-tab-content" id="tab-apps" style="display:none">
+                <h3>Enseñar YouTube y el teclado</h3>
+                <p>Primero aprendé Home y las flechas en «Aprender Botones». Home ahora se guarda separado de Power: si lo enseñaste antes, volvé a enseñarlo.</p>
+                <label>Aplicación <select id="tv-learning-app" onchange="loadTvLearning()"><option value="youtube">YouTube</option><option value="netflix">Netflix (teclado)</option></select></label>
+                <button type="button" class="btn-learn" data-btn="youtube" onclick="learnTvButton('youtube')">Aprender botón YouTube del control</button>
+                <p>Elegí una etapa y pulsá las teclas de abajo mirando la TV. Cada pulsación se envía y se agrega a esa etapa. La apertura debe empezar en Home; la búsqueda debe terminar con el campo vacío y una letra conocida seleccionada.</p>
+                <label>Etapa <select id="tv-learning-stage" onchange="renderTvLearningSteps()"><option value="open">Abrir desde Home</option><option value="search">Entrar al buscador y vaciarlo</option><option value="submit">Salir del teclado / mostrar resultados</option></select></label>
+                <label>Espera después de cada tecla (ms) <input id="tv-learning-wait" type="number" min="100" max="60000" value="800"></label>
+                <div id="tv-learning-buttons" class="learning-grid"></div>
+                <button type="button" onclick="recordTvLearning(null)">Agregar espera sin pulsar</button>
+                <button type="button" onclick="clearTvLearningStage()">Borrar etapa grabada</button>
+                <pre id="tv-learning-steps" style="white-space:pre-wrap;max-height:180px;overflow:auto"></pre>
+                <label>Teclado: una fila por línea, sin separadores. Usá _ para la tecla espacio.<textarea id="tv-learning-rows" rows="6" placeholder="Copiá la distribución que ves en la TV"></textarea></label>
+                <label>Letra inicialmente seleccionada <input id="tv-learning-start" maxlength="1" value="a"></label>
+                <label>Tiempo por tecla al escribir (ms) <input id="tv-learning-delay" type="number" min="300" max="2000" value="800"></label>
+                <button type="button" onclick="saveTvLearning()">Guardar aprendizaje</button>
+                <button type="button" onclick="runTvLearning(false)">Probar apertura guardada</button>
+                <label>Texto de prueba <input id="tv-learning-text" placeholder="Título completo"></label>
+                <button type="button" onclick="runTvLearning(true)">Probar escritura en teclado abierto</button>
+                <button type="button" onclick="tvApi('/api/tv/cancel',{method:'POST'}).catch(e=>alert(e.message))">Cancelar operación</button>
+                <p id="tv-learning-message" role="status" aria-live="polite"></p>
+            </div>
             <div class="tv-tab-content" id="tab-testing" style="display: none;">
                 <div class="testing-grid">
                     <button type="button" class="btn-test-cmd" data-btn="vol_up" onclick="testTvButton('vol_up')">Test Vol +</button>
@@ -246,6 +283,117 @@
         </div>
     </div>
 
+    <!-- MODAL DASHBOARD DE TELEMETRÍA (Ítem 31) -->
+    <div id="dashboard-modal" class="modal hidden">
+        <div class="modal-content dashboard-modal-content">
+            <div class="dashboard-header-bar">
+                <div class="dashboard-title-wrap">
+                    <span class="live-pulse-dot"></span>
+                    <h2><i class="fa-solid fa-gauge-high"></i> JARVIS STATUS</h2>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="btn-refresh-dashboard" class="voice-test-btn" style="padding: 4px 10px;" title="Refrescar métricas"><i class="fa-solid fa-arrows-rotate"></i></button>
+                    <span class="close-btn" id="close-dashboard-modal">&times;</span>
+                </div>
+            </div>
+
+            <div class="dashboard-sections-container">
+                <!-- SECCIÓN 1: SERVICIOS SATÉLITE -->
+                <div class="dashboard-card">
+                    <div class="card-subtitle"><i class="fa-solid fa-server"></i> SERVICIOS PRINCIPALES</div>
+                    <div class="services-telemetry-grid" id="dashboard-services-grid">
+                        <div class="service-item" id="svc-core">
+                            <span class="svc-name">Core</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-ollama">
+                            <span class="svc-name">Ollama</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-python">
+                            <span class="svc-name">Python Engine</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-whisper">
+                            <span class="svc-name">Whisper</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-comfyui">
+                            <span class="svc-name">ComfyUI</span>
+                            <span class="svc-badge badge-sleep">SLEEP</span>
+                        </div>
+                        <div class="service-item" id="svc-broadlink">
+                            <span class="svc-name">BroadLink</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                        <div class="service-item" id="svc-homeassistant">
+                            <span class="svc-name">Home Assistant</span>
+                            <span class="svc-badge badge-online">ONLINE</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SECCIÓN 2: HARDWARE & RECURSOS -->
+                <div class="dashboard-card">
+                    <div class="card-subtitle"><i class="fa-solid fa-microchip"></i> RECURSOS DE HARDWARE</div>
+                    <div class="hardware-meters-list">
+                        <!-- CPU -->
+                        <div class="meter-item">
+                            <div class="meter-labels">
+                                <span><i class="fa-solid fa-bolt"></i> CPU</span>
+                                <span id="dash-cpu-val" class="meter-val">8%</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div id="dash-cpu-bar" class="progress-bar-fill fill-cpu" style="width: 8%;"></div>
+                            </div>
+                        </div>
+
+                        <!-- RAM -->
+                        <div class="meter-item">
+                            <div class="meter-labels">
+                                <span><i class="fa-solid fa-memory"></i> RAM</span>
+                                <span id="dash-ram-val" class="meter-val">7.0 / 16.0 GB (44%)</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div id="dash-ram-bar" class="progress-bar-fill fill-ram" style="width: 44%;"></div>
+                            </div>
+                        </div>
+
+                        <!-- VRAM GPU -->
+                        <div class="meter-item">
+                            <div class="meter-labels">
+                                <span><i class="fa-solid fa-vr-cardboard"></i> VRAM</span>
+                                <span id="dash-vram-val" class="meter-val">5.2 / 8.0 GB (65%)</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div id="dash-vram-bar" class="progress-bar-fill fill-vram" style="width: 65%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SECCIÓN 3: OPERACIÓN & IA -->
+                <div class="dashboard-card">
+                    <div class="card-subtitle"><i class="fa-solid fa-robot"></i> DIAGNÓSTICO DE OPERACIÓN &amp; IA</div>
+                    <div class="op-metrics-grid">
+                        <div class="op-item">
+                            <span class="op-label">Current model</span>
+                            <span id="dash-current-model" class="op-value tag-model">Qwen 2.5</span>
+                        </div>
+                        <div class="op-item">
+                            <span class="op-label">Last action</span>
+                            <span id="dash-last-action" class="op-value tag-action">open_spotify</span>
+                        </div>
+                        <div class="op-item">
+                            <span class="op-label">Latency</span>
+                            <span id="dash-latency" class="op-value tag-latency">41 ms</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Script inline para garantizar cambio inmediato de pestañas -->
     <script>
         function switchTvTab(tabName, el) {
@@ -270,9 +418,11 @@
     </script>
 
     <!-- Scripts -->
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="jarvis3d.js"></script>
-    <script src="app.js?v=20260904_04"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="character-rig.js?v=20261030-clean-poses"></script>
+    <script src="avatar.js?v=20261030"></script>
+    <script src="app.js?v=20261030-main-status"></script>
+    <script src="workspace.js?v=20261030-main-status"></script>
+    <script src="companion.js?v=20261030"></script>
 </body>
 </html>

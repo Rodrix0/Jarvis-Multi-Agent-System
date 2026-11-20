@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const notifier = require('node-notifier');
 
-const remindersFile = path.join(__dirname, '..', 'data', 'recordatorios.json');
+const remindersFile = require("./dataPaths").dataPath("recordatorios.json");
 let schedulerTimer = null;
 let schedulerIo = null;
 
@@ -25,6 +25,15 @@ function getLocalReminders() {
 }
 
 function addLocalReminder(timeStr, action, target, message) {
+    if (action === 'speak') {
+        const now = new Date();
+        const [hours, minutes] = String(timeStr).split(':').map(Number);
+        if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return false;
+        const date = new Date(now);
+        date.setHours(hours, minutes, 0, 0);
+        if (date < now) date.setDate(date.getDate() + 1);
+        return require('./agenda/agendaService').addReminder({ title: message || target || 'Recordatorio', targetDate: require('./agenda/reminderParser').localDate(date), targetTime: timeStr }).ok;
+    }
     const reminders = getLocalReminders();
     reminders.push({
         id: Date.now(),
@@ -173,11 +182,10 @@ async function runDueReminders() {
                     const sysServices = require('./systemService');
                     await sysServices.openApp(task.target, "productividad");
                 } else if (task.action === "speak") {
-                    showWindowsNotification("Jarvis - ¡Recordatorio!", task.message || "Es hora de la meta programada.");
-                    
-                    schedulerIo.emit('response', {
-                        text: "¡Atención, señor! Recordatorio especial: " + task.message,
-                        action: null
+                    require('./core/notificationService').notify({
+                        title: 'Recordatorio',
+                        message: task.message || 'Es hora de la tarea programada.',
+                        priority: 'HIGH', channels: ['HUD', 'TOAST', 'TTS']
                     });
                 }
             }

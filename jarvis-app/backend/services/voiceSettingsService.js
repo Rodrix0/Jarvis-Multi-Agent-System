@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SETTINGS_PATH = process.env.JARVIS_VOICE_SETTINGS_PATH || path.join(__dirname, '..', 'data', 'voice_settings.json');
+const SETTINGS_PATH = process.env.JARVIS_VOICE_SETTINGS_PATH || require("./dataPaths").dataPath("voice_settings.json");
 const DEFAULTS = Object.freeze({
     engine: 'browser-general',
     localEngineEnabled: true,

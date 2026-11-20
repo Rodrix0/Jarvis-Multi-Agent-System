@@ -15,47 +15,9 @@ function safeName(topic) {
 }
 
 async function generateInformation(topic) {
-    // 1. Intentar con Ollama local
-    try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 25000);
-        const response = await fetch('http://127.0.0.1:11434/api/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: MODEL,
-                stream: false,
-                keep_alive: '5m',
-                prompt: [
-                    'Redacta en español un informe completo, claro y profesional.',
-                    `Tema: ${topic}`,
-                    'Incluye: Título, Resumen Introductorio, Puntos Clave, Análisis Detallado y Conclusión.',
-                    'Devuelve directamente el contenido estructurado del informe.'
-                ].join('\n'),
-                options: { temperature: 0.3, num_predict: 850 }
-            }),
-            signal: controller.signal
-        });
-        clearTimeout(timer);
-        if (response.ok) {
-            const data = await response.json();
-            const content = String(data.response || '').trim();
-            if (content.length > 50) return content;
-        }
-    } catch (e) {
-        console.warn('[Doc Generator] Ollama no disponible, usando motor de respaldo IA...');
-    }
-
-    // 2. Fallback con motor de IA principal
-    try {
-        const fallbackPrompt = `Escribe un informe completo, profesional y estructurado sobre: "${topic}". Incluye introducción, desarrollo en puntos clave y conclusión.`;
-        const content = await aiService.getAIResponse(fallbackPrompt, { id: 'estudio', name: 'Estudio' });
-        if (content && content.length > 50) return content;
-    } catch (e) {
-        console.error('[Doc Generator] Falló fallback IA:', e);
-    }
-
-    return `Informe sobre ${topic}\n\nDocumento generado automáticamente por Jarvis OS.\nFecha: ${new Date().toLocaleDateString('es-AR')}`;
+    const response = await require('./aiService').executeLlamaChat([{ role: 'user', content: 'Escribí un informe en español sobre: ' + topic + '. Incluí explicación, puntos principales y conclusión. No inventes fuentes ni afirmes haber consultado internet.' }]);
+    if (!response?.content || response.content.trim().length < 50) throw new Error('El motor de IA no pudo generar el contenido del informe.');
+    return response.content.trim();
 }
 
 async function createOnDesktop(topic) {
@@ -80,7 +42,7 @@ async function createOnDesktop(topic) {
     ];
     
     const document = new Document({ sections: [{ properties: {}, children: paragraphs }] });
-    fs.writeFileSync(filePath, await Packer.toBuffer(document));
+    fs.writeFileSync(filePath, await Packer.toBuffer(document), { flag: 'wx' });
     console.log(`[Doc Generator] ✅ Archivo guardado con éxito en: ${filePath}`);
     
     try {
@@ -90,4 +52,4 @@ async function createOnDesktop(topic) {
     return { filePath, content, filename };
 }
 
-module.exports = { createOnDesktop };
+module.exports = { createOnDesktop, generateInformation };

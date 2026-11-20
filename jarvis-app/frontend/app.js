@@ -44,6 +44,7 @@ let voiceMeterTimer = null;
 let currentAudioLevel = 0;
 let pendingVoiceTranscript = null;
 let localVoiceOnline = false;
+let browserListening = false;
 let actionToastTimer = null;
 
 function stopAllSpeech({ restartBrowserRecognition = false } = {}) {
@@ -94,7 +95,33 @@ socket.on('jarvis_event', (ev) => {
 });
 
 socket.on('notification', (data) => {
-    showActionToast(`[${data.title}] ${data.message}`, data.priority === 'EMERGENCY' ? 'failed' : 'success', 5000);
+    let phase = 'success';
+    if (data.priority === 'EMERGENCY') phase = 'emergency';
+    else if (data.priority === 'WARNING' || data.priority === 'HIGH') phase = 'warning';
+
+    showActionToast(`[${data.title || 'Jarvis'}] ${data.message || ''}`, phase, 5500);
+
+    // Si la pestaña está en segundo plano, mostrar notificación nativa del navegador
+    if (window.Notification && Notification.permission === 'granted') {
+        try {
+            new Notification(data.title || 'Jarvis OS', {
+                body: data.message || '',
+                icon: '/favicon.ico',
+                silent: false
+            });
+        } catch (e) {}
+    }
+});
+
+// Pedir permiso de notificaciones de escritorio en la primera interacción
+window.addEventListener('click', () => {
+    if (window.Notification && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+    }
+}, { once: true });
+
+socket.on('speak_phrase', (data) => {
+    console.log('[TTS Speak Phrase]:', data.phrase);
 });
 
 function showActionToast(message, phase = 'working', duration = 4500) {
@@ -246,14 +273,16 @@ function isDirectImperativeCommand(text) {
 
 function isWakeCommand(text) {
     const normalized = normalizeActivationText(text);
-    if (/\b(tele|television|tv|netflix)\b/.test(normalized)) return false;
-    return /^(?:hola\s+)?jarvis\s+(?:prendete|prenderte|despertate|despierta|reactivate)$/.test(normalized) || /^jarvis\s+activa(?:te)?$/.test(normalized);
+    if (/\b(tele|television|tv|netflix|pantalla|pc|luz)\b/.test(normalized)) return false;
+    return /\b(?:prende(?:te)?|encende(?:te)?|desperta(?:te)?|despierta|despiertate|reactiva(?:te)?|activa(?:te)?|arriba|levantate)\b/i.test(normalized)
+        || /^(?:hola\s+jarvis|buen\s+dia\s+jarvis|buenas\s+jarvis|hey\s+jarvis|che\s+jarvis|ok\s+jarvis|jarvis)$/i.test(normalized);
 }
 
 function isSleepCommand(text) {
     const normalized = normalizeActivationText(text);
-    if (/\b(tele|television|tv|netflix)\b/.test(normalized)) return false;
-    return /^(?:hola\s+)?jarvis\s+(?:apagate|apagarte|dormite|modo descanso|entra en modo descanso)$/.test(normalized);
+    if (/\b(tele|television|tv|netflix|pantalla|pc|luz)\b/.test(normalized)) return false;
+    return /\b(?:apaga(?:te)?|dormite|duermete|a\s+dormir|a\s+descansar|modo\s+descanso|modo\s+reposo|entra\s+en\s+(?:modo\s+)?descanso|entra\s+en\s+(?:modo\s+)?reposo|ponete\s+en\s+(?:modo\s+)?descanso|ponete\s+en\s+(?:modo\s+)?reposo|silencia(?:te)?|desactiva(?:te)?)\b/i.test(normalized)
+        || /^(?:buenas\s+noches(?:\s+jarvis)?|hasta\s+luego(?:\s+jarvis)?|chau\s+jarvis|adios\s+jarvis)$/i.test(normalized);
 }
 
 function restartRecognition(delay = 300) {
@@ -265,7 +294,7 @@ function restartRecognition(delay = 300) {
 }
 
 function handleRecognizedTranscript(transcript, alternatives = []) {
-    if (!transcript || transcript.length < 2 || isJarvisSpeaking) return;
+    if (!transcript || transcript.length < 2 || isJarvisSpeaking || localVoiceOnline) return;
     const normalized = normalizeActivationText(transcript);
 
     // 1. Manejo de apagar/dormir
@@ -342,9 +371,13 @@ if (SpeechRecognition) {
     recognition.interimResults = false;
     recognition.lang = 'es-AR';
     recognition.maxAlternatives = 3;
+    recognition.onstart = () => { browserListening = true; window.dispatchEvent(new CustomEvent('jarvis-voice-availability')); };
 
     recognition.onresult = (event) => {
-        if (isJarvisSpeaking) return;
+        if (isJarvisSpeaking || localVoiceOnline) {
+            try { recognition.abort(); } catch(_) {}
+            return;
+        }
 
         const resultGroups = [];
         for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -371,11 +404,15 @@ if (SpeechRecognition) {
     };
 
     recognition.onend = () => {
+        browserListening = false;
+        window.dispatchEvent(new CustomEvent('jarvis-voice-availability'));
         // Chrome corta el reconocimiento después de un silencio. Lo reiniciamos automáticamente.
         restartRecognition(300);
     };
 
     recognition.onerror = (event) => {
+        browserListening = false;
+        window.dispatchEvent(new CustomEvent('jarvis-voice-availability', { detail: { browserError: event.error } }));
         if (event.error === 'no-speech') {
             restartRecognition(350);
             return;
@@ -452,17 +489,18 @@ function speechChunks(text, maxLength = 180) {
     return chunks;
 }
 
-function speak(text, callback) {
+function speak(text, callback, screenText = null) {
     const runId = ++speechRunId;
     window.speechSynthesis?.cancel();
     isJarvisSpeaking = true;
     setRingState('speaking');
 
+    const displayText = screenText || text;
     if (typeof marked !== 'undefined') {
-        jarvisBox.innerHTML = marked.parse(text);
+        jarvisBox.innerHTML = marked.parse(displayText);
         if (window.MathJax) MathJax.typesetPromise([jarvisBox]);
     } else {
-        jarvisBox.textContent = text;
+        jarvisBox.textContent = displayText;
     }
     userBox.textContent = '...';
     document.getElementById('btn-stop-audio').style.display = 'block';
@@ -486,7 +524,7 @@ function speak(text, callback) {
             isJarvisSpeaking = false;
             setRingState('idle');
             if (callback) callback();
-            if (recognition && isSystemActive) {
+            if (recognition && isSystemActive && !localVoiceOnline) {
                 try { recognition.start(); } catch(error) {}
             }
         }, 700);
@@ -551,7 +589,7 @@ function speakInBrowser(text, callback) {
             isJarvisSpeaking = false;
             setRingState('idle');
             if (callback) callback();
-            if (recognition && isSystemActive) {
+            if (recognition && isSystemActive && !localVoiceOnline) {
                 try { recognition.start(); } catch(e) {}
             }
         }, 900);
@@ -702,27 +740,38 @@ async function loadVoiceSettings() {
         voiceApi('/api/voice/local/status').catch(() => ({ online: false }))
     ]);
     voiceSettings = settings;
-    document.getElementById('voice-whisper-model').value = voiceSettings.whisperModel || 'turbo';
-    document.getElementById('voice-whisper-device').value = voiceSettings.whisperDevice || 'cuda';
-    document.getElementById('voice-confidence').value = voiceSettings.confidenceThreshold;
-    document.getElementById('voice-agreement').value = voiceSettings.agreementThreshold;
-    document.getElementById('voice-echo').checked = voiceSettings.echoCancellation;
-    document.getElementById('voice-noise').checked = voiceSettings.noiseSuppression;
-    document.getElementById('voice-gain').checked = voiceSettings.autoGainControl;
-    document.getElementById('voice-confirm').checked = voiceSettings.confirmUncertain;
-    document.getElementById('voice-local-context').checked = voiceSettings.localContextEnabled !== false;
+    const elModel = document.getElementById('voice-whisper-model');
+    if (elModel) elModel.value = voiceSettings.whisperModel || 'turbo';
+    const elDevice = document.getElementById('voice-whisper-device');
+    if (elDevice) elDevice.value = voiceSettings.whisperDevice || 'cuda';
+    const elConf = document.getElementById('voice-confidence');
+    if (elConf) elConf.value = voiceSettings.confidenceThreshold;
+    const elAgree = document.getElementById('voice-agreement');
+    if (elAgree) elAgree.value = voiceSettings.agreementThreshold;
+    const elEcho = document.getElementById('voice-echo');
+    if (elEcho) elEcho.checked = voiceSettings.echoCancellation;
+    const elNoise = document.getElementById('voice-noise');
+    if (elNoise) elNoise.checked = voiceSettings.noiseSuppression;
+    const elGain = document.getElementById('voice-gain');
+    if (elGain) elGain.checked = voiceSettings.autoGainControl;
+    const elConfirm = document.getElementById('voice-confirm');
+    if (elConfirm) elConfirm.checked = voiceSettings.confirmUncertain;
+    const elLocalCtx = document.getElementById('voice-local-context');
+    if (elLocalCtx) elLocalCtx.checked = voiceSettings.localContextEnabled !== false;
     renderLocalVoiceStatus(localStatus);
 }
 
 function renderLocalVoiceStatus(status = {}) {
-    localVoiceOnline = status.online === true && (!status.lastSeenAt || Date.now() - Date.parse(status.lastSeenAt) < 15000);
+    localVoiceOnline = status.online === true && (!status.lastSeenAt || Date.now() - Date.parse(status.lastSeenAt) < 90000);
     const box = document.getElementById('voice-engine-status');
-    box.textContent = localVoiceOnline
-        ? `Motor local activo · ${status.engine} · ${status.stage || status.state || 'listening'}${status.model ? ` · ${status.model}` : ''}`
-        : 'Motor local detenido · se usará el reconocimiento del navegador como respaldo';
-    box.classList.toggle('ready', localVoiceOnline);
-    box.classList.toggle('error', !localVoiceOnline);
-    if (Array.isArray(status.devices) && status.devices.length) {
+    if (box) {
+        box.textContent = localVoiceOnline
+            ? `Motor local activo · ${status.engine} · ${status.stage || status.state || 'listening'}${status.model ? ` · ${status.model}` : ''}`
+            : 'Motor local detenido · se usará el reconocimiento del navegador como respaldo';
+        box.classList.toggle('ready', localVoiceOnline);
+        box.classList.toggle('error', !localVoiceOnline);
+    }
+    if (microphoneSelect && Array.isArray(status.devices) && status.devices.length) {
         microphoneSelect.innerHTML = '';
         status.devices.forEach(device => {
             const option = document.createElement('option');
@@ -735,10 +784,10 @@ function renderLocalVoiceStatus(status = {}) {
     }
     if (localVoiceOnline) {
         isSystemActive = true;
-        isDormant = status.state !== 'awake';
+        updatePowerStateUI(status.state === 'awake');
         try { recognition?.abort(); } catch (_) {}
-        updateMicButtonUI();
     }
+    window.dispatchEvent(new CustomEvent('jarvis-voice-availability', { detail: { local: status } }));
 }
 
 function stopVoiceMonitor() {
@@ -750,6 +799,7 @@ function stopVoiceMonitor() {
 }
 
 async function listMicrophones(requestPermission = false, startMonitor = false) {
+    if (!microphoneSelect) return;
     if (!navigator.mediaDevices?.getUserMedia) {
         microphoneSelect.innerHTML = '<option value="">Predeterminado de Windows</option>';
         return;
@@ -778,7 +828,7 @@ async function listMicrophones(requestPermission = false, startMonitor = false) 
 
 async function startVoiceMonitor() {
     stopVoiceMonitor();
-    const deviceId = microphoneSelect.value || voiceSettings?.microphoneId;
+    const deviceId = microphoneSelect?.value || voiceSettings?.microphoneId;
     voiceMonitorStream = await navigator.mediaDevices.getUserMedia({ audio: {
         ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
         echoCancellation: voiceSettings?.echoCancellation !== false,
@@ -796,7 +846,8 @@ async function startVoiceMonitor() {
         let sum = 0;
         for (const value of samples) sum += ((value - 128) / 128) ** 2;
         currentAudioLevel = Math.sqrt(sum / samples.length);
-        document.getElementById('voice-meter-bar').style.width = `${Math.min(100, currentAudioLevel * 600)}%`;
+        const meterBar = document.getElementById('voice-meter-bar');
+        if (meterBar) meterBar.style.width = `${Math.min(100, currentAudioLevel * 600)}%`;
     }, 250);
 }
 
@@ -805,12 +856,15 @@ async function loadMemory() {
         voiceApi('/api/memory'),
         voiceApi('/api/voice/learning')
     ]);
-    document.getElementById('voice-learning-status').textContent =
-        `${learning.phrases.length} órdenes verificadas · ${learning.vocabulary.length} términos aprendidos · ${learning.lexicon.length} palabras activas`;
+    const learningStatus = document.getElementById('voice-learning-status');
+    if (learningStatus) {
+        learningStatus.textContent =
+            `${learning.phrases?.length || 0} órdenes verificadas · ${learning.vocabulary?.length || 0} términos aprendidos · ${learning.lexicon?.length || 0} palabras activas`;
+    }
     renderMemoryList('memory-preferences', memory.preferences, item => `<strong>${escapeHtml(item.key)}</strong>: ${escapeHtml(item.value)}`, 'preferences', true);
     renderMemoryList('memory-corrections', memory.corrections, item => `<strong>${escapeHtml(item.from)}</strong> → ${escapeHtml(item.to)}`, 'corrections', true);
-    renderMemoryList('memory-conversations', [...memory.conversations].reverse().slice(0, 30), item => `<strong>${escapeHtml(item.role)}</strong> · ${escapeHtml(item.topic)}<br>${escapeHtml(item.text)}`, 'conversations');
-    renderMemoryList('memory-summaries', [...memory.summaries].reverse(), item => `<strong>${escapeHtml(item.topic)}</strong><br>${escapeHtml(item.text)}`, 'summaries');
+    renderMemoryList('memory-conversations', [...(memory.conversations || [])].reverse().slice(0, 30), item => `<strong>${escapeHtml(item.role)}</strong> · ${escapeHtml(item.topic)}<br>${escapeHtml(item.text)}`, 'conversations');
+    renderMemoryList('memory-summaries', [...(memory.summaries || [])].reverse(), item => `<strong>${escapeHtml(item.topic)}</strong><br>${escapeHtml(item.text)}`, 'summaries');
 }
 
 function escapeHtml(value) {
@@ -821,8 +875,10 @@ function escapeHtml(value) {
 
 function renderMemoryList(id, items, formatter, collection, editable = false) {
     const container = document.getElementById(id);
-    container.innerHTML = items.length ? '' : '<div class="memory-item">Sin datos.</div>';
-    items.forEach(item => {
+    if (!container) return;
+    const safeItems = Array.isArray(items) ? items : [];
+    container.innerHTML = safeItems.length ? '' : '<div class="memory-item">Sin datos.</div>';
+    safeItems.forEach(item => {
         const row = document.createElement('div');
         row.className = 'memory-item';
         row.innerHTML = `<span class="memory-item-actions">${editable ? '<button data-edit title="Corregir">✎</button>' : ''}<button data-delete title="Borrar">×</button></span>${formatter(item)}`;
@@ -853,17 +909,20 @@ function renderMemoryList(id, items, formatter, collection, editable = false) {
     });
 }
 
-document.getElementById('btn-open-brain-modal').addEventListener('click', async () => {
-    brainModal.classList.remove('hidden');
+document.getElementById('btn-open-brain-modal')?.addEventListener('click', async () => {
+    brainModal?.classList.remove('hidden');
     try { await loadVoiceSettings(); if (!localVoiceOnline) await listMicrophones(false, false); await loadMemory(); }
-    catch (error) { document.getElementById('voice-engine-status').textContent = error.message; }
+    catch (error) {
+        const statusBox = document.getElementById('voice-engine-status');
+        if (statusBox) statusBox.textContent = error.message;
+    }
 });
-document.getElementById('close-brain-modal').addEventListener('click', () => brainModal.classList.add('hidden'));
-document.getElementById('btn-refresh-mics').addEventListener('click', () => listMicrophones(true, true).catch(error => alert(error.message)));
-microphoneSelect.addEventListener('change', () => startVoiceMonitor().catch(error => alert(error.message)));
-document.getElementById('btn-refresh-memory').addEventListener('click', () => loadMemory().catch(error => alert(error.message)));
+document.getElementById('close-brain-modal')?.addEventListener('click', () => brainModal?.classList.add('hidden'));
+document.getElementById('btn-refresh-mics')?.addEventListener('click', () => listMicrophones(true, true).catch(error => alert(error.message)));
+microphoneSelect?.addEventListener('change', () => startVoiceMonitor().catch(error => alert(error.message)));
+document.getElementById('btn-refresh-memory')?.addEventListener('click', () => loadMemory().catch(error => alert(error.message)));
 
-document.getElementById('btn-calibrate-voice').addEventListener('click', async event => {
+document.getElementById('btn-calibrate-voice')?.addEventListener('click', async event => {
     const button = event.currentTarget;
     button.disabled = true;
     button.textContent = 'Guardá silencio…';
@@ -875,66 +934,78 @@ document.getElementById('btn-calibrate-voice').addEventListener('click', async e
         clearInterval(sampler);
         const floor = readings.reduce((sum, value) => sum + value, 0) / Math.max(1, readings.length);
         voiceSettings = await voiceApi('/api/voice/settings', { method: 'POST', body: JSON.stringify({ noiseFloor: Math.max(.003, floor) }) });
-        document.getElementById('voice-engine-status').textContent = `Calibrado. Piso de ruido: ${voiceSettings.noiseFloor.toFixed(4)}`;
+        const box = document.getElementById('voice-engine-status');
+        if (box) box.textContent = `Calibrado. Piso de ruido: ${voiceSettings.noiseFloor.toFixed(4)}`;
     } finally { button.disabled = false; button.textContent = 'Calibrar ruido (3 s)'; }
 });
 
-document.getElementById('btn-save-voice').addEventListener('click', async () => {
-    const selected = microphoneSelect.selectedOptions[0];
+document.getElementById('btn-save-voice')?.addEventListener('click', async () => {
+    const selected = microphoneSelect?.selectedOptions ? microphoneSelect.selectedOptions[0] : null;
     voiceSettings = await voiceApi('/api/voice/settings', { method: 'POST', body: JSON.stringify({
-        microphoneId: selected?.dataset.local ? voiceSettings.microphoneId : microphoneSelect.value,
+        microphoneId: selected?.dataset?.local ? voiceSettings.microphoneId : (microphoneSelect?.value || ''),
         microphoneLabel: selected?.textContent || '',
-        localDeviceIndex: selected?.dataset.local ? Number(microphoneSelect.value) : voiceSettings.localDeviceIndex,
-        whisperModel: document.getElementById('voice-whisper-model').value,
-        whisperDevice: document.getElementById('voice-whisper-device').value,
-        confidenceThreshold: document.getElementById('voice-confidence').value,
-        agreementThreshold: document.getElementById('voice-agreement').value,
-        echoCancellation: document.getElementById('voice-echo').checked,
-        noiseSuppression: document.getElementById('voice-noise').checked,
-        autoGainControl: document.getElementById('voice-gain').checked,
-        confirmUncertain: document.getElementById('voice-confirm').checked,
-        localContextEnabled: document.getElementById('voice-local-context').checked
+        localDeviceIndex: selected?.dataset?.local ? Number(microphoneSelect?.value) : voiceSettings.localDeviceIndex,
+        whisperModel: document.getElementById('voice-whisper-model')?.value || 'turbo',
+        whisperDevice: document.getElementById('voice-whisper-device')?.value || 'cuda',
+        confidenceThreshold: document.getElementById('voice-confidence')?.value || 0.7,
+        agreementThreshold: document.getElementById('voice-agreement')?.value || 0.7,
+        echoCancellation: document.getElementById('voice-echo')?.checked ?? true,
+        noiseSuppression: document.getElementById('voice-noise')?.checked ?? true,
+        autoGainControl: document.getElementById('voice-gain')?.checked ?? true,
+        confirmUncertain: document.getElementById('voice-confirm')?.checked ?? false,
+        localContextEnabled: document.getElementById('voice-local-context')?.checked ?? true
     }) });
     await startVoiceMonitor();
-    document.getElementById('voice-engine-status').textContent = 'Configuración de voz guardada.';
+    const box = document.getElementById('voice-engine-status');
+    if (box) box.textContent = 'Configuración de voz guardada.';
 });
 
-document.getElementById('btn-add-correction').addEventListener('click', async () => {
-    const from = document.getElementById('memory-correction-from').value.trim();
-    const to = document.getElementById('memory-correction-to').value.trim();
+document.getElementById('btn-add-correction')?.addEventListener('click', async () => {
+    const fromEl = document.getElementById('memory-correction-from');
+    const toEl = document.getElementById('memory-correction-to');
+    const from = fromEl ? fromEl.value.trim() : '';
+    const to = toEl ? toEl.value.trim() : '';
+    if (!from || !to) return;
     await voiceApi('/api/memory/corrections', { method: 'POST', body: JSON.stringify({ from, to }) });
-    document.getElementById('memory-correction-from').value = '';
-    document.getElementById('memory-correction-to').value = '';
+    if (fromEl) fromEl.value = '';
+    if (toEl) toEl.value = '';
     await loadMemory();
 });
 
 socket.on('voice_status', status => {
+    const box = document.getElementById('voice-engine-status');
+    if (!box) return;
     const confidence = status.confidence ? `${Math.round(status.confidence * 100)}%` : 'sin dato';
-    document.getElementById('voice-engine-status').textContent = `${status.engine} · confianza ${confidence} · acuerdo ${Math.round((status.agreement || 0) * 100)}%`;
+    box.textContent = `${status.engine} · confianza ${confidence} · acuerdo ${Math.round((status.agreement || 0) * 100)}%`;
 });
 
 socket.on('local_voice_status', renderLocalVoiceStatus);
 
 socket.on('voice_confirmation_required', payload => {
     pendingVoiceTranscript = payload;
-    brainModal.classList.remove('hidden');
-    document.getElementById('voice-confirmation-box').classList.remove('hidden');
-    document.getElementById('voice-confirmation-reason').textContent = `La transcripción es insegura: ${payload.reason}. Revisala antes de ejecutar.`;
-    document.getElementById('voice-confirmation-text').value = payload.text;
+    brainModal?.classList.remove('hidden');
+    const box = document.getElementById('voice-confirmation-box');
+    if (box) box.classList.remove('hidden');
+    const reasonEl = document.getElementById('voice-confirmation-reason');
+    if (reasonEl) reasonEl.textContent = `La transcripción es insegura: ${payload.reason}. Revisala antes de ejecutar.`;
+    const textEl = document.getElementById('voice-confirmation-text');
+    if (textEl) textEl.value = payload.text;
 });
 
 function executeConfirmedTranscript(teachCorrection) {
-    const corrected = document.getElementById('voice-confirmation-text').value.trim();
+    const textEl = document.getElementById('voice-confirmation-text');
+    const corrected = textEl ? textEl.value.trim() : '';
     if (!corrected) return;
     if (teachCorrection && pendingVoiceTranscript?.text !== corrected) {
         voiceApi('/api/memory/corrections', { method: 'POST', body: JSON.stringify({ from: pendingVoiceTranscript.text, to: corrected }) }).catch(console.error);
     }
-    document.getElementById('voice-confirmation-box').classList.add('hidden');
+    const box = document.getElementById('voice-confirmation-box');
+    if (box) box.classList.add('hidden');
     socket.emit('process_speech', { text: corrected, source: 'voice', confirmed: true, confidence: 1, audioLevel: currentAudioLevel });
     pendingVoiceTranscript = null;
 }
-document.getElementById('btn-confirm-transcript').addEventListener('click', () => executeConfirmedTranscript(false));
-document.getElementById('btn-correct-transcript').addEventListener('click', () => executeConfirmedTranscript(true));
+document.getElementById('btn-confirm-transcript')?.addEventListener('click', () => executeConfirmedTranscript(false));
+document.getElementById('btn-correct-transcript')?.addEventListener('click', () => executeConfirmedTranscript(true));
 
 async function tvApi(path, options = {}) {
     const response = await fetch(path, {
@@ -954,8 +1025,8 @@ function renderTvStatus(status) {
         const isLearned = learned.has(key) || learned.has(normalized);
         button.classList.toggle('learned', isLearned);
         if (isLearned) {
-            button.style.borderColor = '#00f2fe';
-            button.style.boxShadow = '0 0 10px rgba(0, 242, 254, 0.4)';
+            button.style.borderColor = 'var(--accent)';
+            button.style.boxShadow = '0 0 10px rgba(var(--accent-rgb), 0.4)';
         } else {
             button.style.borderColor = '';
             button.style.boxShadow = '';
@@ -970,7 +1041,7 @@ function renderTvStatus(status) {
         statusBadge.textContent = blocked
             ? 'Estado: Bloqueado (Desactivar Lock Device en app)'
             : (status.configured ? `Estado: Conectado (${status.device.host})` : 'Estado: No configurado');
-        statusBadge.style.color = blocked ? '#ff4d4d' : (status.configured ? '#00f2fe' : '#ffaa00');
+        statusBadge.style.color = blocked ? '#ff4d4d' : (status.configured ? 'var(--accent)' : '#ffaa00');
     }
     if (statusDetails) {
         statusDetails.textContent = `${learned.size} tecla(s) aprendida(s) en BroadLink.`;
@@ -1161,22 +1232,124 @@ socket.on('action_status', status => {
     }
 });
 
+function showActionConfirmation(data) {
+    if (!data.confirmationToken) return;
+    const existing = document.getElementById('action-confirmation-controls');
+    if (existing?.dataset.token === data.confirmationToken && data.status !== 'pin_verification_failed') return;
+    existing?.remove();
+    const box = document.createElement('div');
+    box.id = 'action-confirmation-controls';
+    box.dataset.token = data.confirmationToken;
+    box.className = 'action-confirmation-overlay';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-labelledby', 'action-confirmation-title');
+    const panel = document.createElement('div');
+    panel.className = 'action-confirmation-panel';
+    const title = document.createElement('h2');
+    title.id = 'action-confirmation-title';
+    const needsPin = ['awaiting_pin_confirmation', 'pin_verification_failed'].includes(data.status);
+    title.textContent = needsPin ? 'Autorización con PIN' : 'Confirmar acción';
+    panel.appendChild(title);
+    const description = document.createElement('p');
+    description.textContent = data.message || data.text || 'Jarvis espera tu autorización.';
+    panel.appendChild(description);
+    if (data.expiresAt) {
+        const expires = Date.parse(data.expiresAt);
+        if (Number.isFinite(expires)) {
+            setTimeout(() => {
+                if (box.isConnected) {
+                    box.remove();
+                    showActionToast('La autorización venció. Pedí la acción nuevamente.', 'failed', 5500);
+                }
+            }, Math.max(0, expires - Date.now()));
+        }
+    }
+    const errorText = document.createElement('p');
+    errorText.className = 'action-confirmation-error';
+    errorText.setAttribute('role', 'alert');
+    if (data.status === 'pin_verification_failed') errorText.textContent = data.message || 'PIN incorrecto.';
+    panel.appendChild(errorText);
+    let pin;
+    if (needsPin) {
+        pin = document.createElement('input');
+        pin.type = 'password'; pin.inputMode = 'numeric'; pin.placeholder = 'PIN de seguridad';
+        pin.autocomplete = 'one-time-code';
+        pin.setAttribute('aria-label', 'PIN de seguridad'); panel.appendChild(pin);
+        const hint = document.createElement('small');
+        hint.textContent = 'Por seguridad, introducí el PIN acá; Jarvis no lo acepta dictado por voz.';
+        panel.appendChild(hint);
+    }
+    const controls = document.createElement('div');
+    controls.className = 'action-confirmation-buttons';
+    const confirm = document.createElement('button'); confirm.textContent = 'Confirmar acción';
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancelar';
+    for (const button of [confirm, cancel]) { button.className = 'btn'; button.type = 'button'; controls.appendChild(button); }
+    panel.appendChild(controls);
+    box.appendChild(panel);
+    const submit = async approved => {
+        if (approved && pin && !pin.value.trim()) {
+            errorText.textContent = 'Ingresá el PIN para continuar.';
+            pin.focus();
+            return;
+        }
+        confirm.disabled = cancel.disabled = true;
+        try {
+            const response = await fetch(approved ? '/api/actions/confirm' : '/api/actions/cancel', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: data.confirmationToken, ...(pin && approved ? { pin: pin.value } : {}) })
+            });
+            if (pin) pin.value = '';
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.message || result.error || 'No pude procesar la confirmación.');
+            if (result.confirmationToken) {
+                showActionConfirmation(result);
+            } else {
+                box.remove();
+                jarvisBox.textContent = approved ? result.message : 'Acción cancelada.';
+                showActionToast(jarvisBox.textContent, result.ok ? 'completed' : 'failed', 5500);
+            }
+        } catch (error) {
+            errorText.textContent = error.message;
+            confirm.disabled = cancel.disabled = false;
+            pin?.focus();
+        }
+    };
+    confirm.addEventListener('click', () => submit(true));
+    cancel.addEventListener('click', () => submit(false));
+    pin?.addEventListener('keydown', event => { if (event.key === 'Enter') submit(true); });
+    document.body.appendChild(box);
+    (pin || confirm).focus();
+}
+
+socket.on('connect', async () => {
+    try {
+        const response = await fetch('/api/actions/pending');
+        if (response.ok) {
+            const pending = await response.json();
+            if (pending?.confirmationToken) showActionConfirmation(pending);
+            else document.getElementById('action-confirmation-controls')?.remove();
+        }
+    } catch (_) { /* La pantalla puede seguir funcionando aunque falle la recuperación. */ }
+});
+
 socket.on('response', (data) => {
+    if (data.confirmationResolved) document.getElementById('action-confirmation-controls')?.remove();
+    showActionConfirmation(data);
     const enteringSleep = data.action === 'voice.sleep' || data.actionPayload?.voiceState === 'dormant';
-    const succeeded = data.status !== 'failed' && data.status !== 'unavailable';
+    const succeeded = !data.status || data.status === 'completed';
+    const pending = Boolean(data.confirmationToken) || data.status === 'needs_input';
     showActionToast(
-        succeeded ? `Listo: ${data.text || 'acción completada.'}` : `No pude completarlo: ${data.text || 'error desconocido.'}`,
-        succeeded ? 'completed' : 'failed',
+        pending ? `Pendiente: ${data.text || 'faltan datos.'}` : succeeded ? `Listo: ${data.text || 'acción completada.'}` : `No pude completarlo: ${data.text || 'error desconocido.'}`,
+        pending ? 'accepted' : succeeded ? 'completed' : 'failed',
         5500
     );
     if (data.action === 'voice.wake' || data.actionPayload?.voiceState === 'awake') {
         isSystemActive = true;
-        isDormant = false;
-        updateMicButtonUI();
+        updatePowerStateUI(true);
     } else if (data.action === 'voice.sleep' || data.actionPayload?.voiceState === 'dormant') {
         isSystemActive = true;
-        isDormant = true;
-        updateMicButtonUI();
+        updatePowerStateUI(false);
     }
     const afterResponse = () => {
         // Ejecutar acciones visuales una vez termine de hablar
@@ -1229,11 +1402,19 @@ socket.on('response', (data) => {
         afterResponse();
         return;
     }
+    const displayText = data.text || '';
+    const voiceText = data.voiceText || data.text || '';
+
     if (data.suppressTts) {
-        jarvisBox.textContent = data.text;
+        if (typeof marked !== 'undefined') {
+            jarvisBox.innerHTML = marked.parse(displayText);
+            if (window.MathJax) MathJax.typesetPromise([jarvisBox]);
+        } else {
+            jarvisBox.textContent = displayText;
+        }
         afterResponse();
     } else {
-        speak(data.text, afterResponse);
+        speak(voiceText, afterResponse, displayText);
     }
 });
 
@@ -1273,60 +1454,109 @@ function setRingState(state) {
     }
 }
 
-function updateMicButtonUI() {
-    if (isSystemActive && !isDormant) {
-        btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone"></i> ESCUCHA ACTIVA — Di tu orden directamente';
-        btnToggleMic.classList.add('active');
+function updatePowerStateUI(isAwake) {
+    isDormant = !isAwake;
+    const badge = document.getElementById('jarvis-power-badge');
+    const title = document.getElementById('power-status-title');
+    const sub = document.getElementById('power-status-sub');
+    const banner = document.getElementById('hud-power-banner');
+    const bannerIcon = document.getElementById('hud-power-icon');
+    const bannerState = document.getElementById('hud-power-state');
+    const bannerHint = document.getElementById('hud-power-hint');
+
+    if (isAwake) {
+        if (badge) {
+            badge.className = 'jarvis-power-badge awake';
+            if (title) title.textContent = 'JARVIS PRENDIDO';
+            if (sub) sub.textContent = 'Escucha activa';
+        }
+        if (banner) {
+            banner.className = 'hud-power-banner awake';
+            if (bannerIcon) bannerIcon.className = 'fa-solid fa-bolt';
+            if (bannerState) bannerState.textContent = 'PRENDIDO';
+            if (bannerHint) bannerHint.textContent = 'Escucha activa — Di tu orden directamente';
+        }
+        if (btnToggleMic) {
+            btnToggleMic.textContent = '● Voz activa';
+            btnToggleMic.title = 'Escucha activa. Decí tu orden directamente o hacé clic para poner a Jarvis en reposo.';
+            btnToggleMic.classList.add('active');
+        }
         setRingState('listening');
-    } else if (isSystemActive && isDormant) {
-        btnToggleMic.innerHTML = '<i class="fa-solid fa-moon"></i> EN PAUSA — Decí "Préndete" para despertar';
-        btnToggleMic.classList.remove('active');
-        setRingState('idle');
     } else {
-        btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone-slash"></i> MICRÓFONO APAGADO — Click para activar';
-        btnToggleMic.classList.remove('active');
+        if (badge) {
+            badge.className = 'jarvis-power-badge dormant';
+            if (title) title.textContent = 'JARVIS APAGADO';
+            if (sub) sub.textContent = 'En reposo';
+        }
+        if (banner) {
+            banner.className = 'hud-power-banner dormant';
+            if (bannerIcon) bannerIcon.className = 'fa-solid fa-moon';
+            if (bannerState) bannerState.textContent = 'APAGADO';
+            if (bannerHint) bannerHint.textContent = 'Modo reposo — Decí "Jarvis, préndete" o hacé clic para despertar';
+        }
+        if (btnToggleMic) {
+            btnToggleMic.textContent = '◌ Activar voz';
+            btnToggleMic.title = 'En reposo. Decí "Jarvis, préndete" o hacé clic para despertar.';
+            btnToggleMic.classList.remove('active');
+        }
         setRingState('idle');
     }
 }
 
+function updateMicButtonUI() {
+    updatePowerStateUI(!isDormant);
+}
+
 function startHandsFreeMode() {
-    if (!recognition) return;
+    if (!recognition || localVoiceOnline) return;
     isSystemActive = true;
-    isDormant = false;
-    updateMicButtonUI();
+    updatePowerStateUI(true);
     jarvisBox.textContent = "Sistema activo. Di 'Jarvis' o un comando directo (abre, busca, crea...).";
     try { recognition.start(); } catch(e) {}
 }
 
 function startDormantMode() {
-    if (!recognition) return;
+    if (!recognition || localVoiceOnline) return;
     isSystemActive = true;
-    isDormant = true;
-    updateMicButtonUI();
+    updatePowerStateUI(false);
     jarvisBox.textContent = 'Jarvis está en descanso. Decí "Jarvis, prendete" para activarlo.';
     try { recognition.start(); } catch(e) {}
 }
 
-// Click en el botón: toggle encender/apagar
+// Click en el botón o en el badge de estado: toggle encender/apagar
 btnToggleMic.addEventListener('click', (e) => {
     e.preventDefault();
+    const nextState = isDormant ? 'awake' : 'dormant';
+    updatePowerStateUI(nextState === 'awake');
+
     if (localVoiceOnline) {
-        const state = isDormant ? 'awake' : 'dormant';
-        if (state === 'dormant') stopAllSpeech();
-        voiceApi('/api/voice/local/state', { method: 'POST', body: JSON.stringify({ state }) })
+        if (nextState === 'dormant') stopAllSpeech();
+        voiceApi('/api/voice/local/state', { method: 'POST', body: JSON.stringify({ state: nextState }) })
             .then(() => voiceApi('/api/voice/local/status'))
             .then(renderLocalVoiceStatus)
             .catch(error => { jarvisBox.textContent = error.message; });
         return;
     }
-    if (isSystemActive && !isDormant) {
-        isDormant = true;
-        updateMicButtonUI();
-        jarvisBox.textContent = 'Jarvis está en descanso. Decí "Jarvis, prendete" para activarlo.';
-    } else if (isSystemActive && isDormant) {
-        startHandsFreeMode();
-    } else {
+    if (nextState === 'dormant') {
         startDormantMode();
+    } else {
+        startHandsFreeMode();
+    }
+});
+
+// Clic en el badge superior de la cabecera
+const powerBadgeEl = document.getElementById('jarvis-power-badge');
+if (powerBadgeEl) {
+    powerBadgeEl.addEventListener('click', (e) => {
+        e.preventDefault();
+        btnToggleMic.click();
+    });
+}
+
+// Escuchar cambios de estado desde el backend en tiempo real
+socket.on('voice_state_changed', (data) => {
+    if (data && data.state) {
+        updatePowerStateUI(data.state === 'awake');
     }
 });
 
@@ -1355,7 +1585,7 @@ btnCloseModal.addEventListener('click', () => {
 modeForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('mode-name').value;
-    const description = document.getElementById('mode-desc').value;
+    const description = document.getElementById('mode-desc')?.value || document.getElementById('mode-prompt')?.value || '';
 
     try {
         const response = await fetch('/api/modes', {
@@ -1401,7 +1631,8 @@ document.getElementById('btn-send-text').addEventListener('click', () => {
 });
 
 document.getElementById('manual-text-input').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
         document.getElementById('btn-send-text').click();
     }
 });
@@ -1508,12 +1739,12 @@ const brushSizeInput = document.getElementById('brush-size');
 let isPainting = false;
 let maskCtx = null;
 
-btnCloseInpainting.addEventListener('click', () => {
+btnCloseInpainting?.addEventListener('click', () => {
     inpaintingModal.classList.add('hidden');
 });
 
 // Inicializar el canvas de mismo tamaño que la imagen al cargar
-inpaintingBg.addEventListener('load', () => {
+inpaintingBg?.addEventListener('load', () => {
     inpaintingCanvas.width = inpaintingBg.width;
     inpaintingCanvas.height = inpaintingBg.height;
     maskCtx = inpaintingCanvas.getContext('2d');
@@ -1535,7 +1766,7 @@ function drawMask(e) {
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
     
-    maskCtx.lineWidth = brushSizeInput.value;
+    maskCtx.lineWidth = brushSizeInput?.value || 20;
     maskCtx.strokeStyle = "white"; // Blanco para el área que SÍ se modifica
     
     maskCtx.lineTo(x, y);
@@ -1544,23 +1775,23 @@ function drawMask(e) {
     maskCtx.moveTo(x, y);
 }
 
-inpaintingCanvas.addEventListener('mousedown', (e) => {
+inpaintingCanvas?.addEventListener('mousedown', (e) => {
     isPainting = true;
     maskCtx.beginPath();
     drawMask(e);
 });
-inpaintingCanvas.addEventListener('mousemove', drawMask);
-inpaintingCanvas.addEventListener('mouseup', () => { isPainting = false; maskCtx.beginPath(); });
-inpaintingCanvas.addEventListener('mouseleave', () => { isPainting = false; maskCtx.beginPath(); });
+inpaintingCanvas?.addEventListener('mousemove', drawMask);
+inpaintingCanvas?.addEventListener('mouseup', () => { isPainting = false; maskCtx?.beginPath(); });
+inpaintingCanvas?.addEventListener('mouseleave', () => { isPainting = false; maskCtx?.beginPath(); });
 
-btnClearMask.addEventListener('click', () => {
+btnClearMask?.addEventListener('click', () => {
     if (maskCtx) {
         maskCtx.fillStyle = 'black';
         maskCtx.fillRect(0, 0, inpaintingCanvas.width, inpaintingCanvas.height);
     }
 });
 
-btnSaveMask.addEventListener('click', () => {
+btnSaveMask?.addEventListener('click', () => {
     if (maskCtx) {
         // Enviar al servidor como JPEG para asegurar que no hay canal alpha
         currentInpaintingMaskBase64 = inpaintingCanvas.toDataURL('image/jpeg', 1.0);
@@ -1568,3 +1799,176 @@ btnSaveMask.addEventListener('click', () => {
         document.getElementById('dropzone-text').textContent = "✅ Máscara lista. Escribe la edición y envía.";
     }
 });
+
+// =================================================================
+// DASHBOARD DE TELEMETRÍA Y DIAGNÓSTICO (Ítem 31)
+// =================================================================
+const btnOpenDashboard = document.getElementById('btn-open-dashboard');
+const dashboardModal = document.getElementById('dashboard-modal');
+const btnCloseDashboardModal = document.getElementById('close-dashboard-modal');
+const btnRefreshDashboard = document.getElementById('btn-refresh-dashboard');
+
+function renderDashboard(data) {
+    if (!data) return;
+
+    // 1. Servicios Satélite
+    if (data.services) {
+        const svcMap = {
+            'Core': 'svc-core',
+            'Ollama': 'svc-ollama',
+            'Python Engine': 'svc-python',
+            'Whisper': 'svc-whisper',
+            'ComfyUI': 'svc-comfyui',
+            'BroadLink': 'svc-broadlink',
+            'HomeAssistant': 'svc-homeassistant'
+        };
+
+        for (const [svcName, elId] of Object.entries(svcMap)) {
+            const el = document.getElementById(elId);
+            if (el) {
+                const status = data.services[svcName] || 'OFFLINE';
+                const badge = el.querySelector('.svc-badge');
+                if (badge) {
+                    badge.textContent = status;
+                    badge.className = 'svc-badge';
+                    if (status === 'ONLINE') badge.classList.add('badge-online');
+                    else if (status === 'SLEEP') badge.classList.add('badge-sleep');
+                    else badge.classList.add('badge-offline');
+                }
+            }
+        }
+    }
+
+    // 2. Hardware
+    if (data.hardware) {
+        const cpuVal = document.getElementById('dash-cpu-val');
+        const cpuBar = document.getElementById('dash-cpu-bar');
+        if (cpuVal && cpuBar) {
+            cpuVal.textContent = `${data.hardware.cpuPercent}%`;
+            cpuBar.style.width = `${Math.min(100, Math.max(2, data.hardware.cpuPercent))}%`;
+        }
+
+        const ramVal = document.getElementById('dash-ram-val');
+        const ramBar = document.getElementById('dash-ram-bar');
+        if (ramVal && ramBar) {
+            ramVal.textContent = `${data.hardware.ramUsedGB} / ${data.hardware.ramTotalGB} GB (${data.hardware.ramPercent}%)`;
+            ramBar.style.width = `${Math.min(100, Math.max(2, data.hardware.ramPercent))}%`;
+        }
+
+        const vramVal = document.getElementById('dash-vram-val');
+        const vramBar = document.getElementById('dash-vram-bar');
+        if (vramVal && vramBar) {
+            if (data.hardware.vramAvailable === false) {
+                vramVal.textContent = 'No disponible';
+                vramBar.style.width = '0%';
+            } else {
+                vramVal.textContent = `${data.hardware.vramUsedGB} / ${data.hardware.vramTotalGB} GB (${data.hardware.vramPercent}%)`;
+                vramBar.style.width = `${Math.min(100, Math.max(2, data.hardware.vramPercent))}%`;
+            }
+        }
+    }
+
+    // 3. Operación & IA
+    if (data.operation) {
+        const modelEl = document.getElementById('dash-current-model');
+        if (modelEl) modelEl.textContent = data.operation.currentModel || 'Qwen 2.5';
+
+        const actionEl = document.getElementById('dash-last-action');
+        if (actionEl) {
+            actionEl.textContent = data.operation.lastAction || 'none';
+            actionEl.style.color = data.operation.lastActionStatus === 'error' ? '#ef4444' : '#a78bfa';
+        }
+
+        const latencyEl = document.getElementById('dash-latency');
+        if (latencyEl) {
+            const ms = data.operation.latencyMs || 0;
+            latencyEl.textContent = `${ms} ms`;
+            if (ms < 100) latencyEl.style.color = '#34d399';
+            else if (ms < 500) latencyEl.style.color = '#f59e0b';
+            else latencyEl.style.color = '#ef4444';
+        }
+    }
+}
+
+async function fetchDashboardStatus() {
+    try {
+        const res = await fetch('/api/dashboard/status');
+        if (res.ok) {
+            const data = await res.json();
+            renderDashboard(data);
+        }
+    } catch (err) {
+        console.warn('[Dashboard] No se pudo obtener telemetría inicial:', err.message);
+    }
+}
+
+if (btnOpenDashboard && dashboardModal) {
+    btnOpenDashboard.addEventListener('click', () => {
+        dashboardModal.classList.remove('hidden');
+        fetchDashboardStatus();
+    });
+}
+
+if (btnCloseDashboardModal && dashboardModal) {
+    btnCloseDashboardModal.addEventListener('click', () => {
+        dashboardModal.classList.add('hidden');
+    });
+}
+
+if (btnRefreshDashboard) {
+    btnRefreshDashboard.addEventListener('click', () => {
+        fetchDashboardStatus();
+    });
+}
+
+// Escuchar streaming por Socket.IO en tiempo real
+if (typeof socket !== 'undefined' && socket) {
+    socket.on('dashboard_telemetry', (data) => {
+        // Actualizar solo si el modal está abierto o para mantener el estado
+        renderDashboard(data);
+    });
+
+    socket.on('dashboard_action_update', (actionUpdate) => {
+        const actionEl = document.getElementById('dash-last-action');
+        if (actionEl) {
+            actionEl.textContent = actionUpdate.name || actionUpdate.actionId;
+            actionEl.style.color = actionUpdate.status === 'error' ? '#ef4444' : '#a78bfa';
+        }
+        const latencyEl = document.getElementById('dash-latency');
+        if (latencyEl) {
+            latencyEl.textContent = `${actionUpdate.latencyMs} ms`;
+        }
+    });
+}
+let tvLearningDraft={open:[],search:[],submit:[]};
+let tvLearningBusy=false;
+function tvLearningMessage(text){document.getElementById('tv-learning-message').textContent=text;}
+async function loadTvLearning(){
+ try {const all=await tvApi('/api/tv/learning');const app=document.getElementById('tv-learning-app').value;
+ tvLearningDraft=all[app]||{open:[],search:[],submit:[],rows:'',start:'a',keyDelayMs:800};
+ document.getElementById('tv-learning-rows').value=tvLearningDraft.rows||'';
+ document.getElementById('tv-learning-start').value=tvLearningDraft.start||'a';
+ document.getElementById('tv-learning-delay').value=tvLearningDraft.keyDelayMs||800;
+ const container=document.getElementById('tv-learning-buttons');container.replaceChildren();
+ for(const [key,label] of [['home','Home'],['youtube','YouTube'],['netflix','Netflix'],['up','Arriba'],['down','Abajo'],['left','Izquierda'],['right','Derecha'],['ok','OK'],['back','Volver']]){const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>recordTvLearning(key);container.appendChild(b);}
+ renderTvLearningSteps();tvLearningMessage('Aprendizaje cargado.');
+ }catch(e){tvLearningMessage(e.message);}
+}
+function renderTvLearningSteps(){const stage=document.getElementById('tv-learning-stage').value;document.getElementById('tv-learning-steps').textContent=(tvLearningDraft[stage]||[]).map((s,i)=>`${i+1}. ${s.button||'Esperar'} · ${s.waitMs} ms`).join('\n')||'Sin pasos grabados.';}
+function clearTvLearningStage(){if(tvLearningBusy)return;tvLearningDraft[document.getElementById('tv-learning-stage').value]=[];renderTvLearningSteps();tvLearningMessage('Etapa borrada del borrador. Pulsá Guardar para conservar el cambio.');}
+async function recordTvLearning(button){
+ if(tvLearningBusy)return;tvLearningBusy=true;
+ const stage=document.getElementById('tv-learning-stage').value;const waitMs=Number(document.getElementById('tv-learning-wait').value);
+ try{if(!Number.isFinite(waitMs)||waitMs<100||waitMs>60000)throw new Error('Elegí una espera entre 100 y 60000 ms.');
+ if(button)await tvApi('/api/tv/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({button})});
+ (tvLearningDraft[stage]||=[]).push({button,waitMs});renderTvLearningSteps();tvLearningMessage('Paso agregado. Esperando que la TV responda…');await new Promise(r=>setTimeout(r,waitMs));tvLearningMessage('Listo para el siguiente paso.');
+ }catch(e){tvLearningMessage(e.message);}finally{tvLearningBusy=false;}
+}
+async function saveTvLearning(){
+ if(tvLearningBusy)return false;
+ try{await tvApi('/api/tv/learning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...tvLearningDraft,app:document.getElementById('tv-learning-app').value,rows:document.getElementById('tv-learning-rows').value,start:document.getElementById('tv-learning-start').value,keyDelayMs:Number(document.getElementById('tv-learning-delay').value)})});tvLearningMessage('Aprendizaje guardado.');return true;}catch(e){tvLearningMessage(e.message);return false;}
+}
+async function runTvLearning(writeOnly){
+ if(tvLearningBusy || !await saveTvLearning())return;tvLearningBusy=true;
+ try{tvLearningMessage('Enviando secuencia…');const result=await tvApi('/api/tv/learning/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app:document.getElementById('tv-learning-app').value,title:writeOnly?document.getElementById('tv-learning-text').value:'',open:!writeOnly,writeOnly})});tvLearningMessage(result.message);}catch(e){tvLearningMessage(e.message);}finally{tvLearningBusy=false;}
+}
