@@ -96,6 +96,8 @@ const io = new Server(server, {
     // Los eventos son pequeños y locales; comprimirlos agrega CPU y latencia.
     perMessageDeflate: false
 });
+const desktopCompanion = new (require('./services/desktopCompanionService').DesktopCompanionService)();
+desktopCompanion.install(app, io, Number(process.env.PORT) || 3000);
 notificationService.setSocketIO(io);
 notificationService.setTtsService(ttsService);
 bargeInService.init({ ttsService, wakeWordService, io });
@@ -702,7 +704,7 @@ app.post('/api/homeassistant/service', async (req, res) => {
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const uploadDir = path.join(__dirname, 'data', 'uploads');
+        const uploadDir = require("./services/dataPaths").dataPath("uploads");
         if (!fs.existsSync(uploadDir)) {
             fs.mkdirSync(uploadDir, { recursive: true });
         }
@@ -729,7 +731,7 @@ app.get('/api/generated-images/:name', (req, res) => {
     if (!/^jarvis_(?:img|edit)_\d+\.png$/i.test(name) || name !== req.params.name) {
         return res.status(404).json({ error: 'Imagen no encontrada.' });
     }
-    const filePath = path.join(__dirname, 'data', 'uploads', name);
+    const filePath = require('./services/dataPaths').dataPath('uploads', name);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Imagen no encontrada.' });
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     return res.sendFile(filePath);
@@ -824,7 +826,7 @@ app.post('/api/voice/local/status', (req, res) => {
 function setVoiceState(state) {
     const newState = state === 'awake' ? 'awake' : 'dormant';
     if (newState === 'dormant') ttsService.stop();
-    const statePath = path.join(__dirname, 'data', 'local_voice_state.json');
+    const statePath = require("./services/dataPaths").dataPath("local_voice_state.json");
     try {
         fs.writeFileSync(statePath, JSON.stringify({ state: newState, updatedAt: Date.now() }, null, 2));
     } catch (e) {
@@ -1611,7 +1613,19 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+app.get('/api/desktop/health', (req, res) => res.json({ application: 'jarvis', version: '1.0.0', pid: process.pid, root: __dirname, desktop: Boolean(process.env.JARVIS_DESKTOP_TOKEN) }));
+app.post('/api/desktop/shutdown', async (req, res) => {
+    const token = process.env.JARVIS_DESKTOP_TOKEN;
+    if (!token || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) || req.get('X-Jarvis-Desktop') !== token) return res.sendStatus(403);
+    ttsService.stop(); setVoiceState('dormant');
+    powerService.stopPowerListener();
+    await require('./services/imageService').shutdown().catch(error => console.warn('[Desktop] Cierre de imágenes:', error.message));
+    res.json({ ok: true });
+    setTimeout(() => process.exit(0), 250).unref();
+});
+const listenOptions = { port: PORT };
+if (process.env.JARVIS_BIND_HOST) listenOptions.host = process.env.JARVIS_BIND_HOST;
+server.listen(listenOptions, () => {
     console.log(`\n===========================================`);
     console.log(`  JARVIS VIRTUAL ASSISTANT - BACKEND ACTIVE`);
     console.log(`  => Server running on http://localhost:${PORT}`);

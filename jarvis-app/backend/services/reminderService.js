@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const notifier = require('node-notifier');
 
-const remindersFile = path.join(__dirname, '..', 'data', 'recordatorios.json');
+const remindersFile = require("./dataPaths").dataPath("recordatorios.json");
 let schedulerTimer = null;
 let schedulerIo = null;
 

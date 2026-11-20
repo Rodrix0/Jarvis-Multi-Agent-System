@@ -18,7 +18,7 @@ const databaseService = require('../persistence/databaseService');
 
 class StructuredLoggerService {
     constructor() {
-        this.logsDir = path.join(__dirname, '../../data/logs');
+        this.logsDir = require("../dataPaths").dataPath("logs");
         this.ensureLogDir();
     }
 

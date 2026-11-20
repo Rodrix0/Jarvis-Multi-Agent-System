@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const research = require('./ai/researchService');
-const cachePath = process.env.JARVIS_RESEARCH_CACHE_PATH || path.join(__dirname,'../data/last_research.json');
+const cachePath = process.env.JARVIS_RESEARCH_CACHE_PATH || require("./dataPaths").dataPath("last_research.json");
 const OLLAMA_URL = 'http://127.0.0.1:11434';
 function format(result) {
     return `Información encontrada sobre ${result.topic}\nConsulta: ${new Date().toLocaleString('es-AR')}\n\nExtractos de fuentes web:\n\n` + result.sources.slice(0,6).map((s,i)=>`[${i+1}] ${s.title}\n${s.pageText || s.content}\nFuente: ${s.url}${s.pageText?'':' (extracto del buscador)'}`).join('\n\n');

@@ -17,7 +17,7 @@ const crypto = require('crypto');
 const databaseService = require('../persistence/databaseService');
 const eventBus = require('../core/eventBusService');
 
-const PROCEDURES_FILE = path.join(__dirname, '..', '..', 'data', 'procedures.json');
+const PROCEDURES_FILE = require("../dataPaths").dataPath("procedures.json");
 
 class ProcedureRegistryService {
     constructor() {

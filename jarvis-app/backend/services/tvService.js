@@ -2,8 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const CONFIG_PATH = path.join(__dirname, '..', 'data', 'broadlink.json');
-const TV_STATE_PATH = path.join(__dirname, '..', 'data', 'tv_state.json');
+const CONFIG_PATH = require("./dataPaths").dataPath("broadlink.json");
+const TV_STATE_PATH = require("./dataPaths").dataPath("tv_state.json");
 const BRIDGE_PATH = path.join(__dirname, '..', '..', 'python_engine', 'broadlink_remote.py');
 const VENV_PYTHON = path.join(__dirname, '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe');
 const executionManager = require('./core/executionManager');

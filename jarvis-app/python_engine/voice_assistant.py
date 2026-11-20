@@ -35,7 +35,10 @@ import numpy as np
 import psutil
 import requests
 import sounddevice as sd
-import webrtcvad
+try:
+    import webrtcvad
+except ImportError:
+    webrtcvad = None
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
 
@@ -437,7 +440,15 @@ class LocalVoiceEngine:
         self.state = read_state()
         self.pending = None
         self.suppress_until = 0.0
-        self.vad = webrtcvad.Vad(int(self.settings["vadAggressiveness"]))
+        if webrtcvad is not None:
+            self.vad = webrtcvad.Vad(int(self.settings.get("vadAggressiveness", 2)))
+        else:
+            class EnergyVad:
+                def __init__(self, mode=2):
+                    self.threshold = 0.015 if mode == 2 else 0.02
+                def is_speech(self, frame, sample_rate=16000):
+                    return rms(frame) > self.threshold
+            self.vad = EnergyVad(int(self.settings.get("vadAggressiveness", 2)))
         if not VOSK_PATH.exists():
             raise RuntimeError(f"Falta el modelo Vosk: {VOSK_PATH}")
         self.wake_model = Model(str(VOSK_PATH))
@@ -466,6 +477,13 @@ class LocalVoiceEngine:
             "[unk]"
         ])
         self.barge_recognizer = KaldiRecognizer(self.wake_model, SAMPLE_RATE, barge_grammar)
+        self.whistle = None
+        try:
+            import needle
+            self.whistle = needle.Whistle()
+            print("[Voz local] [Whistle-CPU] Motor ultrarrapido (16.9 MB) listo para Fast-Path.", flush=True)
+        except Exception as error:
+            print(f"[Voz local] Whistle no disponible ({error}). Se usará Whisper estándar.", flush=True)
         self.whisper = None
         self.whisper_lock = threading.Lock()
         self.whisper_release_timer = None
@@ -552,9 +570,49 @@ class LocalVoiceEngine:
         report_status(stage="ready", model=model_name, device=device, computeType=compute_type)
 
     def transcribe(self, frames):
-        self.ensure_whisper()
         save_wav(frames)
         learned_terms = load_voice_lexicon()
+
+        # 1. Fast-Path Ultrarrápido con Whistle en CPU (~60 ms)
+        if self.whistle is not None and self.settings.get("sttEngine", "hybrid") in ("hybrid", "whistle"):
+            try:
+                base_keywords = [
+                    "WhatsApp", "YouTube", "Netflix", "Spotify", "Chrome", "Discord", "Bloc de notas",
+                    "abrir", "cerrar", "crear carpeta", "crear archivo", "nueva carpeta", "nuevo txt",
+                    "buscar", "dólar", "cuánto está el dólar", "clima", "qué clima hace", "temperatura",
+                    "volumen", "subir volumen", "bajar volumen", "brillo", "silencio", "mutear",
+                    "minimizar", "maximizar", "escritorio", "mostrar escritorio", "nueva pestaña",
+                    "recordame", "recordatorio", "consultar recordatorios", "estado de la computadora",
+                    "espacio en disco", "procesos que más consumen", "leer portapapeles", "explicar decisión"
+                ]
+                keywords = list(dict.fromkeys(base_keywords + learned_terms[:30]))
+                t_w0 = time.time()
+                w_res = self.whistle.transcribe(str(TEMP_WAV), language="es", keywords=keywords)
+                w_text = (w_res.get("text") or "").strip()
+                ttft = w_res.get("ttft_ms", 0)
+                dt_ms = (time.time() - t_w0) * 1000
+                if w_text and len(w_text) >= 2:
+                    print(f"[Voz local] [Whistle-CPU] Fast-Path ({dt_ms:.1f}ms, TTFT: {ttft}ms): '{w_text}'", flush=True)
+                    text, repetition_collapsed = collapse_repeated_transcript(w_text)
+                    frame_levels = [rms(frame) for frame in frames]
+                    return text, 0.94, {
+                        "language": "es",
+                        "duration": len(frames) * FRAME_MS / 1000.0,
+                        "segments": 1,
+                        "model": "whistle-cpu-16.9mb",
+                        "device": "cpu",
+                        "meanRms": round(sum(frame_levels) / max(1, len(frame_levels)), 5),
+                        "peakRms": round(max(frame_levels, default=0), 5),
+                        "repetitionCollapsed": repetition_collapsed,
+                        "rawTokenCount": len(re.findall(r"\w+", w_text, flags=re.UNICODE)),
+                        "ttft_ms": ttft,
+                        "provider": "whistle-cpu"
+                    }
+            except Exception as w_err:
+                print(f"[Voz local] Whistle error ({w_err}); pasando a Whisper.", flush=True)
+
+        # 2. Deep-Path Fallback con Whisper (GPU / Turbo)
+        self.ensure_whisper()
         vocabulary_hint = ", ".join(learned_terms[:24])
         duration_seconds = len(frames) * FRAME_MS / 1000.0
         token_limit = max(24, min(192, int(duration_seconds * 6) + 18))

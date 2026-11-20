@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DATA_DIR = path.join(__dirname, '..', 'data', 'shop');
+const DATA_DIR = require("./dataPaths").dataPath("shop");
 const FILES = {
     products: path.join(DATA_DIR, 'products.json'),
     carts: path.join(DATA_DIR, 'carts.json'),

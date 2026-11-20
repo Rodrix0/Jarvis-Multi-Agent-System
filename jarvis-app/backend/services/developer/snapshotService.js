@@ -15,7 +15,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { gitIntegrationService } = require('./gitIntegrationService');
 
-const SNAPSHOT_BASE_DIR = path.join(__dirname, '..', '..', 'data', 'snapshots');
+const SNAPSHOT_BASE_DIR = require("../dataPaths").dataPath("snapshots");
 const REGISTRY_FILE = path.join(SNAPSHOT_BASE_DIR, 'snapshot_registry.json');
 
 const EXCLUDED_DIRS = new Set([

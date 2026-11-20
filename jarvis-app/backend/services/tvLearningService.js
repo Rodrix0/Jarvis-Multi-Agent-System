@@ -1,5 +1,5 @@
 const fs=require('fs');const path=require('path');
-const file=path.join(__dirname,'../data/tv_learning.json');
+const file=require("./dataPaths").dataPath("tv_learning.json");
 const buttons=['home','youtube','netflix','up','down','left','right','ok','back'];
 let activeApp='netflix';
 function get(){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){return {};}}

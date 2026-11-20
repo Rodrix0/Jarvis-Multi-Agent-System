@@ -16,7 +16,7 @@ const path = require('path');
 const eventBus = require('../core/eventBusService');
 const modeService = require('../modeService');
 
-const PROFILES_FILE = path.join(__dirname, '..', '..', 'data', 'profiles', 'saved_profiles.json');
+const PROFILES_FILE = require("../dataPaths").dataPath("profiles", "saved_profiles.json");
 
 const BUILTIN_PROFILES = {
     NORMAL: {

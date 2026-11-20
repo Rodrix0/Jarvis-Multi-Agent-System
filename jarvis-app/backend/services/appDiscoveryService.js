@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 
 const scriptsDir = path.join(__dirname, '..', 'scripts');
-const dataDir = path.join(__dirname, '..', 'data');
+const dataDir = require("./dataPaths").dataPath();
 const appsPath = path.join(dataDir, 'installed_apps.json');
 const psScript = path.join(scriptsDir, 'scanInstalledApps.ps1');
 let memoryCache = null;

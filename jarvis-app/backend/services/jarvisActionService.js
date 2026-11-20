@@ -361,6 +361,56 @@ function registerActions() {
         execute: async () => windowsControlService.clipboard.readClipboard()
     });
 
+    // Antivirus, Malware Scanner & PC Health System
+    actionKernel.register({
+        id: 'security.scan-file', name: 'Escanear archivo con antivirus', description: 'Analiza un archivo con VirusTotal y Windows Defender.',
+        parameters: { filePath: 'Ruta del archivo a analizar' }, permission: 'standard', examples: ['Escanear archivo', 'Analizar archivo descargado'],
+        execute: async ({ filePath } = {}) => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.scanFile(filePath);
+        }
+    });
+    actionKernel.register({
+        id: 'security.scan-latest-download', name: 'Escanear última descarga', description: 'Detecta y escanea el último instalador o archivo descargado.',
+        parameters: {}, permission: 'standard', examples: ['Escaneá la última descarga', 'Analizá lo que descargué', 'Fijate si la descarga tiene virus'],
+        execute: async () => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.scanLatestDownload();
+        }
+    });
+    actionKernel.register({
+        id: 'security.system-health', name: 'Salud de PC y estado de virus', description: 'Consulta el estado de salud del equipo, protección en tiempo real y amenazas activas.',
+        parameters: {}, permission: 'standard', examples: ['Cómo está la salud de mi PC', 'Tengo algún virus', 'Analizá mi equipo', 'Mi PC está sana'],
+        execute: async () => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.getSystemHealth();
+        }
+    });
+    actionKernel.register({
+        id: 'security.system-scan', name: 'Ejecutar escaneo de virus en PC', description: 'Inicia un escaneo rápido del sistema con Windows Defender.',
+        parameters: {}, permission: 'standard', examples: ['Hacé un escaneo de virus', 'Buscá virus en mi equipo', 'Escaneá la computadora'],
+        execute: async () => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.runQuickSystemScan();
+        }
+    });
+    actionKernel.register({
+        id: 'security.quarantine-file', name: 'Aislar archivo en cuarentena', description: 'Mueve un archivo malicioso a la carpeta protegida de cuarentena de JARVIS.',
+        parameters: { filePath: 'Ruta del archivo a aislar' }, permission: 'standard', examples: ['Aislá este archivo', 'Mandalo a cuarentena'],
+        execute: async ({ filePath } = {}) => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.quarantineFile(filePath);
+        }
+    });
+    actionKernel.register({
+        id: 'security.delete-file', name: 'Eliminar archivo malicioso', description: 'Elimina de forma permanente un archivo infectado.',
+        parameters: { filePath: 'Ruta del archivo a eliminar' }, permission: 'standard', examples: ['Borrá el archivo infectado', 'Eliminá el virus'],
+        execute: async ({ filePath } = {}) => {
+            const { malwareScannerService } = require('./security/malwareScannerService');
+            return malwareScannerService.deleteFile(filePath);
+        }
+    });
+
     // Window & Tab Controls (Fast deterministic UI actions)
     actionKernel.register({
         id: 'window.minimize', name: 'Minimizar ventana', description: 'Minimiza la ventana activa.',
@@ -422,6 +472,17 @@ function registerActions() {
         confirmation: params => params.reviewRequired === true,
         confirmationMessage: ({ contact, message }) => `Preparé este mensaje para ${contact}: “${message}”. ¿Lo envío así? Podés confirmarlo o cancelarlo.`,
         execute: async ({ contact, message }) => windowsControlService.whatsapp.sendMessage(contact, message)
+    });
+
+    // Búsqueda de Comercios y Lugares Locales (Paso 2: Maps + WhatsApp)
+    actionKernel.register({
+        id: 'places.search',
+        name: 'Buscar comercios y lugares locales',
+        description: 'Busca cafeterías, librerías, restaurantes y negocios con buenas reseñas y enlaces a Google Maps, con opción de enviarlos por WhatsApp.',
+        parameters: { category: 'Rubro del comercio', location: 'Ciudad o zona', contact: 'Contacto opcional para enviar por WhatsApp' },
+        permission: 'standard',
+        examples: ['Búscame buenas cafeterías en Corrientes Capital y envíaselos por WhatsApp a Color Cartón', 'Busca librerías cerca de mi zona'],
+        execute: params => require('./placesService').searchPlaces(params)
     });
 
     // UI Automation (Semantic Windows Control)
@@ -1099,7 +1160,7 @@ function registerActions() {
         id: 'voice.wake', name: 'Despertar a Jarvis', description: 'Sale del modo descanso y acepta órdenes hasta que el usuario lo apague.',
         parameters: {}, permission: 'standard', examples: ['Jarvis, prendete', 'Prendete', 'Despertate'],
         execute: async () => {
-            const statePath = path.join(__dirname, '..', 'data', 'local_voice_state.json');
+            const statePath = require("./dataPaths").dataPath("local_voice_state.json");
             let wasAwake = false;
             try {
                 const cur = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -1118,7 +1179,7 @@ function registerActions() {
         id: 'voice.sleep', name: 'Poner a Jarvis en descanso', description: 'Ignora órdenes normales y conserva solamente la escucha de la frase de activación.',
         parameters: {}, permission: 'standard', examples: ['Jarvis, apagate', 'Apagate', 'Dormite', 'Modo descanso'],
         execute: async () => {
-            const statePath = path.join(__dirname, '..', 'data', 'local_voice_state.json');
+            const statePath = require("./dataPaths").dataPath("local_voice_state.json");
             try {
                 fs.writeFileSync(statePath, JSON.stringify({ state: 'dormant', updatedAt: Date.now() }, null, 2));
             } catch (_) {}
@@ -1304,14 +1365,42 @@ function registerActions() {
         id: 'download.url', name: 'Descargar un enlace',
         description: 'Descarga localmente el enlace explícito entregado por el usuario.',
         parameters: { url: 'Enlace HTTP o HTTPS', audioOnly: 'Descargar solamente audio' },
-        permission: 'desktop-control', examples: ['Descargame esto https://…', 'Bajá el audio de este enlace https://…'],
+        permission: 'desktop-control', examples: ['Descargame esto https://...', 'Bajá el audio de este enlace https://...'],
         execute: async ({ url, audioOnly = false }) => {
             if (!/^https?:\/\/\S+$/i.test(String(url || ''))) throw new Error('Necesito un enlace HTTP o HTTPS válido.');
-            const directory = await require('./downloadService').downloadMedia(url, Boolean(audioOnly));
+            const downloadService = require('./downloadService');
+            const info = await downloadService.prepareDownload(url, Boolean(audioOnly));
+
+            const downloadPromise = downloadService.downloadMedia(url, Boolean(audioOnly));
+
+            if (info.isBackgroundEligible) {
+                downloadPromise.catch(err => {
+                    console.error('[DownloadService] Error en descarga en segundo plano:', err.message);
+                });
+                return {
+                    message: `Inicié la descarga de "${info.title}" (${info.sizeFormatted}) en segundo plano. Te avisaré ni bien se complete.`,
+                    data: { directory: info.directory, title: info.title },
+                    evidence: { downloadStarted: true, directory: info.directory, url, title: info.title }
+                };
+            }
+
+            const directory = await downloadPromise;
             return {
-                message: `Terminé la descarga y la guardé en ${directory}.`,
-                data: { directory }, evidence: { downloadCompleted: true, directory, url }
+                message: `Terminé la descarga de "${info.title}" y la guardé en ${directory}.`,
+                data: { directory, title: info.title },
+                evidence: { downloadCompleted: true, directory, url, title: info.title }
             };
+        }
+    });
+
+    actionKernel.register({
+        id: 'download.status', name: 'Consultar estado y progreso de descarga',
+        description: 'Informa el porcentaje, velocidad y tamaño descargado de la tarea activa.',
+        parameters: {}, permission: 'standard',
+        examples: ['Cómo va la descarga', 'Cuánto porcentaje ya descargó', 'Estado de la descarga', 'Cuánto falta para que termine'],
+        execute: async () => {
+            const downloadService = require('./downloadService');
+            return downloadService.getDownloadStatus();
         }
     });
 
@@ -1401,7 +1490,13 @@ function parseDesktopMediaSearch(text) {
     if (/\byoutube\b/.test(clean)) platform = 'youtube';
     if (/\bstremio\b/.test(clean)) platform = 'stremio';
     if (/\bnetflix\b/.test(clean) && /\b(compu|computadora|pc|notebook|laptop)\b/.test(clean)) platform = 'netflix';
-    if (!platform) return null;
+    if (!platform) {
+        if (/\b(pelicula|serie|temporada|capitulo|anime|film)\b/.test(clean)) {
+            platform = 'stremio';
+        } else {
+            return null;
+        }
+    }
 
     const wantsSearch = /\b(busca|buscame|buscar|encontra|encontrame|pone|poneme|reproduce|reproducime|quiero ver|mostrar)\b/.test(clean);
     if (!wantsSearch) return null;
@@ -1498,8 +1593,10 @@ async function resolve(text) {
     if (imageGeneration) return { id: 'image.generate', params: imageGeneration };
     const weatherRequest = require('./weatherService').parseRequest(clean);
     if (weatherRequest) return { id: 'information.weather', params: weatherRequest };
+    const placesRequest = require('./placesService').parseRequest(clean);
+    if (placesRequest) return { id: 'places.search', params: placesRequest };
     // Explicit media target takes precedence over active browser/TV context.
-    if (/\bstremio\b/.test(lower)) {
+    if (/\b(?:stremio|pelicula|serie|anime|film)\b/.test(lower)) {
         const media = parseDesktopMediaSearch(clean);
         if (media) return { id: 'system.media-search', params: media };
     }
@@ -1580,6 +1677,9 @@ async function resolve(text) {
     }
     if (/\b(?:qu[eé]\s+tareas\s+(?:hay|est[aá]n)\s+activas|listar\s+tareas|tareas\s+activas)\b/i.test(lower)) {
         return { id: 'task.list', params: {} };
+    }
+    if (/\b(?:como\s+va|cuanto\s+(?:va|falta|porcentaje)|estado|progreso)\s+(?:de\s+la\s+)?(?:descarga|bajada)\b/i.test(lower) || /\b(?:cuanto\s+descargo|porcentaje\s+de\s+(?:la\s+)?descarga)\b/i.test(lower)) {
+        return { id: 'download.status', params: {} };
     }
 
     // 3. Deshacer Global (Undo)

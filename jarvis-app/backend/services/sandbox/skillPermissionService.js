@@ -24,7 +24,7 @@ const CRITICAL_SYSTEM_PATHS = [
 
 class SkillPermissionService {
     constructor() {
-        this.scratchDir = path.resolve(__dirname, '..', '..', 'data', 'sandbox_scratch');
+        this.scratchDir = require("../dataPaths").dataPath("sandbox_scratch");
         this.downloadsDir = path.resolve(os.homedir(), 'Downloads');
     }
 

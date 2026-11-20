@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$false)]
     [string]$ContactName = "",
-    
+
     [Parameter(Mandatory=$false)]
     [string]$MessageText = ""
 )
@@ -31,33 +31,47 @@ if ([string]::IsNullOrWhiteSpace($ContactName) -or [string]::IsNullOrWhiteSpace(
     exit 1
 }
 
-# 1. Localizar WhatsApp o Navegador activo
-$fgHwnd = [WinUser32]::GetForegroundWindow()
-$fgPid = 0
-[WinUser32]::GetWindowThreadProcessId($fgHwnd, [ref]$fgPid) | Out-Null
-$fgProc = if ($fgPid -gt 0) { Get-Process -Id $fgPid -ErrorAction SilentlyContinue } else { $null }
+# 1. Localizar WhatsApp Desktop o Navegador con WhatsApp Web (Razonamiento adaptativo)
+$waProc = Get-Process -Name "*WhatsApp*" -ErrorAction SilentlyContinue | Select-Object -First 1
 
-if ($fgProc -and ($fgProc.ProcessName -match "(?i)WhatsApp|chrome|msedge|brave")) {
-    Write-Output "WhatsApp/Navegador ya está al frente (Process: $($fgProc.ProcessName))."
+# Comprobar si WhatsApp Desktop está instalado en la PC
+$isDesktopInstalled = $false
+if ($waProc) {
+    $isDesktopInstalled = $true
 } else {
-    # Buscar si WhatsApp desktop está abierto
-    $wa = Get-Process -Name "*WhatsApp*" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($wa) {
-        Write-Output "Trayendo WhatsApp Desktop al frente..."
-        $wshell.AppActivate($wa.Id) | Out-Null
-        Start-Sleep -Milliseconds 500
+    $appx = Get-AppxPackage *WhatsApp* -ErrorAction SilentlyContinue
+    if ($appx) {
+        $isDesktopInstalled = $true
+    } elseif (Test-Path "$env:LOCALAPPDATA\Programs\WhatsApp\WhatsApp.exe") {
+        $isDesktopInstalled = $true
+    }
+}
+
+if ($isDesktopInstalled) {
+    Write-Output "WhatsApp Desktop detectado en la computadora."
+    if (-not $waProc) {
+        Write-Output "Iniciando WhatsApp Desktop..."
+        Start-Process "whatsapp:" -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+        $waProc = Get-Process -Name "*WhatsApp*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if ($waProc) {
+        Write-Output "Trayendo WhatsApp Desktop al frente (PID: $($waProc.Id))..."
+        $wshell.AppActivate($waProc.Id) | Out-Null
+        Start-Sleep -Milliseconds 600
+    }
+} else {
+    Write-Output "WhatsApp Desktop no está instalado en la PC. Razonando apertura en navegador (WhatsApp Web)..."
+    # Buscar si ya hay una ventana con WhatsApp Web abierto
+    $waBrowserWindow = Get-Process | Where-Object { $_.MainWindowTitle -match "(?i)WhatsApp" } | Select-Object -First 1
+    if ($waBrowserWindow) {
+        Write-Output "Pestaña de WhatsApp Web detectada en el navegador (PID: $($waBrowserWindow.Id)). Trayendo al frente..."
+        $wshell.AppActivate($waBrowserWindow.Id) | Out-Null
+        Start-Sleep -Milliseconds 600
     } else {
-        # Buscar si el navegador está corriendo
-        $browser = Get-Process | Where-Object { $_.ProcessName -match "^(chrome|msedge|brave)$" } | Select-Object -First 1
-        if ($browser) {
-            Write-Output "Trayendo navegador al frente (PID: $($browser.Id))..."
-            $wshell.AppActivate($browser.Id) | Out-Null
-            Start-Sleep -Milliseconds 500
-        } else {
-            Write-Output "Abriendo WhatsApp Web..."
-            Start-Process "https://web.whatsapp.com"
-            Start-Sleep -Seconds 8
-        }
+        Write-Output "Abriendo WhatsApp Web en el navegador predeterminado..."
+        Start-Process "https://web.whatsapp.com"
+        Start-Sleep -Seconds 8
     }
 }
 

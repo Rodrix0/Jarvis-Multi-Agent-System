@@ -20,7 +20,7 @@ const path = require('path');
 const crypto = require('crypto');
 const databaseService = require('../persistence/databaseService');
 
-const EXPLANATIONS_DIR = path.join(__dirname, '..', '..', 'data', 'history');
+const EXPLANATIONS_DIR = require("../dataPaths").dataPath("history");
 const EXPLANATIONS_FILE = path.join(EXPLANATIONS_DIR, 'decision_explanations.jsonl');
 
 class ExplanationService {

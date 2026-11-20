@@ -32,7 +32,7 @@ const memoryConflictResolver = require('./memoryConflictResolver');
 const memoryConsolidationService = require('./memoryConsolidationService');
 const entityGraphService = require('./entityGraphService');
 
-const RAW_ARCHIVE_DIR = path.join(__dirname, '..', '..', 'data', 'memory');
+const RAW_ARCHIVE_DIR = require("../dataPaths").dataPath("memory");
 const RAW_ARCHIVE_FILE = path.join(RAW_ARCHIVE_DIR, 'raw_archive.jsonl');
 
 function redactSecrets(text) {

@@ -4,7 +4,7 @@ const fs = require('fs');
 
 const CAPTURE_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'takeScreenshot.ps1');
 const OCR_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'runWindowsOcr.ps1');
-const TEMP_IMAGE = path.join(__dirname, '..', '..', 'data', 'last_screen_capture.png');
+const TEMP_IMAGE = require("../dataPaths").dataPath("last_screen_capture.png");
 
 const ERROR_REGEX = /\b(error|exception|failed|fallo|crash|fatal|nullreference|unhandled|linea?\s*\d+|warning|advertencia|syntaxerror|typeerror|referenceerror|rejection|build failed)\b/i;
 
@@ -192,7 +192,19 @@ class VisionService {
             `------------------------------------------------------------`
         ].join('\n');
 
-        const prompt = `${screenContextFormatted}\n\nEl usuario preguntó: "${userQuestion}".\nTAREA: Responde con precisión a lo que pide el usuario basándote en la ventana activa y el texto extraído por OCR de la captura. Si pregunta qué dice la captura o pantalla, lista y resume los textos, pestañas o elementos principales detectados. Si pregunta por un error, explica la causa y la solución paso a paso. Sé conciso, directo y llámalo "señor".`;
+        const isWebReview = /p[aá]gina(?:\s+web)?|web|sitio|dise[ñn]o|interfaz|ux|ui/i.test(userQuestion);
+        const isErrorDiag = /error|fallo|bug|falla|excepcion|exception|problema/i.test(userQuestion);
+
+        let promptTask = '';
+        if (isWebReview) {
+            promptTask = `El usuario te pide opinión sobre su página web o aplicación visible en la ventana "${context.activeWindow}". Analiza los textos, estructura y elementos visibles extraídos por OCR. Ofrece una devolución profesional y constructiva de UI/UX evaluando: 1. Jerarquía visual y títulos. 2. Legibilidad y contenido. 3. Tres sugerencias concretas de mejora para potenciar el diseño. Sé conciso y llámalo "señor".`;
+        } else if (isErrorDiag) {
+            promptTask = `El usuario pide detectar y diagnosticar el error en pantalla en la ventana "${context.activeWindow}". Basándote en los errores detectados (${errorsSummary}) y el texto visible, identifica el tipo de error, explica la causa en español claro, brinda la solución técnica y ofrécele modificar el código automáticamente si lo autoriza. Sé conciso y llámalo "señor".`;
+        } else {
+            promptTask = `Responde con precisión a lo que pide el usuario basándote en la ventana activa ("${context.activeWindow}") y el texto extraído por OCR de la captura. Si pregunta qué dice la captura o pantalla, lista y resume los textos o elementos principales detectados. Sé conciso, directo y llámalo "señor".`;
+        }
+
+        const prompt = `${screenContextFormatted}\n\nEl usuario preguntó: "${userQuestion}".\nTAREA: ${promptTask}`;
 
         try {
             const controller = new AbortController();
@@ -204,7 +216,7 @@ class VisionService {
                 body: JSON.stringify({
                     model: process.env.OLLAMA_MODEL || 'hermes3:latest',
                     messages: [
-                        { role: 'system', content: 'Eres Jarvis. Eres un experto en soporte técnico, programación y diagnóstico en Windows. Responde de forma concisa y directa al usuario.' },
+                        { role: 'system', content: 'Eres Jarvis. Eres un experto en soporte técnico, programación, diseño web UI/UX y diagnóstico en Windows. Responde de forma concisa, educada y directa.' },
                         { role: 'user', content: prompt }
                     ],
                     stream: false
@@ -228,16 +240,37 @@ class VisionService {
             console.warn('[VisionService] Error o timeout en Ollama para análisis visual:', e.message);
         }
 
-        // Fallback heurístico inmediato si Ollama no respondiera
-        let fallbackReply = `Señor, en la captura (ventana "${context.activeWindow}"):`;
-        if (context.detectedErrors.length > 0) {
-            fallbackReply += ` detecté el siguiente error: "${context.detectedErrors.join(' | ')}".`;
-        } else if (context.lines && context.lines.length > 0) {
-            fallbackReply += ` se leen las siguientes pestañas y elementos: ${context.lines.slice(0, 10).join(', ')}.`;
-        } else if (context.visibleText) {
-            fallbackReply += ` el texto visible es: "${context.visibleText.slice(0, 250)}..."`;
+        // Fallback heurístico inteligente si Ollama no respondiera
+        let fallbackReply = '';
+        if (isWebReview) {
+            const topElements = context.lines.length > 0 ? context.lines.slice(0, 6).join(', ') : 'elementos de la interfaz';
+            fallbackReply = `Señor, estuve observando su página web (ventana "${context.activeWindow}"):\n\n` +
+                `• Contenido visible detectado: Se reconocen elementos como: ${topElements}.\n` +
+                `• Jerarquía y estructura: La disposición es funcional, pero le sugiero reforzar el peso de los titulares principales para guiar mejor la atención del usuario.\n` +
+                `• Recomendaciones de mejora:\n` +
+                `  1. Espaciado y márgenes: Dejar suficiente aire blanco entre secciones para una lectura más cómoda.\n` +
+                `  2. Contraste visual: Asegurarse de que los textos y enlaces tengan un contraste nítido con el fondo.\n` +
+                `  3. Llamado a la acción (CTA): Resaltar los botones de acción principales con un estilo visual protagónico.`;
+        } else if (isErrorDiag) {
+            fallbackReply = `Señor, en la captura (ventana "${context.activeWindow}"):\n\n`;
+            if (context.detectedErrors.length > 0) {
+                fallbackReply += `• Error detectado: "${context.detectedErrors.join(' | ')}".\n` +
+                    `• Diagnóstico: Se produjo una interrupción o excepción en el flujo de ejecución.\n` +
+                    `• Solución: Si me autoriza con su confirmación, puedo localizar el archivo fuente y aplicar la corrección de código de forma automática.`;
+            } else {
+                fallbackReply += `No detecté excepciones o palabras críticas en el texto visible de la pantalla actual. Las líneas reconocidas son: ${context.lines.slice(0, 8).join(', ')}. Si hay un archivo puntual con errores, podemos abrirlo e inspeccionarlo.`;
+            }
         } else {
-            fallbackReply += ` no se detectó texto legible en la captura actual.`;
+            fallbackReply = `Señor, en la captura (ventana "${context.activeWindow}"):`;
+            if (context.detectedErrors.length > 0) {
+                fallbackReply += ` detecté el siguiente error: "${context.detectedErrors.join(' | ')}".`;
+            } else if (context.lines && context.lines.length > 0) {
+                fallbackReply += ` se leen las siguientes pestañas y elementos: ${context.lines.slice(0, 10).join(', ')}.`;
+            } else if (context.visibleText) {
+                fallbackReply += ` el texto visible es: "${context.visibleText.slice(0, 250)}..."`;
+            } else {
+                fallbackReply += ` no se detectó texto legible en la captura actual.`;
+            }
         }
 
         return {

@@ -23,7 +23,7 @@ const skillPermissionService = require('./skillPermissionService');
 
 class HardenedCodeActService {
     constructor() {
-        this.scratchDir = path.resolve(__dirname, '..', '..', 'data', 'sandbox_scratch');
+        this.scratchDir = require("../dataPaths").dataPath("sandbox_scratch");
         fs.mkdirSync(this.scratchDir, { recursive: true });
 
         // Patrones prohibidos de alta peligrosidad (Bloqueo inmediato)

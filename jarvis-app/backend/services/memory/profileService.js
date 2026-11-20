@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const PROFILE_PATH = process.env.JARVIS_USER_PROFILE_PATH || path.join(__dirname, '..', '..', 'data', 'user_profile.json');
+const PROFILE_PATH = process.env.JARVIS_USER_PROFILE_PATH || require("../dataPaths").dataPath("user_profile.json");
 
 const DEFAULT_PROFILE = {
     version: 1,

@@ -37,7 +37,7 @@ class FastCommandParser {
                 return { match: true, action: prefix + '.adjust-' + noun, params: { delta: (up ? 1 : -1) * (number ? Number(number[1]) : 10) } };
             }
             if (number) return { match: true, action: prefix + '.set-' + noun, params: { percent: Number(number[1]) } };
-            if (/\b(?:cuanto|que|cual|nivel|estado)\b/.test(clean) || /^(?:volumen|brillo)(?: de la tele)?$/.test(clean)) {
+            if (/\b(?:cuanto|que|cual|nivel|estado|consultar|ver)\b/.test(clean) || /^(?:volumen|brillo)(?: de la tele)?$/.test(clean)) {
                 return { match: true, action: prefix + '.get-' + noun, params: {} };
             }
         }
@@ -61,7 +61,7 @@ class FastCommandParser {
         // 5. Apps consumidoras de recursos y memoria RAM
         if (/\b(?:recursos|consumiendo|consumo|consume|gastando|usando).*(?:ram|memoria|procesador|cpu)\b/i.test(clean)
             || /\b(?:que|quien|cuales).*(?:consume|gasta|usa).*(?:ram|memoria|procesos)\b/i.test(clean)
-            || /\b(?:top procesos|administrador de tareas|estado de ram)\b/i.test(clean)) {
+            || /\b(?:top procesos|administrador de tareas|estado de ram|procesos que mas consumen|procesos mas pesados|ver procesos que mas consumen)\b/i.test(clean)) {
             return { match: true, action: 'system.get-top-consumers', params: {} };
         }
 
@@ -73,6 +73,40 @@ class FastCommandParser {
         // 7. Espacio en disco / Almacenamiento
         if (/\b(?:espacio en disco|cuanto espacio tengo|disco libre|almacenamiento|espacio libre|gigas libres)\b/i.test(clean)) {
             return { match: true, action: 'system.get-disk-space', params: {} };
+        }
+
+        // 7b. Estado general de la computadora
+        if (/\b(?:estado de la (?:computadora|pc|maquina|sistema)|consultar estado de la computadora|como esta la compu|rendimiento de la pc)\b/i.test(clean)) {
+            return { match: true, action: 'system.get-overview', params: {} };
+        }
+
+        // 7c. Agenda y Listado de Recordatorios
+        if (/\b(?:consultar recordatorios|ver recordatorios|mis recordatorios|que recordatorios tengo|listar recordatorios)\b/i.test(clean)) {
+            return { match: true, action: 'agenda.list', params: {} };
+        }
+
+        // 7d. Listar archivos del escritorio
+        if (/\b(?:listar archivos del escritorio|archivos en el escritorio|que hay en el escritorio|ver archivos del escritorio)\b/i.test(clean)) {
+            return { match: true, action: 'directory.list', params: { directory: 'escritorio' } };
+        }
+
+        // 7e-2. Estado y Progreso de Descargas
+        if (/(?:como\s+va|cuanto\s+(?:va|falta|porcentaje)|estado|progreso).*(?:descarg|bajad|baje)|cuanto\s+descarg|porcentaje\s+de\s+(?:la\s+)?descarga/i.test(clean)) {
+            return { match: true, action: 'download.status', params: {} };
+        }
+
+        // 7e. Antivirus, Escaneo de Descargas y Salud de la PC
+        if (/(?:descarga|descargue|baje|juego|archivo).*(?:virus|malware|segur|peligr)|(?:virus|malware|escanea|analiza|escanear|analizar|revisa|revisar).*(?:descarga|descargue|baje)/i.test(clean)
+            || /\b(?:escanea(?:r)?\s+(?:la\s+)?ultima\s+descarga|analiza(?:r)?\s+(?:la\s+)?ultima\s+descarga)\b/i.test(clean)) {
+            return { match: true, action: 'security.scan-latest-download', params: {} };
+        }
+
+        if (/\b(?:hac(?:e|er)?\s+(?:un\s+)?escaneo\s+de\s+virus|busca(?:r)?\s+virus|escanear?\s+(?:la\s+)?(?:computadora|pc)\s+en\s+busca\s+de\s+virus|analizar?\s+todo\s+el\s+sistema)\b/i.test(clean)) {
+            return { match: true, action: 'security.system-scan', params: {} };
+        }
+
+        if (/\b(?:analiza(?:r)?\s+(?:mi\s+)?(?:equipo|pc|computadora|sistema)|tengo\s+(?:algun\s+)?virus|salud\s+de\s+(?:mi\s+)?pc|pc\s+esta\s+sana|equipo\s+esta\s+sano|fijate\s+si\s+tengo\s+virus|estado\s+del\s+antivirus)\b/i.test(clean)) {
+            return { match: true, action: 'security.system-health', params: {} };
         }
 
         // 8. Control de Ventanas y Pestañas
@@ -186,7 +220,7 @@ class FastCommandParser {
         }
 
         // 9. Visión de Pantalla y Diagnóstico de Errores
-        if (/\b(?:fijate\s+(?:qu[eé]\s+)?error\s+sali[oó]|qu[eé]\s+error\s+sali[oó]|qu[eé]\s+error\s+hay|qu[eé]\s+error\s+aparece|revisa\s+el\s+error|analiza\s+el\s+error|mir[aá]\s+(?:la\s+)?pantalla|qu[eé]\s+dice\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|le[eé](?:me)?\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|analiza\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|qu[eé]\s+hay\s+en\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|revisa\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|qu[eé]\s+captura\s+(?:sacaste|tomaste)|qu[eé]\s+(?:se\s+)?ve\s+(?:en\s+la\s+|en\s+el\s+)?(?:pantalla|captura|screenshot)|fijate\s+qu[eé]\s+dice)\b/i.test(clean)) {
+        if (/\b(?:fijate\s+(?:qu[eé]\s+)?error\s+sali[oó]|qu[eé]\s+error\s+sali[oó]|qu[eé]\s+error\s+hay|qu[eé]\s+error\s+aparece|qu[eé]\s+error\s+tengo|detect(?:ar|as|ás|á)?\s+(?:el\s+)?error|fijate\s+(?:si\s+hay\s+un\s+|el\s+)?error|revisa\s+el\s+error|analiza\s+el\s+error|mir[aá]\s+(?:la\s+)?pantalla|qu[eé]\s+dice\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|le[eé](?:me)?\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|analiza\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|qu[eé]\s+hay\s+en\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|revisa\s+(?:la\s+)?(?:pantalla|captura|screenshot|foto|imagen)|qu[eé]\s+captura\s+(?:sacaste|tomaste)|qu[eé]\s+(?:se\s+)?ve\s+(?:en\s+la\s+|en\s+el\s+)?(?:pantalla|captura|screenshot)|fijate\s+qu[eé]\s+dice|qu[eé]\s+te\s+parece\s+(?:mi\s+)?(?:p[aá]gina(?:\s+web)?|web|sitio|dise[ñn]o)|c[oó]mo\s+ves\s+(?:mi\s+)?(?:p[aá]gina(?:\s+web)?|web|sitio)|qu[eé]\s+opin[aá]s\s+de\s+(?:mi\s+)?(?:p[aá]gina(?:\s+web)?|web|sitio)|qu[eé]\s+mejorar\s+en\s+(?:mi\s+)?(?:p[aá]gina(?:\s+web)?|web|sitio)|opin[aá]\s+sobre\s+(?:mi\s+)?(?:p[aá]gina(?:\s+web)?|web|sitio))\b/i.test(clean)) {
             return { match: true, action: 'vision.analyze-screen', params: { query: text } };
         }
 

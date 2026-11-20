@@ -18,7 +18,7 @@ const path = require('path');
 
 class SecretVaultService {
     constructor() {
-        this.vaultDir = path.join(__dirname, '../../data/security');
+        this.vaultDir = require("../dataPaths").dataPath("security");
         this.vaultFile = path.join(this.vaultDir, 'vault.enc');
         this.saltFile = path.join(this.vaultDir, 'vault.salt');
 

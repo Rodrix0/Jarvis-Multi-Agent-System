@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const TIMELINE_DIR = path.join(__dirname, '..', '..', 'data', 'history');
+const TIMELINE_DIR = require("../dataPaths").dataPath("history");
 const TIMELINE_FILE = path.join(TIMELINE_DIR, 'action_timeline.jsonl');
 
 class ActionTimelineService {

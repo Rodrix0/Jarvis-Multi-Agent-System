@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const AUDIT_PATH = process.env.JARVIS_ACTION_AUDIT_PATH || path.join(__dirname, '..', 'data', 'action_audit.jsonl');
+const AUDIT_PATH = process.env.JARVIS_ACTION_AUDIT_PATH || require("./dataPaths").dataPath("action_audit.jsonl");
 const actions = new Map();
 const pendingConfirmations = new Map();
 const CONFIRMATION_TTL_MS = 120000;

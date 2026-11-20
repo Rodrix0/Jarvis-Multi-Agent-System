@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const MEMORY_PATH = process.env.JARVIS_MEMORY_PATH || path.join(__dirname, '..', 'data', 'jarvis_memory.json');
+const MEMORY_PATH = process.env.JARVIS_MEMORY_PATH || require("./dataPaths").dataPath("jarvis_memory.json");
 let memoryCache = null;
 let memoryCacheMtime = -1;
 

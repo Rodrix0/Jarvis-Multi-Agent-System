@@ -3,9 +3,9 @@ const path = require('path');
 const crypto = require('crypto');
 
 const LEARNING_PATH = process.env.JARVIS_VOICE_LEARNING_PATH
-    || path.join(__dirname, '..', 'data', 'voice_learning.json');
+    || require("./dataPaths").dataPath("voice_learning.json");
 const LEXICON_PATH = process.env.JARVIS_VOICE_LEXICON_PATH
-    || path.join(__dirname, '..', 'data', 'voice_lexicon.json');
+    || require("./dataPaths").dataPath("voice_lexicon.json");
 
 const CORE_VOCABULARY = [
     'Jarvis', 'BroadLink', 'WhatsApp', 'Netflix', 'YouTube', 'Discord', 'Spotify',

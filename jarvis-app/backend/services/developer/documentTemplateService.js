@@ -33,7 +33,7 @@ const {
     BorderStyle
 } = require('docx');
 
-const STYLES_FILE = path.join(__dirname, '..', '..', 'data', 'documents', 'saved_styles.json');
+const STYLES_FILE = require("../dataPaths").dataPath("documents", "saved_styles.json");
 
 const BUILTIN_STYLES = {
     MODERN_CYBER: {

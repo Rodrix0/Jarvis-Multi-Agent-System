@@ -4,8 +4,8 @@ const { spawn } = require('child_process');
 
 const FORGE_URL = 'http://127.0.0.1:7860';
 const OLLAMA_URL = 'http://127.0.0.1:11434';
-const FORGE_BAT_PATH = 'C:\\Users\\Rodrigo\\Desktop\\IA\\stable-diffusion-webui-forge\\webui-user.bat';
-const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
+const FORGE_BAT_PATH = process.env.JARVIS_FORGE_BAT || 'C:\\Users\\Rodrigo\\Desktop\\IA\\stable-diffusion-webui-forge\\webui-user.bat';
+const UPLOAD_DIR = require("./dataPaths").dataPath("uploads");
 const LOG_DIR = path.join(__dirname, '..', '..', 'logs');
 const FORGE_STDOUT_LOG = path.join(LOG_DIR, 'forge.out.log');
 const FORGE_STDERR_LOG = path.join(LOG_DIR, 'forge.err.log');
@@ -13,6 +13,7 @@ const fetch = (url, options = {}) => globalThis.fetch(url, { ...options, signal:
 let forgeStarting = null;
 let forgeStartedByJarvis = false;
 let forgeRootPid = null;
+let forgeChild = null;
 let forgeIdleTimer = null;
 let activeImageJobs = 0;
 const FORGE_IDLE_MS = Math.max(30000, Number(process.env.JARVIS_FORGE_IDLE_MS) || 120000);
@@ -161,7 +162,7 @@ function cancelForgeIdleShutdown() {
 
 function stopForgeProcessTree() {
     const pid = forgeRootPid;
-    if (!pid || process.platform !== 'win32') return Promise.resolve(false);
+    if (!pid || process.platform !== 'win32' || !forgeChild || forgeChild.exitCode !== null || forgeChild.signalCode !== null) return Promise.resolve(false);
     return new Promise(resolve => {
         const killer = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
             windowsHide: true,
@@ -243,6 +244,7 @@ function startForgeAttempt(attemptNumber) {
             fs.closeSync(stderr);
         }
         forgeStartedByJarvis = true;
+        forgeChild = forgeProcess;
         forgeRootPid = forgeProcess.pid;
         forgeProcess.unref();
 
@@ -394,6 +396,23 @@ async function generateImageNow(userPrompt, options = {}) {
 
         // Guardar la imagen física
         fs.writeFileSync(filepath, Buffer.from(base64Image, 'base64'));
+
+        // Guardar copia en Jarvis_Pelis y enviar notificación nativa
+        try {
+            const pelisDir = path.join(os.homedir(), 'Downloads', 'Jarvis_Pelis');
+            if (fs.existsSync(pelisDir)) {
+                const pelisFilePath = path.join(pelisDir, filename);
+                fs.copyFileSync(filepath, pelisFilePath);
+                console.log(`[ImageService] Foto guardada en Jarvis_Pelis: ${pelisFilePath}`);
+                const notifier = require('node-notifier');
+                notifier.notify({
+                    title: 'J.A.R.V.I.S. - Foto Generada',
+                    message: `Nueva foto guardada en tu carpeta Jarvis_Pelis.`,
+                    sound: true,
+                    wait: false
+                });
+            }
+        } catch (_) {}
         
         console.log(`[ImageService] Imagen guardada en: ${filepath}`);
         
@@ -562,7 +581,15 @@ async function editImage(imagePath, userPrompt, denoisingStrength = 0.55, maskBa
     }
 }
 
+async function shutdown() {
+    cancelForgeIdleShutdown();
+    if (!forgeStartedByJarvis) return;
+    await stopForgeProcessTree();
+    forgeStartedByJarvis = false; forgeRootPid = null; forgeChild = null;
+}
+
 module.exports = {
+    shutdown,
     generateImage,
     editImage,
     checkForgeStatus,

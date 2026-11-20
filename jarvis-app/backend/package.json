@@ -5,8 +5,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "test:character": "node tests/test_character_rig.js && node tests/test_desktop_companion.js",
+    "test:character:native": "node tests/test_desktop_companion_native.js",
     "dev": "nodemon --ignore \"data/*\" --ignore \"*.json\" server.js",
-    "test": "node tests/core.test.js && node tests/test_daily_commands.js && node tests/test_efficiency.js && node tests/test_response_formatter.js && node tests/test_voice_reliability.js && node tests/test_conversation_routes.js && node tests/test_authorization_flow.js && node tests/test_weather_whatsapp.js"
+    "test": "node tests/core.test.js && node tests/test_daily_commands.js && node tests/test_efficiency.js && node tests/test_response_formatter.js && node tests/test_voice_reliability.js && node tests/test_tts_m3.js && node tests/test_conversation_routes.js && node tests/test_authorization_flow.js && node tests/test_weather_whatsapp.js && node tests/test_antivirus_security.js && node tests/test_places_search.js && node tests/test_vision_coding.js"
   },
   "dependencies": {
     "cheerio": "^1.2.0",

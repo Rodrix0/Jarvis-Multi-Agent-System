@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DATA_DIR = path.join(__dirname, '..', '..', 'data');
+const DATA_DIR = require("../dataPaths").dataPath();
 const DB_PATH = path.join(DATA_DIR, 'jarvis.db');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const CURRENT_SCHEMA_VERSION = 12;

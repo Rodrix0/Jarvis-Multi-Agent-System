@@ -26,7 +26,7 @@ class RiskAssessmentService {
         // El PIN biométrico configurado y el PIN de autorización deben coincidir.
         // La variable de entorno sigue teniendo prioridad para instalaciones nuevas.
         let configuredPin = process.env.JARVIS_SECURITY_PIN;
-        this.securityPath = path.join(__dirname, '..', '..', 'data', 'security.json');
+        this.securityPath = require("../dataPaths").dataPath("security.json");
         if (!configuredPin) {
             try {
                 const saved = JSON.parse(fs.readFileSync(this.securityPath, 'utf8'));
@@ -131,7 +131,9 @@ class RiskAssessmentService {
             id.includes('reset_database') ||
             id.includes('database.reset') ||
             id.includes('wipe') ||
-            id.includes('format')
+            /\bformat\b/.test(id) ||
+            id.includes('disk.format') ||
+            id.includes('drive.format')
         ) {
             return 'CRITICAL';
         }

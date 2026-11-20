@@ -5,7 +5,7 @@ const path = require('path');
 const appDiscoveryService = require('./appDiscoveryService');
 
 // --- 0. Sistema de Comandos de Entrenamiento ---
-const customCommandsFile = path.join(__dirname, '..', 'data', 'comandos.json');
+const customCommandsFile = require("./dataPaths").dataPath("comandos.json");
 
 function saveCustomCommand(triggerPhrase, targetApp) {
     let commands = {};
@@ -75,7 +75,7 @@ async function openMediaSearch(platform, query) {
 
 // --- 2. Sistema de Memoria Persistente ---
 async function procesarMemoriaDinamica(busqueda, modeId) {
-    const archivoMemoria = path.join(__dirname, '..', 'data', 'memoria.json');
+    const archivoMemoria = require("./dataPaths").dataPath("memoria.json");
     let memoria = {};
 
     if (!fs.existsSync(path.dirname(archivoMemoria))) {
@@ -317,11 +317,8 @@ async function openApp(appName, modeId = 'productividad') {
         try{const parsed=new URL(originalTarget);if(parsed.hostname==='youtube.com'||parsed.hostname.endsWith('.youtube.com')){youtubeTarget=true;youtubeUrl=parsed;}}catch(_){}
     }
     if(youtubeTarget){
-        const navigation=require('./browser/voiceNavigationService');
-        const request=youtubeUrl?.pathname==='/results'
-            ? {command:'search',site:'youtube',query:youtubeUrl.searchParams.get('search_query')||''}
-            : {command:'open',site:youtubeUrl&&youtubeUrl.pathname!=='/'?youtubeUrl.href:'youtube'};
-        return (await navigation.execute(request)).ok;
+        const target = youtubeUrl ? youtubeUrl.href : 'https://www.youtube.com';
+        return launchLiteral(target);
     }
     // Preserve URL case and explicit paths; don't treat their names as app keywords.
     if (platform === 'win32' && (isWebUrl(originalTarget) || (path.isAbsolute(originalTarget) && fs.existsSync(originalTarget)))) {
@@ -396,7 +393,7 @@ async function openApp(appName, modeId = 'productividad') {
         command = urlLaunchCommand(lowerApp, platform);
     }
 
-    const customLinksFile = path.join(__dirname, '..', 'data', 'custom_links.json');
+    const customLinksFile = require("./dataPaths").dataPath("custom_links.json");
     let customLinks = {};
     if (fs.existsSync(customLinksFile)) {
         try {
@@ -455,7 +452,9 @@ async function openApp(appName, modeId = 'productividad') {
         'descargas': 'explorer "' + path.join(os.homedir(), 'Downloads') + '"',
         'escritorio': 'explorer "' + path.join(os.homedir(), 'Desktop') + '"',
         'explorador': 'start explorer',
-        'archivos': 'start explorer'
+        'archivos': 'start explorer',
+        'vlc': 'start "" "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"',
+        'vlc media player': 'start "" "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"'
     };
 
     // A. ¿Es un juego/programa nativo exacto?

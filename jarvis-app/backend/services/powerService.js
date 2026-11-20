@@ -6,8 +6,8 @@ const fs = require('fs');
 let powerProcess = null;
 let lockScreenDaemon = null;
 
-const STATE_FILE = path.join(__dirname, '..', 'data', 'lock_state.txt');
-const SECURITY_FILE = path.join(__dirname, '..', 'data', 'security.json');
+const STATE_FILE = require("./dataPaths").dataPath("lock_state.txt");
+const SECURITY_FILE = require("./dataPaths").dataPath("security.json");
 
 function isSecurityEnabled() {
     try {
@@ -25,7 +25,7 @@ function initPowerListener() {
     fs.writeFileSync(STATE_FILE, "HIDE", "utf8");
 
     // 2. Iniciar el demonio de Python en memoria (invisible). Solo se paga el costo de 2 segundos una vez al inicio del servidor.
-    const pythonExe = path.join(__dirname, '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe');
+    const pythonExe = process.env.JARVIS_PYTHON_EXE || path.join(__dirname, '..', '..', 'python_engine', 'venv', 'Scripts', 'python.exe');
     const lockScript = path.join(__dirname, '..', '..', 'python_engine', 'jarvis_lockscreen.py');
     lockScreenDaemon = spawn(pythonExe, [lockScript], { windowsHide: true });
     
@@ -47,7 +47,7 @@ function initPowerListener() {
             
             // VERIFICAR SI EL USUARIO TIENE EL ESCUDO ACTIVO
             try {
-                const secPath = path.join(__dirname, '..', 'data', 'security.json');
+                const secPath = require("./dataPaths").dataPath("security.json");
                 if (fs.existsSync(secPath)) {
                     const sec = JSON.parse(fs.readFileSync(secPath));
                     if (sec.enabled === false) {
@@ -91,4 +91,4 @@ function launchLockScreen() {
     fs.writeFileSync(STATE_FILE, "SHOW", "utf8");
 }
 
-module.exports = { initPowerListener, launchLockScreen, setSecurityEnabled, isSecurityEnabled };
+module.exports = { initPowerListener, stopPowerListener, launchLockScreen, setSecurityEnabled, isSecurityEnabled };

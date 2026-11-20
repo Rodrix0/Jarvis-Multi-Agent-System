@@ -1,4 +1,8 @@
 node_modules/
+.local/
+jarvis-app/dist/
+# Resultados locales de pruebas: copias aisladas, capturas y datos de la PC
+/diagnosticos/
 python_engine/venv/
 __pycache__/
 *.pyc

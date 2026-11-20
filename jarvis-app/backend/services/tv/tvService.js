@@ -3,7 +3,7 @@ const path = require('path');
 const watchdogService = require('../core/watchdogService');
 const toolRegistryService = require('../core/toolRegistryService');
 
-const CONFIG_PATH = path.join(__dirname, '..', '..', 'data', 'broadlink.json');
+const CONFIG_PATH = require("../dataPaths").dataPath("broadlink.json");
 
 class TVService {
     constructor() {

@@ -5,12 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JARVIS OS</title>
     
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="style.css?v=20261030-red-black">
+    <link rel="stylesheet" href="workspace.css?v=20261030-main-status">
+    <link rel="icon" type="image/svg+xml" href="assets/jarvis-avatar.svg">
 
     <!-- Librerias para mejorar la interfaz visual MD/MATH -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="vendor/marked/marked.umd.js"></script>
+    <script id="MathJax-script" async src="vendor/mathjax/es5/tex-mml-chtml.js"></script>
 
     <style>
         .action-tool-bar { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
@@ -41,7 +43,7 @@
                 <button id="btn-open-brain-modal" class="voice-test-btn" type="button" title="Voz, memoria y acciones">
                     <i class="fa-solid fa-brain"></i> Voz y memoria
                 </button>
-                <button id="btn-open-dashboard" class="voice-test-btn" type="button" title="Panel de Telemetría y Diagnóstico (Ítem 31)" style="border-color: #00ffff; color: #00ffff;">
+                <button id="btn-open-dashboard" class="voice-test-btn" type="button" title="Panel de Telemetría y Diagnóstico (Ítem 31)" style="border-color: var(--accent); color: var(--accent);">
                     <i class="fa-solid fa-gauge-high"></i> Dashboard
                 </button>
                 <div id="jarvis-power-badge" class="jarvis-power-badge awake" title="Clic para alternar entre PRENDIDO y APAGADO">
@@ -75,7 +77,7 @@
                     <span id="hud-power-hint">Escucha activa — Di tu orden directamente</span>
                 </div>
                 <div class="visualizer-container" id="visualizer-container" style="position: relative; height: 350px;">
-                    <!-- El canvas 3D se inyectará aquí -->
+                    <!-- Avatar vectorial con estados de voz y actividad -->
                 </div>
 
                 <div class="transcript-box">
@@ -101,8 +103,8 @@
                             <input type="hidden" id="context-file-path">
                         </div>
                         <div class="context-group input-text">
-                            <input type="text" id="manual-text-input" placeholder="O escribe tu comando textualmente aquí y presiona Enter..." autocomplete="off">
-                            <button id="btn-send-text" type="button"><i class="fa-solid fa-paper-plane"></i></button>
+                            <textarea id="manual-text-input" rows="1" placeholder="Pedile algo a Jarvis…" aria-label="Mensaje para Jarvis" autocomplete="off"></textarea>
+                            <button id="btn-send-text" type="button" aria-label="Enviar mensaje"><span aria-hidden="true">↑</span></button>
                         </div>
                     </div>
 
@@ -416,9 +418,11 @@
     </script>
 
     <!-- Scripts -->
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="jarvis3d.js"></script>
-    <script src="app.js?v=20260908_01"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="character-rig.js?v=20261030-clean-poses"></script>
+    <script src="avatar.js?v=20261030"></script>
+    <script src="app.js?v=20261030-main-status"></script>
+    <script src="workspace.js?v=20261030-main-status"></script>
+    <script src="companion.js?v=20261030"></script>
 </body>
 </html>

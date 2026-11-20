@@ -14,7 +14,7 @@ const crypto = require('crypto');
 const { spawn, exec } = require('child_process');
 const skillPermissionService = require('./skillPermissionService');
 
-const SANDBOX_BASE_DIR = path.resolve(__dirname, '..', '..', 'data', 'sandbox_runs');
+const SANDBOX_BASE_DIR = require("../dataPaths").dataPath("sandbox_runs");
 
 class SandboxService {
     constructor() {

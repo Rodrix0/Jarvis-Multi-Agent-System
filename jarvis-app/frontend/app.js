@@ -44,6 +44,7 @@ let voiceMeterTimer = null;
 let currentAudioLevel = 0;
 let pendingVoiceTranscript = null;
 let localVoiceOnline = false;
+let browserListening = false;
 let actionToastTimer = null;
 
 function stopAllSpeech({ restartBrowserRecognition = false } = {}) {
@@ -370,6 +371,7 @@ if (SpeechRecognition) {
     recognition.interimResults = false;
     recognition.lang = 'es-AR';
     recognition.maxAlternatives = 3;
+    recognition.onstart = () => { browserListening = true; window.dispatchEvent(new CustomEvent('jarvis-voice-availability')); };
 
     recognition.onresult = (event) => {
         if (isJarvisSpeaking || localVoiceOnline) {
@@ -402,11 +404,15 @@ if (SpeechRecognition) {
     };
 
     recognition.onend = () => {
+        browserListening = false;
+        window.dispatchEvent(new CustomEvent('jarvis-voice-availability'));
         // Chrome corta el reconocimiento después de un silencio. Lo reiniciamos automáticamente.
         restartRecognition(300);
     };
 
     recognition.onerror = (event) => {
+        browserListening = false;
+        window.dispatchEvent(new CustomEvent('jarvis-voice-availability', { detail: { browserError: event.error } }));
         if (event.error === 'no-speech') {
             restartRecognition(350);
             return;
@@ -781,6 +787,7 @@ function renderLocalVoiceStatus(status = {}) {
         updatePowerStateUI(status.state === 'awake');
         try { recognition?.abort(); } catch (_) {}
     }
+    window.dispatchEvent(new CustomEvent('jarvis-voice-availability', { detail: { local: status } }));
 }
 
 function stopVoiceMonitor() {
@@ -1018,8 +1025,8 @@ function renderTvStatus(status) {
         const isLearned = learned.has(key) || learned.has(normalized);
         button.classList.toggle('learned', isLearned);
         if (isLearned) {
-            button.style.borderColor = '#00f2fe';
-            button.style.boxShadow = '0 0 10px rgba(0, 242, 254, 0.4)';
+            button.style.borderColor = 'var(--accent)';
+            button.style.boxShadow = '0 0 10px rgba(var(--accent-rgb), 0.4)';
         } else {
             button.style.borderColor = '';
             button.style.boxShadow = '';
@@ -1034,7 +1041,7 @@ function renderTvStatus(status) {
         statusBadge.textContent = blocked
             ? 'Estado: Bloqueado (Desactivar Lock Device en app)'
             : (status.configured ? `Estado: Conectado (${status.device.host})` : 'Estado: No configurado');
-        statusBadge.style.color = blocked ? '#ff4d4d' : (status.configured ? '#00f2fe' : '#ffaa00');
+        statusBadge.style.color = blocked ? '#ff4d4d' : (status.configured ? 'var(--accent)' : '#ffaa00');
     }
     if (statusDetails) {
         statusDetails.textContent = `${learned.size} tecla(s) aprendida(s) en BroadLink.`;
@@ -1470,7 +1477,8 @@ function updatePowerStateUI(isAwake) {
             if (bannerHint) bannerHint.textContent = 'Escucha activa — Di tu orden directamente';
         }
         if (btnToggleMic) {
-            btnToggleMic.innerHTML = '<i class="fa-solid fa-microphone"></i> ESCUCHA ACTIVA — Di tu orden directamente';
+            btnToggleMic.textContent = '● Voz activa';
+            btnToggleMic.title = 'Escucha activa. Decí tu orden directamente o hacé clic para poner a Jarvis en reposo.';
             btnToggleMic.classList.add('active');
         }
         setRingState('listening');
@@ -1487,7 +1495,8 @@ function updatePowerStateUI(isAwake) {
             if (bannerHint) bannerHint.textContent = 'Modo reposo — Decí "Jarvis, préndete" o hacé clic para despertar';
         }
         if (btnToggleMic) {
-            btnToggleMic.innerHTML = '<i class="fa-solid fa-moon"></i> EN REPOSO (APAGADO) — Decí "Préndete" para despertar';
+            btnToggleMic.textContent = '◌ Activar voz';
+            btnToggleMic.title = 'En reposo. Decí "Jarvis, préndete" o hacé clic para despertar.';
             btnToggleMic.classList.remove('active');
         }
         setRingState('idle');
@@ -1622,7 +1631,8 @@ document.getElementById('btn-send-text').addEventListener('click', () => {
 });
 
 document.getElementById('manual-text-input').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
         document.getElementById('btn-send-text').click();
     }
 });

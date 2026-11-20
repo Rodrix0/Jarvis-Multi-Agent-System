@@ -4,7 +4,7 @@ const path = require('node:path');
 const locationCache = new Map();
 const forecastCache = new Map();
 const DEFAULT_CITY = process.env.JARVIS_WEATHER_CITY || 'Corrientes Capital, Argentina';
-const LOCATION_PATH = process.env.JARVIS_WEATHER_LOCATION_PATH || path.join(__dirname, '..', 'data', 'weather_location.json');
+const LOCATION_PATH = process.env.JARVIS_WEATHER_LOCATION_PATH || require("./dataPaths").dataPath("weather_location.json");
 
 function normalize(text) {
     return String(text || '').toLowerCase().normalize('NFD')

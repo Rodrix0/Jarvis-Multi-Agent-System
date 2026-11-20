@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const modesFilePath = path.join(__dirname, '../data/modes.json');
+const modesFilePath = require("./dataPaths").dataPath("modes.json");
 
 function getModesData() {
     try {

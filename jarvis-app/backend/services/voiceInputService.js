@@ -3,7 +3,7 @@ const path = require('path');
 const memoryService = require('./memoryService');
 const voiceSettingsService = require('./voiceSettingsService');
 
-const HISTORY_PATH = path.join(__dirname, '..', 'data', 'voice_history.jsonl');
+const HISTORY_PATH = require("./dataPaths").dataPath("voice_history.jsonl");
 const MAX_HISTORY_BYTES = 1024 * 1024;
 
 function normalizeVoiceTranscript(text) {

@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
-const TOKEN_FILE = path.join(__dirname, '..', 'data', 'spotify_tokens.json');
+const TOKEN_FILE = require("./dataPaths").dataPath("spotify_tokens.json");
 const SPOTIFY_API = 'https://api.spotify.com/v1';
 const SPOTIFY_ACCOUNTS = 'https://accounts.spotify.com';
 
